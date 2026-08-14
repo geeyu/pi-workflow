@@ -1,0 +1,36 @@
+{
+	"name": "pi-workflow",
+	"version": "0.1.0",
+	"description": "pi 编排插件:主 pi 调度,子任务 = gittree worktree + Ghostty tab,SQLite 全生命周期留痕",
+	"type": "module",
+	"license": "MIT",
+	"private": false,
+	"author": "geeyu",
+	"keywords": [
+		"pi",
+		"pi-extension",
+		"workflow",
+		"orchestration",
+		"subagent",
+		"gittree",
+		"ghostty",
+		"sqlite"
+	],
+	"files": [
+		"src/",
+		"README.md",
+		"DESIGN.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"scripts": {
+		"test": "node --experimental-strip-types test/workflow.test.ts"
+	},
+	"engines": {
+		"node": ">=22.13"
+	}
+}

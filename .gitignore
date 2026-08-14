@@ -1,0 +1,14 @@
+# 依赖与构建
+node_modules/
+*.tsbuildinfo
+
+# SQLite 运行数据
+*.db
+*.db-wal
+*.db-shm
+
+# git worktree(运行时生成)
+.worktrees/
+
+# 系统
+.DS_Store
