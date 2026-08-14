@@ -330,7 +330,7 @@ async function main(): Promise<void> {
 	const fakeGhostctl = path.join(tmpDir, "fake-ghostctl.sh");
 	fs.writeFileSync(
 		fakeGhostctl,
-		'#!/bin/bash\necho "已创建标签页 (id=abcdef0123456789)"\n',
+		'#!/bin/bash\necho "已创建窗口 (id=abcdef0123456789)"\n',
 		{ mode: 0o755 },
 	);
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;

@@ -28,7 +28,7 @@
 | 任务 id | **层级化点号 id**(`1`、`1.1`、`1.2.3`),层级即 id 前缀,worktree 命名 `wf-<workflow>-<dotted>` |
 | gate | **执行前设定(期望/验收标准),执行后更新(子任务回报 → 编排者核对)** |
 | worktree | 每步一个,`gittree create wf-<workflow>-<step>`,并行任务同 base_sha |
-| 子任务形态 | 可见交互式子 pi,`ghostctl new-tab --cwd <worktree> --command "pi" --input <短指引>`,一个任务一个 tab |
+| 子任务形态 | 可见交互式子 pi,`ghostctl new-window --cwd <worktree> --command "pi" --input <短指引>`,一个任务一个 tab |
 | 任务传递 | **任务 markdown 写入数据库**(workflow_steps.task_md,派发时冻结副本入 workflow_attempts.task_md),`--input` 只注入短指引(身份 + 指向 `/wf context`),杜绝长文本粘贴错乱 |
 | 上下文 | **不复用父会话**:新会话,子 agent 在 worktree 内自主探索、自己发挥 |
 | 完成回报 | 子 pi 内 `/wf done <stepId> <JSON>` 写库;监听端轮询 `ghostctl layout --json` 按 tab 标题感知存活 |
@@ -40,7 +40,7 @@
 | 积木 | 用途 | 本插件怎么用 |
 | --- | --- | --- |
 | `gittree` 插件 | worktree 创建/合并/清理/占用检测 | `gittree create/merge/clean` 照用 |
-| `ghostctl` | Ghostty 布局查询/建 tab/关 tab/输入 | 派发开 tab(`new-tab --cwd --command --input`)、监听轮询、steer 注入文本 |
+| `ghostctl` | Ghostty 布局查询/建 tab/关 tab/输入 | 派发开 tab(`new-window --cwd --command --input`)、监听轮询、steer 注入文本 |
 | `ghostty-fork` 扩展(`/fork-split`) | 分屏开子 pi 复用当前会话 | 可作为手动替代路径(用户想复用上下文时手动用) |
 | 官方 `subagent` 示例 | 无头子进程方案 | 保留为可选的 headless 模式(§5.8),不阻塞主路线 |
 | `ctx.ui.setTitle` / 环境变量(PI_WF_*) | 设置终端标题 / 传递身份 | 子 pi 身份绑定:标题供监听匹配,env 供 /wf context 定位任务 |
@@ -57,7 +57,7 @@ workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 │   ├── index.ts        # 入口:/wf 命令族 + widget + 子 pi 身份绑定
 │   ├── db.ts           # node:sqlite 封装:schema 迁移、读写、事件写入
 │   ├── orchestrator.ts # 编排流程:import→dispatch→verify→merge→goal-check→next(纯逻辑,可测)
-│   ├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引注入 + ghostctl new-tab(身份 env)
+│   ├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引注入 + ghostctl new-window(身份 env)
 │   ├── validate.ts     # 计划 JSON 校验(层级 id、agent 存在、deps 无环、期望格式)
 │   └── agents.ts       # agent 发现(零依赖,frontmatter 解析)
 ├── test/
@@ -435,7 +435,7 @@ wave N 拆解(并行/串行组合,视依赖而定)
   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
      → 写入 workflow_steps.task_md;事件 step_dispatched
   3. 组装短指引 pointer(身份 + 指向 /wf context + 回报方式)→ 写入 workflow_attempts.pointer
-  4. ghostctl new-tab --cwd <worktree> \
+  4. ghostctl new-window --cwd <worktree> \
         --command "env PI_WF_WORKFLOW=<workflowId> PI_WF_STEP=<dotted> pi" \
         --input "<短指引>"
      (事件 step_tab_opened,记录 tab_id)
@@ -511,7 +511,7 @@ workflow: add-redis-cache | step: 1.1 | wave: 2
 
 ```text
 dispatch:gittree create wf-<workflow>-<dotted>(基于 base_sha,事件 worktree_created)
-        task_md 渲染入库 + 短指引注入 + ghostctl new-tab(事件 step_dispatched / step_tab_opened)
+        task_md 渲染入库 + 短指引注入 + ghostctl new-window(事件 step_dispatched / step_tab_opened)
 成功:子 pi 内 git commit → 编排者侧 /wf merge(事件 worktree_merged)
 失败/重派:gittree clean <name> --branch --force 重建(事件 worktree_cleaned)
 清理:/wf clean → gittree clean all --yes(仅 gittree- 前缀,占用中自动跳过)
@@ -610,7 +610,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 | 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
-| **P1 派发闭环** | db.ts(完整 schema,§3)+ dispatch.ts(gittree create + task_md 渲染入库 + 短指引 + ghostctl new-tab)+ `/wf context/done/fail` + `/wf status` + 手工 `/wf verify` | 手动 `/wf import` 一个含 1.1/1.2 的计划 → dispatch 出两个 tab,子 pi 经 `/wf context` 取任务、`/wf done` 回报后 DB 完整留痕,`/wf tree` 显示层级 |
+| **P1 派发闭环** | db.ts(完整 schema,§3)+ dispatch.ts(gittree create + task_md 渲染入库 + 短指引 + ghostctl new-window)+ `/wf context/done/fail` + `/wf status` + 手工 `/wf verify` | 手动 `/wf import` 一个含 1.1/1.2 的计划 → dispatch 出两个 tab,子 pi 经 `/wf context` 取任务、`/wf done` 回报后 DB 完整留痕,`/wf tree` 显示层级 |
 | **P2 监听与批次** | monitor.ts(ghostctl 轮询 + 标题匹配)+ wave 推进(就绪集按 deps 并行/串行)+ `/wf merge` + 崩溃恢复(按 tab_id 重连) | 3 并行任务各改各文件,wave 完成串行合回;关一个 tab 不回报 → 自动 aborted;杀 pi 重启后状态重连 |
 | **P3 期望核对** | expectations 设定(任务 markdown 注入)+ 自动/人工核对 + needs-fix 闭环 + retry + 预算护栏 + steer | "执行前设定期望 → 回报 → 核对不达标 → needs-fix 重派 → 达标"全链路事件完整 |
 | **P4 智能编排** | `/wf plan` / `/wf next` 自动拆解(planner JSON 契约)+ **目标把关闭环**(verifying + goal-check + gap wave) | 一条需求目标 → 自动 recon+plan+wave 迭代执行 → 目标核对通过才 completed,未达成自动补 wave |

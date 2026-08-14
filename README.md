@@ -22,7 +22,7 @@ src/
 ├── index.ts        # /wf 命令族 + widget + 子 pi 身份绑定(标题)
 ├── db.ts           # node:sqlite 封装:schema 迁移(user_version)、读写、事件双写
 ├── orchestrator.ts # 核心流程:importPlan / reportDone / reportFail / verifyStep(纯逻辑,可测)
-├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引 + ghostctl new-tab
+├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引 + ghostctl new-window
 ├── validate.ts     # 计划 JSON 校验(层级点号 id / agent / deps 无环)+ packDotted
 └── agents.ts       # agent 发现(~/.pi/agent/agents/*.md,frontmatter 格式,零依赖)
 test/

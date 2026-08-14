@@ -6,7 +6,7 @@
  *   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
  *      → 写入 workflow_steps.task_md;事件 step_dispatched
  *   3. 组装短指引 pointer → 写入 workflow_attempts.pointer
- *   4. ghostctl new-tab --cwd <worktree> --command "env PI_WF_* pi" --input "<短指引>"
+ *   4. ghostctl new-window --cwd <worktree> --command "env PI_WF_* pi" --input "<短指引>"
  *      (事件 step_tab_opened,记录 tab_id)
  *
  * 任务正文存库(--input 只注入短指引,杜绝长文本粘贴错乱)。
@@ -341,7 +341,7 @@ export async function dispatchStep(
 	// 3. attempt 行(冻结 task_md + pointer)
 	const attempt = createAttempt(db, step.id, { taskMd, pointer });
 
-	// 4. ghostctl new-tab(事件 step_tab_opened,记录 tab_id)
+	// 4. ghostctl new-window(事件 step_tab_opened,记录 tab_id)
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
 	const tabRes = await run(
 		opts.ghostctlBin ?? "ghostctl",
@@ -354,7 +354,7 @@ export async function dispatchStep(
 			"workflow_attempts",
 			{
 				status: "aborted",
-				error: `new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
+				error: `new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
 			},
 			{ id: attempt.id },
 		);
@@ -362,7 +362,7 @@ export async function dispatchStep(
 			ok: false,
 			stepId: step.id,
 			worktree: wtName,
-			error: `ghostctl new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
+			error: `ghostctl new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
 		};
 	}
 	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
