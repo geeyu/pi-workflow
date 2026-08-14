@@ -13,6 +13,7 @@
  */
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -216,10 +217,8 @@ function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
 				});
 				return;
 			}
-			const code =
-				typeof (err as NodeJS.ErrnoException).code === "number"
-					? ((err as NodeJS.ErrnoException).code as number)
-					: 1;
+			const errCode = (err as NodeJS.ErrnoException).code;
+			const code = typeof errCode === "number" ? errCode : 1;
 			resolve({
 				code,
 				stdout: String(stdout ?? ""),
@@ -236,6 +235,23 @@ export function piInvocation(): string {
 		return `"${process.execPath}" "${script}"`;
 	}
 	return "pi";
+}
+
+/**
+ * 解析 gittree/ghostctl 可执行文件:
+ * 优先 PATH,兜底 ~/.local/bin(Ghostty 新窗口的非交互 shell 不含该路径)。
+ */
+export function resolveBin(name: "gittree" | "ghostctl"): string {
+	const local = path.join(os.homedir(), ".local", "bin", name);
+	for (const c of [name, local]) {
+		try {
+			fs.accessSync(c, fs.constants.X_OK);
+			return c;
+		} catch {
+			/* 尝试下一个 */
+		}
+	}
+	return name; // 让 execFile 报错更直观
 }
 
 const TAB_ID_RE = /id=([0-9A-Fa-f-]{8,})/;
@@ -297,7 +313,7 @@ export async function dispatchStep(
 
 	// 1. worktree(事件 worktree_created)
 	const createRes = await run(
-		opts.gittreeBin ?? "gittree",
+		opts.gittreeBin ?? resolveBin("gittree"),
 		["create", wtName],
 		workflow.repo_path,
 	);
@@ -344,8 +360,8 @@ export async function dispatchStep(
 	// 4. ghostctl new-window(事件 step_tab_opened,记录 tab_id)
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
 	const tabRes = await run(
-		opts.ghostctlBin ?? "ghostctl",
-		["new-tab", "--cwd", wtPath, "--command", cmd, "--input", pointer],
+		opts.ghostctlBin ?? resolveBin("ghostctl"),
+		["new-window", "--cwd", wtPath, "--command", cmd, "--input", pointer],
 		workflow.repo_path,
 	);
 	if (tabRes.code !== 0) {

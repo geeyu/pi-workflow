@@ -331,7 +331,8 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		}
 		const results: string[] = [];
 		for (const token of tokens) {
-			const step = getStep(db, token) ?? getStep(db, `${wfId}-${token}`);
+			const step: StepRow | undefined =
+				getStep(db, token) ?? getStep(db, `${wfId}-${token}`);
 			if (!step) {
 				results.push(`✗ ${token}: 步骤不存在`);
 				continue;

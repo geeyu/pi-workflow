@@ -8,7 +8,7 @@
  *
  * 测试可用环境变量 WF_DB_PATH 覆盖数据库位置。
  */
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -539,11 +539,11 @@ export function listWorkflows(
 			.prepare(
 				"SELECT * FROM workflow WHERE status = ? ORDER BY created_at DESC",
 			)
-			.all(status) as WorkflowRow[];
+			.all(status) as unknown as WorkflowRow[];
 	}
 	return db
 		.prepare("SELECT * FROM workflow ORDER BY created_at DESC")
-		.all() as WorkflowRow[];
+		.all() as unknown as WorkflowRow[];
 }
 
 export function listActiveWorkflows(db: DatabaseSync): WorkflowRow[] {
@@ -551,7 +551,7 @@ export function listActiveWorkflows(db: DatabaseSync): WorkflowRow[] {
 		.prepare(
 			"SELECT * FROM workflow WHERE status NOT IN ('completed', 'aborted') ORDER BY created_at DESC",
 		)
-		.all() as WorkflowRow[];
+		.all() as unknown as WorkflowRow[];
 }
 
 export function updateWorkflowStatus(
@@ -590,8 +590,8 @@ export function buildUpdate(
 		.map((k) => `${k} = ?`)
 		.join(" AND ");
 	db.prepare(`UPDATE ${table} SET ${setSql} WHERE ${whereSql}`).run(
-		...keys.map((k) => patch[k]),
-		...Object.values(where),
+		...keys.map((k) => patch[k] as SQLInputValue),
+		...Object.values(where) as SQLInputValue[],
 	);
 }
 
@@ -610,7 +610,7 @@ export function createWave(
 	).run(workflowId, seq, note ?? null, now());
 	return db
 		.prepare("SELECT * FROM workflow_waves WHERE workflow_id = ? AND seq = ?")
-		.get(workflowId, seq) as WaveRow;
+		.get(workflowId, seq) as unknown as WaveRow;
 }
 
 export function getWave(
@@ -620,13 +620,13 @@ export function getWave(
 ): WaveRow | undefined {
 	return db
 		.prepare("SELECT * FROM workflow_waves WHERE workflow_id = ? AND seq = ?")
-		.get(workflowId, seq) as WaveRow | undefined;
+		.get(workflowId, seq) as unknown as WaveRow | undefined;
 }
 
 export function listWaves(db: DatabaseSync, workflowId: string): WaveRow[] {
 	return db
 		.prepare("SELECT * FROM workflow_waves WHERE workflow_id = ? ORDER BY seq")
-		.all(workflowId) as WaveRow[];
+		.all(workflowId) as unknown as WaveRow[];
 }
 
 // ────────────────────────────────────────────────────────────
@@ -679,7 +679,7 @@ export function getStepsByWorkflow(
 		.prepare(
 			"SELECT * FROM workflow_steps WHERE workflow_id = ? ORDER BY sort_order",
 		)
-		.all(workflowId) as StepRow[];
+		.all(workflowId) as unknown as StepRow[];
 }
 
 export function getStepsByWave(db: DatabaseSync, waveId: number): StepRow[] {
@@ -687,7 +687,7 @@ export function getStepsByWave(db: DatabaseSync, waveId: number): StepRow[] {
 		.prepare(
 			"SELECT * FROM workflow_steps WHERE wave_id = ? ORDER BY sort_order",
 		)
-		.all(waveId) as StepRow[];
+		.all(waveId) as unknown as StepRow[];
 }
 
 export function getStepDeps(db: DatabaseSync, stepId: string): string[] {
@@ -695,7 +695,7 @@ export function getStepDeps(db: DatabaseSync, stepId: string): string[] {
 		.prepare(
 			"SELECT dep_id FROM workflow_step_deps WHERE step_id = ? ORDER BY dep_id",
 		)
-		.all(stepId) as Array<{ dep_id: string }>;
+		.all(stepId) as unknown as Array<{ dep_id: string }>;
 	return rows.map((r) => r.dep_id);
 }
 
@@ -763,7 +763,7 @@ export function stepStatusCounts(
 		.prepare(
 			"SELECT status, COUNT(*) AS n FROM workflow_steps WHERE workflow_id = ? GROUP BY status",
 		)
-		.all(workflowId) as Array<{ status: string; n: number }>;
+		.all(workflowId) as unknown as Array<{ status: string; n: number }>;
 	const out: Record<string, number> = {};
 	for (const r of rows) out[r.status] = r.n;
 	return out;
@@ -778,13 +778,13 @@ export function getRunningSteps(
 			.prepare(
 				"SELECT * FROM workflow_steps WHERE workflow_id = ? AND status IN ('dispatched','running') ORDER BY sort_order",
 			)
-			.all(workflowId) as StepRow[];
+			.all(workflowId) as unknown as StepRow[];
 	}
 	return db
 		.prepare(
 			"SELECT * FROM workflow_steps WHERE status IN ('dispatched','running') ORDER BY sort_order",
 		)
-		.all() as StepRow[];
+		.all() as unknown as StepRow[];
 }
 
 // ────────────────────────────────────────────────────────────
@@ -816,7 +816,7 @@ export function createAttempt(
 		.prepare(
 			"SELECT * FROM workflow_attempts WHERE step_id = ? AND attempt_no = ?",
 		)
-		.get(stepId, attemptNo) as AttemptRow;
+		.get(stepId, attemptNo) as unknown as AttemptRow;
 }
 
 export function getAttempt(
@@ -836,7 +836,7 @@ export function getLatestAttempt(
 		.prepare(
 			"SELECT * FROM workflow_attempts WHERE step_id = ? ORDER BY attempt_no DESC LIMIT 1",
 		)
-		.get(stepId) as AttemptRow | undefined;
+		.get(stepId) as unknown as AttemptRow | undefined;
 }
 
 export function getAttemptsByStep(
@@ -847,7 +847,7 @@ export function getAttemptsByStep(
 		.prepare(
 			"SELECT * FROM workflow_attempts WHERE step_id = ? ORDER BY attempt_no",
 		)
-		.all(stepId) as AttemptRow[];
+		.all(stepId) as unknown as AttemptRow[];
 }
 
 export function updateAttempt(
@@ -946,7 +946,7 @@ export function getEvents(
 	},
 ): EventRow[] {
 	const clauses: string[] = [];
-	const params: unknown[] = [];
+	const params: SQLInputValue[] = [];
 	if (opts.workflowId) {
 		clauses.push("workflow_id = ?");
 		params.push(opts.workflowId);
@@ -965,7 +965,7 @@ export function getEvents(
 		.prepare(
 			`SELECT * FROM workflow_events ${where} ORDER BY id DESC LIMIT ${limit}`,
 		)
-		.all(...params) as EventRow[];
+		.all(...params) as unknown as EventRow[];
 }
 
 // ────────────────────────────────────────────────────────────
@@ -981,7 +981,7 @@ export function workflowCost(
 } | null {
 	const rows = db
 		.prepare("SELECT * FROM v_workflow_cost WHERE workflow_id = ?")
-		.all(workflowId) as Array<{
+		.all(workflowId) as unknown as Array<{
 		cost_cents: number | null;
 		turns: number | null;
 		attempts: number | null;

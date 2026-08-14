@@ -244,7 +244,8 @@ export function verifyStep(
 		return { ok: false, error: `步骤不存在: ${stepId}` };
 	}
 	if (
-		![STEP_STATUS.reported, STEP_STATUS.waitingVerify].includes(step.status)
+		step.status !== STEP_STATUS.reported &&
+		step.status !== STEP_STATUS.waitingVerify
 	) {
 		return {
 			ok: false,
