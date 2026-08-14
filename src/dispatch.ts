@@ -246,25 +246,34 @@ function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
 		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。
 		const env = {
 			...process.env,
-			PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH ?? ""].join(":"),
+			PATH: [
+				"/opt/homebrew/bin",
+				"/usr/local/bin",
+				process.env.PATH ?? "",
+			].join(":"),
 		};
-		execFile(cmd, args, { cwd, timeout: 120_000, env }, (err, stdout, stderr) => {
-			if (!err) {
+		execFile(
+			cmd,
+			args,
+			{ cwd, timeout: 120_000, env },
+			(err, stdout, stderr) => {
+				if (!err) {
+					resolve({
+						code: 0,
+						stdout: String(stdout ?? ""),
+						stderr: String(stderr ?? ""),
+					});
+					return;
+				}
+				const errCode = (err as NodeJS.ErrnoException).code;
+				const code = typeof errCode === "number" ? errCode : 1;
 				resolve({
-					code: 0,
+					code,
 					stdout: String(stdout ?? ""),
 					stderr: String(stderr ?? ""),
 				});
-				return;
-			}
-			const errCode = (err as NodeJS.ErrnoException).code;
-			const code = typeof errCode === "number" ? errCode : 1;
-			resolve({
-				code,
-				stdout: String(stdout ?? ""),
-				stderr: String(stderr ?? ""),
-			});
-		});
+			},
+		);
 	});
 }
 
@@ -442,7 +451,10 @@ export async function dispatchStep(
 			stepId: step.id,
 			attemptId: attempt.id,
 			type: EVT.stepAborted,
-			payload: { reason: "new-tab 失败", detail: tabRes.stderr || tabRes.stdout },
+			payload: {
+				reason: "new-tab 失败",
+				detail: tabRes.stderr || tabRes.stdout,
+			},
 		});
 		return {
 			ok: false,
@@ -458,6 +470,16 @@ export async function dispatchStep(
 		workflow.repo_path,
 		wtPath,
 	);
+
+	// pointer 已注入子 pi 编辑器(--input 不带回车);等 pi 就绪后补回车提交为首条消息
+	if (tabId) {
+		await new Promise((r) => setTimeout(r, 4000));
+		await run(
+			opts.ghostctlBin ?? resolveBin("ghostctl"),
+			["key", "enter", "--to", tabId],
+			workflow.repo_path,
+		);
+	}
 
 	buildUpdate(
 		db,

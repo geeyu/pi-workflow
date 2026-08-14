@@ -273,10 +273,13 @@ async function main(): Promise<void> {
 	console.log("== T5 dispatch dry-run ==");
 	// 用 1.1(依赖 1 已完成;2 的依赖未完成会被依赖检查拒绝)
 	const stepDry = dbMod.getStep(db2, "demo-wf-1.1")!;
-	const dry = await dispatchMod.dispatchStep(db2, wf!, stepDry, { dryRun: true });
+	const dry = await dispatchMod.dispatchStep(db2, wf!, stepDry, {
+		dryRun: true,
+	});
 	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
+		dry.pointer!.includes("/wf context") &&
+			dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
@@ -290,7 +293,12 @@ async function main(): Promise<void> {
 		"dry-run 零副作用",
 	);
 	// 依赖未完成 → 拒绝派发
-	const blocked = await dispatchMod.dispatchStep(db2, wf!, dbMod.getStep(db2, "demo-wf-2")!, { dryRun: true });
+	const blocked = await dispatchMod.dispatchStep(
+		db2,
+		wf!,
+		dbMod.getStep(db2, "demo-wf-2")!,
+		{ dryRun: true },
+	);
 	assert(
 		!blocked.ok && blocked.error!.includes("依赖未完成"),
 		"依赖未完成拒绝派发",
@@ -335,7 +343,11 @@ async function main(): Promise<void> {
 	);
 	assert(scratchWf.ok, "scratch workflow 导入");
 	const fakeGhostctl = path.join(tmpDir, "fake-ghostctl.sh");
-	const wt1Path = path.join(scratchRepo, ".worktrees", "gittree-wf-scratch-wf-1");
+	const wt1Path = path.join(
+		scratchRepo,
+		".worktrees",
+		"gittree-wf-scratch-wf-1",
+	);
 	fs.writeFileSync(
 		fakeGhostctl,
 		`#!/bin/bash\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
@@ -360,10 +372,14 @@ async function main(): Promise<void> {
 	);
 	const attempt = dbMod.getLatestAttempt(db2, "scratch-wf-1");
 	assert(
-		attempt?.status === "running" && (attempt?.pointer?.includes("/wf context") ?? false),
+		attempt?.status === "running" &&
+			(attempt?.pointer?.includes("/wf context") ?? false),
 		"attempt 行:pointer 冻结",
 	);
-	assert(attempt?.task_md?.includes("## 输出契约") ?? false, "attempt 行:task_md 冻结");
+	assert(
+		attempt?.task_md?.includes("## 输出契约") ?? false,
+		"attempt 行:task_md 冻结",
+	);
 	const sWfAfter = dbMod.getWorkflow(db2, "scratch-wf")!;
 	assert(
 		/^[0-9a-f]{40}$/.test(sWfAfter.base_sha ?? ""),
