@@ -271,22 +271,29 @@ async function main(): Promise<void> {
 	assert(noDep.includes("不存在"), "缺失依赖 → 占位提示");
 
 	console.log("== T5 dispatch dry-run ==");
-	const step2 = dbMod.getStep(db2, "demo-wf-2")!;
-	const dry = await dispatchMod.dispatchStep(db2, wf!, step2, { dryRun: true });
-	assert(dry.ok && dry.dryRun, "dry-run 通过");
+	// 用 1.1(依赖 1 已完成;2 的依赖未完成会被依赖检查拒绝)
+	const stepDry = dbMod.getStep(db2, "demo-wf-1.1")!;
+	const dry = await dispatchMod.dispatchStep(db2, wf!, stepDry, { dryRun: true });
+	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 2"),
+		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
-		dry.worktree === "wf-demo-wf-2" &&
-			dry.worktreePath!.includes(".worktrees/gittree-wf-demo-wf-2"),
+		dry.worktree === "wf-demo-wf-1.1" &&
+			dry.worktreePath!.includes(".worktrees/gittree-wf-demo-wf-1.1"),
 		`worktree 命名(${dry.worktreePath})`,
 	);
-	const unchanged = dbMod.getStep(db2, "demo-wf-2")!;
+	const unchanged = dbMod.getStep(db2, "demo-wf-1.1")!;
 	assert(
 		unchanged.status === "pending" && unchanged.worktree === null,
 		"dry-run 零副作用",
+	);
+	// 依赖未完成 → 拒绝派发
+	const blocked = await dispatchMod.dispatchStep(db2, wf!, dbMod.getStep(db2, "demo-wf-2")!, { dryRun: true });
+	assert(
+		!blocked.ok && blocked.error!.includes("依赖未完成"),
+		"依赖未完成拒绝派发",
 	);
 
 	console.log(
@@ -328,9 +335,10 @@ async function main(): Promise<void> {
 	);
 	assert(scratchWf.ok, "scratch workflow 导入");
 	const fakeGhostctl = path.join(tmpDir, "fake-ghostctl.sh");
+	const wt1Path = path.join(scratchRepo, ".worktrees", "gittree-wf-scratch-wf-1");
 	fs.writeFileSync(
 		fakeGhostctl,
-		'#!/bin/bash\necho "已创建窗口 (id=abcdef0123456789)"\n',
+		`#!/bin/bash\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
 		{ mode: 0o755 },
 	);
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;
@@ -352,10 +360,10 @@ async function main(): Promise<void> {
 	);
 	const attempt = dbMod.getLatestAttempt(db2, "scratch-wf-1");
 	assert(
-		attempt?.status === "running" && attempt?.pointer?.includes("/wf context"),
+		attempt?.status === "running" && (attempt?.pointer?.includes("/wf context") ?? false),
 		"attempt 行:pointer 冻结",
 	);
-	assert(attempt?.task_md?.includes("## 输出契约"), "attempt 行:task_md 冻结");
+	assert(attempt?.task_md?.includes("## 输出契约") ?? false, "attempt 行:task_md 冻结");
 	const sWfAfter = dbMod.getWorkflow(db2, "scratch-wf")!;
 	assert(
 		/^[0-9a-f]{40}$/.test(sWfAfter.base_sha ?? ""),
@@ -386,7 +394,6 @@ async function main(): Promise<void> {
 			s11After.files_changed!.includes("auth/cache.ts"),
 		"step 报告字段落库",
 	);
-	const a11 = dbMod.getLatestAttempt(db2, "demo-wf-1.1");
 	// 注意:1.1 未派发过 → 无 attempt,直接更新 step,合理
 	assert(s11After.status === "reported", "步骤状态 reported");
 	// gate 步骤:done → waiting-verify

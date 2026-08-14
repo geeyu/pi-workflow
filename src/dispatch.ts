@@ -186,18 +186,52 @@ export function renderTaskMd(
 }
 
 /** 组装短指引(注入子 pi 首条消息,不传长任务正文) */
+/**
+ * 组装短指引(注入子 pi 首条消息,不传长任务正文)。
+ * 纯 ASCII:中文经 AppleScript input text 注入会乱码(编码问题);
+ * 任务详情(markdown,可含中文)存 DB,子 agent 经 /wf context 读取。
+ */
 export function buildPointer(
 	workflowId: string,
 	dotted: string,
 	waveSeq: number,
 ): string {
 	return [
-		`[wf] 任务已就绪`,
+		`[wf] task ready`,
 		`workflow: ${workflowId} | step: ${dotted} | wave: ${waveSeq}`,
-		`→ 运行 /wf context 查看任务详情(markdown 已存数据库)`,
-		`→ 完成后运行 /wf done ${dotted} <JSON> 回报`,
-		`→ 失败运行 /wf fail ${dotted} <原因>`,
+		`-> run /wf context to view task (markdown stored in DB)`,
+		`-> when done: /wf done ${dotted} <JSON>`,
+		`-> on failure: /wf fail ${dotted} <reason>`,
 	].join("\n");
+}
+
+/** 按 cwd 反查 terminal id(ghostctl layout --json;new-tab 输出的 tab id 每次变化不可用) */
+async function findTerminalIdByCwd(
+	ghostctlBin: string,
+	cwd: string,
+	targetCwd: string,
+): Promise<string | null> {
+	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+	if (res.code !== 0) return null;
+	try {
+		const layout = JSON.parse(res.stdout) as {
+			windows: Array<{
+				tabs: Array<{ terminals: Array<{ id: string; cwd?: string }> }>;
+			}>;
+		};
+		for (const w of layout.windows) {
+			for (const t of w.tabs) {
+				for (const term of t.terminals) {
+					if (term.cwd && path.resolve(term.cwd) === path.resolve(targetCwd)) {
+						return term.id;
+					}
+				}
+			}
+		}
+	} catch {
+		return null;
+	}
+	return null;
 }
 
 interface RunResult {
@@ -260,8 +294,6 @@ export function resolveBin(name: "gittree" | "ghostctl"): string {
 	return name; // 让 execFile 报错更直观
 }
 
-const TAB_ID_RE = /id=([0-9A-Fa-f-]{8,})/;
-
 export interface DispatchOptions {
 	dryRun?: boolean;
 	/** 覆盖 gittree/ghostctl 可执行文件(测试用) */
@@ -298,6 +330,19 @@ export async function dispatchStep(
 			ok: false,
 			stepId: step.id,
 			error: `状态 ${step.status} 不允许派发(仅 ${[...DISPATCHABLE].join("/")})`,
+		};
+	}
+
+	// 依赖未完成拒绝派发(设计 §4.3 wave 顺序语义:先依赖,后并行,再后续)
+	if (!depsDone(db, step)) {
+		const pending = getStepDeps(db, step.id).filter((depId) => {
+			const dep = getStep(db, depId);
+			return !dep || !["done", "skipped"].includes(dep.status);
+		});
+		return {
+			ok: false,
+			stepId: step.id,
+			error: `依赖未完成,先完成: ${pending.join(", ")}`,
 		};
 	}
 
@@ -363,11 +408,12 @@ export async function dispatchStep(
 	// 3. attempt 行(冻结 task_md + pointer)
 	const attempt = createAttempt(db, step.id, { taskMd, pointer });
 
-	// 4. ghostctl new-window(事件 step_tab_opened,记录 tab_id)
+	// 4. ghostctl new-tab(事件 step_tab_opened,记录 tab_id)
+	// 子任务开 tab(主编排者在窗口),tab 落在当前焦点窗口(ghostctl 已支持)
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
 	const tabRes = await run(
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
-		["new-window", "--cwd", wtPath, "--command", cmd, "--input", pointer],
+		["new-tab", "--cwd", wtPath, "--command", cmd, "--input", pointer],
 		workflow.repo_path,
 	);
 	if (tabRes.code !== 0) {
@@ -376,7 +422,7 @@ export async function dispatchStep(
 			"workflow_attempts",
 			{
 				status: "aborted",
-				error: `new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
+				error: `new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
 			},
 			{ id: attempt.id },
 		);
@@ -386,7 +432,7 @@ export async function dispatchStep(
 			"workflow_steps",
 			{
 				status: "failed",
-				error: `new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
+				error: `new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
 				updated_at: Date.now(),
 			},
 			{ id: step.id },
@@ -396,17 +442,22 @@ export async function dispatchStep(
 			stepId: step.id,
 			attemptId: attempt.id,
 			type: EVT.stepAborted,
-			payload: { reason: "new-window 失败", detail: tabRes.stderr || tabRes.stdout },
+			payload: { reason: "new-tab 失败", detail: tabRes.stderr || tabRes.stdout },
 		});
 		return {
 			ok: false,
 			stepId: step.id,
 			worktree: wtName,
-			error: `ghostctl new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
+			error: `ghostctl new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
 		};
 	}
-	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
-	const tabId = tabMatch ? tabMatch[1] : null;
+
+	// new-tab 输出的是每次变化的 tab id;按 cwd 反查稳定的 terminal id 存库(P2 监听用)
+	const tabId = await findTerminalIdByCwd(
+		opts.ghostctlBin ?? resolveBin("ghostctl"),
+		workflow.repo_path,
+		wtPath,
+	);
 
 	buildUpdate(
 		db,
