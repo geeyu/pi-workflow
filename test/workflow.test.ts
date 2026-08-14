@@ -350,7 +350,7 @@ async function main(): Promise<void> {
 	);
 	fs.writeFileSync(
 		fakeGhostctl,
-		`#!/bin/bash\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
+		`#!/bin/bash\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-test-1","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
 		{ mode: 0o755 },
 	);
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;
@@ -360,6 +360,12 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
+	const boundWin = dbMod.getWorkflowMeta(
+		db2,
+		"scratch-wf",
+		"ghostty_window_id",
+	);
+	assert(boundWin === "win-test-1", "workflow 绑定焦点窗口(meta)");
 	assert(real.tabId === "abcdef0123456789", `tab id 解析(${real.tabId})`);
 	assert(
 		fs.existsSync(path.join(scratchRepo, ".worktrees/gittree-wf-scratch-wf-1")),

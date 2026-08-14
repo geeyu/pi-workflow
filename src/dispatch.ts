@@ -26,6 +26,8 @@ import {
 	getStep,
 	getStepDeps,
 	getStepMeta,
+	getWorkflowMeta,
+	setWorkflowMeta,
 } from "./db.ts";
 
 export interface DispatchResult {
@@ -207,6 +209,55 @@ export function buildPointer(
 
 /** new-tab 输出的 tab id(稳定,layout 中可定位) */
 const TAB_ID_RE = /id=(tab-[0-9a-f]+)/;
+
+/** workflow 绑定的 Ghostty 窗口 meta key */
+export const WF_WINDOW_META_KEY = "ghostty_window_id";
+
+interface WfWindowInfo {
+	id: string;
+	front: boolean;
+}
+
+function parseLayout(raw: string): WfWindowInfo[] | null {
+	try {
+		const l = JSON.parse(raw) as {
+			windows: Array<{ id: string; front?: boolean }>;
+		};
+		return l.windows.map((w) => ({ id: w.id, front: Boolean(w.front) }));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * workflow 绑定窗口(设计:一次 workflow 一个完整窗口流程):
+ * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata),之后所有子任务
+ * tab 固定开进该窗口;绑定窗口已关闭则回退焦点窗口并重新绑定。
+ * 返回窗口序号(1 起,供 ghostctl --window),拿不到返回 undefined。
+ */
+async function resolveWorkflowWindow(
+	db: DatabaseSync,
+	ghostctlBin: string,
+	cwd: string,
+	workflowId: string,
+): Promise<number | undefined> {
+	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+	if (res.code !== 0) return undefined;
+	const windows = parseLayout(res.stdout);
+	if (!windows || windows.length === 0) return undefined;
+
+	const bound = getWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY) as
+		| string
+		| undefined;
+	let idx = bound ? windows.findIndex((w) => w.id === bound) : -1;
+	if (idx === -1) {
+		// 未绑定或绑定窗口已关闭 → 取当前焦点窗口并重新绑定
+		const target = windows.find((w) => w.front) ?? windows[0];
+		idx = windows.findIndex((w) => w.id === target.id);
+		setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, target.id);
+	}
+	return idx >= 0 ? idx + 1 : undefined;
+}
 
 /**
  * 反查 terminal id(ghostctl layout --json):
@@ -436,11 +487,21 @@ export async function dispatchStep(
 	const attempt = createAttempt(db, step.id, { taskMd, pointer });
 
 	// 4. ghostctl new-tab(事件 step_tab_opened,记录 tab_id)
-	// 子任务开 tab(主编排者在窗口),tab 落在当前焦点窗口(ghostctl 已支持)
+	// 子任务开 tab,固定开进 workflow 绑定窗口(不受用户切焦点影响)
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
+	const tabArgs = ["new-tab", "--cwd", wtPath, "--command", cmd, "--input", pointer];
+	const winIndex = await resolveWorkflowWindow(
+		db,
+		opts.ghostctlBin ?? resolveBin("ghostctl"),
+		workflow.repo_path,
+		workflow.id,
+	);
+	if (winIndex !== undefined) {
+		tabArgs.splice(1, 0, "--window", String(winIndex));
+	}
 	const tabRes = await run(
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
-		["new-tab", "--cwd", wtPath, "--command", cmd, "--input", pointer],
+		tabArgs,
 		workflow.repo_path,
 	);
 	if (tabRes.code !== 0) {
