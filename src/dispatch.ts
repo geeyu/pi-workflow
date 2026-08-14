@@ -208,7 +208,13 @@ interface RunResult {
 
 function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
 	return new Promise((resolve) => {
-		execFile(cmd, args, { cwd, timeout: 120_000 }, (err, stdout, stderr) => {
+		// Ghostty 新窗口的非交互 shell 的 PATH 极简(无 brew),会命中系统旧版
+		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。
+		const env = {
+			...process.env,
+			PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH ?? ""].join(":"),
+		};
+		execFile(cmd, args, { cwd, timeout: 120_000, env }, (err, stdout, stderr) => {
 			if (!err) {
 				resolve({
 					code: 0,
@@ -374,6 +380,24 @@ export async function dispatchStep(
 			},
 			{ id: attempt.id },
 		);
+		// 步骤回退为 failed(可重派),避免卡在 dispatched
+		buildUpdate(
+			db,
+			"workflow_steps",
+			{
+				status: "failed",
+				error: `new-window 失败: ${tabRes.stderr || tabRes.stdout}`,
+				updated_at: Date.now(),
+			},
+			{ id: step.id },
+		);
+		addEvent(db, {
+			workflowId: workflow.id,
+			stepId: step.id,
+			attemptId: attempt.id,
+			type: EVT.stepAborted,
+			payload: { reason: "new-window 失败", detail: tabRes.stderr || tabRes.stdout },
+		});
 		return {
 			ok: false,
 			stepId: step.id,
