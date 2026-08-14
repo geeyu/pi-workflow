@@ -12,6 +12,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** 本扩展目录(兼容 jiti 的 CJS/ESM 两种加载) */
+const EXT_DIR =
+	typeof __dirname !== "undefined"
+		? __dirname
+		: path.dirname(fileURLToPath(import.meta.url));
 import {
 	ATTEMPT_STATUS,
 	type StepRow,
@@ -564,7 +571,6 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			notify(ctx, `步骤不存在: ${token}`, "error");
 			return;
 		}
-		const wf = getWorkflow(db, step.workflow_id);
 		const attempts = getAttemptsByStep(db, step.id);
 		const events = getEvents(db, { stepId: step.id, limit: 20 });
 		const expectations = parseExpectations(step.expectations);
@@ -619,6 +625,11 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			`[wf] 最近 ${lines.length} 条事件${wfId ? `(${wfId})` : "(全部)"}`,
 		);
 	}
+
+	// ── 注册本插件 skill(使用与排查手册)──────────────────
+	pi.on("resources_discover", async (_event, _ctx) => {
+		return { skillPaths: [path.join(EXT_DIR, "skill")] };
+	});
 
 	// ── 子 pi 身份:session_start 设置标题 ──────────────────
 	pi.on("session_start", async (_event, ctx) => {

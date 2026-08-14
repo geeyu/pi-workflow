@@ -15,18 +15,40 @@ pi install git:github.com/geeyu/pi-workflow
 
 依赖:`node:sqlite`(Node 22 内置)+ gittree + ghostctl(`~/.local/bin/`)。
 
+## 技能与辅助脚本
+
+- **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 创建/执行/子任务/核对/**排查手册**(§5 常见问题对照表 + SQL 查询 + 重置)。
+- **CLI**:`bin/wf`(已软链 `~/.local/bin/wf`)—— 不依赖 pi 交互的创建/执行/排查:
+
+```bash
+wf doctor               # 环境自检(node/gittree/ghostctl/python3/DB)
+wf plan-init <name> "<目标>" [--repo <path>]   # 生成 plan.json 模板
+wf import plan.json     # 校验 + 落库
+wf status [--json]      # 状态全景
+wf tree / wf step <id>  # 任务树 / 单步详情
+wf events [--follow]    # 审计流
+wf dispatch <dotted...> [--dry-run]  # 派发(无头)
+wf verify <id> approve|reject / wf done <id> '<JSON>' / wf fail <id> <原因>
+wf clean / wf debug     # 清理 / 诊断
+```
+
 ## 文件结构
 
 ```text
 src/
-├── index.ts        # /wf 命令族 + widget + 子 pi 身份绑定(标题)
+├── index.ts        # /wf 命令族 + widget + 子 pi 身份绑定 + skill 注册
+├── cli.ts          # 辅助 CLI(与插件共享核心逻辑,bin/wf 入口)
 ├── db.ts           # node:sqlite 封装:schema 迁移(user_version)、读写、事件双写
 ├── orchestrator.ts # 核心流程:importPlan / reportDone / reportFail / verifyStep(纯逻辑,可测)
-├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引 + ghostctl new-window
+├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引 + ghostctl new-tab(绑定窗口)
 ├── validate.ts     # 计划 JSON 校验(层级点号 id / agent / deps 无环)+ packDotted
 └── agents.ts       # agent 发现(~/.pi/agent/agents/*.md,frontmatter 格式,零依赖)
+skill/
+└── SKILL.md        # 使用与排查手册(自动注册)
+bin/
+└── wf              # CLI 入口(软链 ~/.local/bin/wf)
 test/
-└── workflow.test.ts # P1 验收测试(71 断言)
+└── workflow.test.ts # 验收测试(73 断言)
 ```
 
 ## 使用(编排者侧,仓库根目录)

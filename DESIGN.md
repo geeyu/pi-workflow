@@ -54,14 +54,19 @@
 ```text
 workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 ├── src/
-│   ├── index.ts        # 入口:/wf 命令族 + widget + 子 pi 身份绑定
+│   ├── index.ts        # 入口:/wf 命令族 + widget + 子 pi 身份绑定 + skill 注册
+│   ├── cli.ts          # 辅助 CLI(创建/执行/排查,bin/wf 入口)
 │   ├── db.ts           # node:sqlite 封装:schema 迁移、读写、事件写入
 │   ├── orchestrator.ts # 编排流程:import→dispatch→verify→merge→goal-check→next(纯逻辑,可测)
-│   ├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引注入 + ghostctl new-window(身份 env)
+│   ├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引注入 + ghostctl new-tab(绑定窗口)
 │   ├── validate.ts     # 计划 JSON 校验(层级 id、agent 存在、deps 无环、期望格式)
 │   └── agents.ts       # agent 发现(零依赖,frontmatter 解析)
+├── skill/
+│   └── SKILL.md        # 使用与排查手册(经 resources_discover 自动注册)
+├── bin/
+│   └── wf              # CLI 入口(软链 ~/.local/bin/wf)
 ├── test/
-│   └── workflow.test.ts # 验收测试(71 断言)
+│   └── workflow.test.ts # 验收测试(73 断言)
 ├── DESIGN.md           # 本设计文档
 ├── README.md           # 使用说明
 └── package.json        # pi.extensions 入口声明 + npm test
@@ -620,7 +625,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 ### 实施状态
 
-- **P1 派发闭环 ✅(2026-08)** — 见 `~/.pi/agent/extensions/workflow/`(src/: index/orchestrator/dispatch/db/validate/agents + test/: 71 断言验收测试);
+- **P1 派发闭环 ✅(2026-08)** — 见 `~/.pi/agent/extensions/workflow/`(src/: index/cli/orchestrator/dispatch/db/validate/agents + skill/ + bin/ + test/: 73 断言验收测试);
 - P2-P5 待实施,按上表推进。
 
 ---

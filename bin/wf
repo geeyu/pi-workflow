@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# pi-workflow CLI 入口(创建/执行/排查,与插件共享核心逻辑)
+# 用法见:wf help 或 skill/SKILL.md §6
+SELF="${BASH_SOURCE[0]}"
+if [ -L "$SELF" ]; then
+	LINK="$(readlink "$SELF")"
+	case "$LINK" in
+		/*) SELF="$LINK" ;;
+		*) SELF="$(dirname "$SELF")/$LINK" ;;
+	esac
+fi
+DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+exec node --experimental-strip-types "$DIR/src/cli.ts" "$@"

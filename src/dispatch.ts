@@ -489,7 +489,15 @@ export async function dispatchStep(
 	// 4. ghostctl new-tab(事件 step_tab_opened,记录 tab_id)
 	// 子任务开 tab,固定开进 workflow 绑定窗口(不受用户切焦点影响)
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
-	const tabArgs = ["new-tab", "--cwd", wtPath, "--command", cmd, "--input", pointer];
+	const tabArgs = [
+		"new-tab",
+		"--cwd",
+		wtPath,
+		"--command",
+		cmd,
+		"--input",
+		pointer,
+	];
 	const winIndex = await resolveWorkflowWindow(
 		db,
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
