@@ -205,24 +205,42 @@ export function buildPointer(
 	].join("\n");
 }
 
-/** 按 cwd 反查 terminal id(ghostctl layout --json;new-tab 输出的 tab id 每次变化不可用) */
-async function findTerminalIdByCwd(
+/** new-tab 输出的 tab id(稳定,layout 中可定位) */
+const TAB_ID_RE = /id=(tab-[0-9a-f]+)/;
+
+/**
+ * 反查 terminal id(ghostctl layout --json):
+ * 优先按 new-tab 返回的 tab id;兜底按 cwd / 终端名(worktree 目录名)匹配。
+ * 新开终端的 cwd 字段常为空(AppleScript 限制),故 name 匹配是主要兜底。
+ */
+async function findTerminalId(
 	ghostctlBin: string,
 	cwd: string,
-	targetCwd: string,
+	tabId: string | null,
+	wtPath: string,
 ): Promise<string | null> {
 	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
 	if (res.code !== 0) return null;
 	try {
 		const layout = JSON.parse(res.stdout) as {
 			windows: Array<{
-				tabs: Array<{ terminals: Array<{ id: string; cwd?: string }> }>;
+				tabs: Array<{
+					id: string;
+					terminals: Array<{ id: string; cwd?: string; name?: string }>;
+				}>;
 			}>;
 		};
+		const wtBase = path.basename(wtPath);
 		for (const w of layout.windows) {
 			for (const t of w.tabs) {
+				if (tabId && t.id === tabId && t.terminals.length > 0) {
+					return t.terminals[0].id;
+				}
 				for (const term of t.terminals) {
-					if (term.cwd && path.resolve(term.cwd) === path.resolve(targetCwd)) {
+					if (term.cwd && path.resolve(term.cwd) === path.resolve(wtPath)) {
+						return term.id;
+					}
+					if (term.name && term.name.endsWith(wtBase)) {
 						return term.id;
 					}
 				}
@@ -464,10 +482,13 @@ export async function dispatchStep(
 		};
 	}
 
-	// new-tab 输出的是每次变化的 tab id;按 cwd 反查稳定的 terminal id 存库(P2 监听用)
-	const tabId = await findTerminalIdByCwd(
+	// new-tab 输出稳定 tab id;反查 terminal id 存库(P2 监听用)
+	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
+	const tabIdFromOutput = tabMatch ? tabMatch[1] : null;
+	const tabId = await findTerminalId(
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
 		workflow.repo_path,
+		tabIdFromOutput,
 		wtPath,
 	);
 
