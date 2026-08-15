@@ -1,0 +1,42 @@
+{
+	"name": "wf-enhance2",
+	"title": "固化 AI 编排操作:wf inject/poll/session/open-tab/fix-tab + skill 速查",
+	"goal": "把编排者(AI/人)反复手动执行的终端操作封装成 wf CLI 子命令与 skill 速查章节:① wf inject 向指定步骤 tab/终端注入指令(自动回车);② wf poll 轮询 workflow 状态直到目标状态或超时;③ wf session 读取主控 pi 会话最近文本;④ wf open-tab 手动为步骤开子任务 tab 并绑定状态;⑤ wf fix-tab 修复步骤 tab 状态(排查用);⑥ skill/SKILL.md 新增「AI 编排操作速查」章节,给出完整操作组合模板",
+	"repoPath": "/Users/geeyu/.pi/agent/extensions/workflow",
+	"wave": 1,
+	"waveNote": "AI 操作固化",
+	"steps": [
+		{
+			"id": "1",
+			"title": "输出方案",
+			"agent": "planner",
+			"task": "阅读 {{root}}/src/cli.ts(现有子命令与 resolveWorkflowId/getStep 等工具函数)、{{root}}/src/dispatch.ts(piInvocation/worktreePath/findTerminalId 相关)、{{root}}/skill/SKILL.md 现有结构,设计六个能力:① wf inject <target> <text>:target 支持 terminal id 前缀/完整 step id/dotted+workflow,解析出 terminal id 后 ghostctl input+key enter;② wf poll [workflowId] [--until <status>] [--timeout <sec>] [--interval <sec>]:轮询直到全部步骤达目标状态或超时,退出码 0=达成/1=超时;③ wf session [workflowId|--last]:打印主控 pi 会话(~/.pi/agent/sessions/<cwd编码目录>/*.jsonl)最近 N 行文本;④ wf open-tab <stepId>:手动开子 tab(env PI_WF_*+node+pi 绝对路径,new-tab 到锁定窗口)并更新 DB running+tab_id;⑤ wf fix-tab <stepId> <terminalId|auto>:把步骤状态修复为 running+tab_id(排查用,输出明确提示);⑥ skill「AI 编排操作速查」章节大纲(含 下发任务→轮询→注入→收尾 组合模板)。输出各命令的参数/行为/退出码定义。",
+			"expectations": ["五个命令参数行为定义完整", "inject 的 target 解析规则明确", "poll 的退出码与轮询语义明确", "skill 速查章节大纲含组合模板"]
+		},
+		{
+			"id": "1.1",
+			"title": "实现 CLI 命令",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 在 {{root}}/src/cli.ts 实现 wf inject / wf poll / wf session / wf open-tab / wf fix-tab 五个子命令(help 同步更新)。要点:inject 复用 resolveBin('ghostctl')+run 发 input+enter;poll 复用 stepStatusCounts/getStepsByWorkflow 轮询打印并遵守退出码;session 读 ~/.pi/agent/sessions/ 下 cwd 编码目录的最新 jsonl 末尾文本(参考现有目录名 --Users-geeyu-.pi-agent-extensions-workflow-- 的编码规则);open-tab 用 piInvocation 构造 env 命令、new-tab --window-id 锁定窗口(workflow_metadata.ghostty_window_id)并反查 terminal id 写回步骤。实现后运行 node --experimental-strip-types test/workflow.test.ts 全绿并补充对应测试(如 inject 参数解析、poll 退出码、session 目录选择)。提交。",
+			"expectations": ["五个命令可运行且行为符合方案", "inject 支持三种 target", "poll 退出码正确", "open-tab 复用锁定窗口", "测试全绿含新用例"]
+		},
+		{
+			"id": "1.2",
+			"title": "skill 速查章节",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 在 {{root}}/skill/SKILL.md 新增「AI 编排操作速查」章节:① 高频操作一览表(wf inject/poll/session/open-tab/fix-tab/cleanup/tabs/status/tree/events 的命令与用途);② 组合模板:下发任务(dispatch)→引导子 agent(wf inject 到子 tab 注入英文指令)→轮询完成(wf poll --until done)→核对(wf verify)→合并(wf merge)→目标把关(goal-check);③ 常见故障的快捷修复序列(wf tabs 查存活→wf fix-tab 修复状态→wf open-tab 重开 tab→wf cleanup 清理)。同时在 §5 排查表补充指向速查章节的链接。提交。",
+			"expectations": ["速查章节含操作一览表与组合模板", "故障修复序列完整", "排查表有交叉引用"]
+		},
+		{
+			"id": "2",
+			"title": "整体评审",
+			"agent": "reviewer",
+			"deps": ["1.1", "1.2"],
+			"gate": true,
+			"task": "评审 {{steps.1.1.summary}} 与 {{steps.1.2.summary}} 的实现:① 五个命令的行为/退出码是否符合方案,是否有安全风险(inject 目标解析歧义、fix-tab 误改状态);② skill 速查是否覆盖完整流程。逐条核对期望,输出结论。",
+			"expectations": ["命令行为与方案一致且安全", "速查章节完整", "测试全绿"]
+		}
+	]
+}
