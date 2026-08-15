@@ -47,6 +47,11 @@ import {
 import { dispatchStep, resolveBin } from "./dispatch.ts";
 import { mergeWave } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
+import {
+	buildBoard,
+	renderBoardHtml,
+	renderBoardText,
+} from "./board.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
 import { resolveIdentity } from "./index.ts";
 import type { PlanInput } from "./validate.ts";
@@ -172,6 +177,32 @@ function printTree(wfId?: string): void {
 			`${"  ".repeat(depth - 1)}${icon} ${s.id.slice(wf.length + 1)} ${s.title} [${s.agent}${s.gate ? "/gate" : ""}]${s.error ? ` ✗ ${s.error}` : ""}`,
 		);
 	}
+}
+
+function cmdBoard(args: string[]): void {
+	const htmlIdx = args.indexOf("--html");
+	const htmlPath = htmlIdx !== -1 ? args[htmlIdx + 1] : undefined;
+	const waveIdx = args.indexOf("--wave");
+	const waveSeq = waveIdx !== -1 ? Number(args[waveIdx + 1]) : undefined;
+	const wfId = resolveWorkflowId(
+		args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a)),
+	);
+	if (!wfId) {
+		console.error("无法确定 workflow(传 id 或在仓库根目录运行)");
+		process.exit(1);
+	}
+	const board = buildBoard(db, wfId, waveSeq);
+	if (!board) {
+		console.error(`✗ workflow 不存在: ${wfId}`);
+		process.exit(1);
+	}
+	if (htmlPath) {
+		const out = path.resolve(process.cwd(), htmlPath);
+		fs.writeFileSync(out, renderBoardHtml(board), "utf-8");
+		console.log(`✓ 看板已导出: ${out}`);
+		return;
+	}
+	for (const line of renderBoardText(board)) console.log(line);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -726,6 +757,9 @@ async function main(): Promise<void> {
 		case "tree":
 			printTree(args[0]);
 			break;
+		case "board":
+			cmdBoard(args);
+			break;
 		case "step":
 			cmdStep(args[0]);
 			break;
@@ -778,6 +812,7 @@ async function main(): Promise<void> {
   wf import <plan.json>                                      校验 + 落库
   wf status [--json] [wfId]                                  状态全景
   wf tree [wfId]                                             层级任务树
+  wf board [wfId] [--wave N] [--html out.html]                   看板(终端列布局/导出 HTML)
   wf step <id>                                               单步详情
   wf events [wfId] [N] [--follow]                            审计流
   wf dispatch <dotted...> [--workflow <id>] [--dry-run]      派发子任务(真实开 tab)

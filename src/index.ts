@@ -68,6 +68,11 @@ import {
 	startMonitor,
 } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
+import {
+	buildBoard,
+	renderBoardHtml,
+	renderBoardText,
+} from "./board.ts";
 
 // ────────────────────────────────────────────────────────────
 // 身份解析
@@ -281,6 +286,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 						break;
 					case "status":
 						cmdStatus(ctx, rest);
+						break;
+					case "board":
+						cmdBoard(ctx, rest);
 						break;
 					case "tree":
 						cmdTree(ctx, rest);
@@ -596,6 +604,46 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		}
 		ctx.ui.setWidget("workflow-status", lines);
 		notify(ctx, `[wf] 状态已更新(${workflows.length} 个 workflow)`);
+	}
+
+	// ── /wf board [workflowId] [--wave N] [--html out.html] ──
+	function cmdBoard(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): void {
+		const htmlIdx = args.indexOf("--html");
+		const htmlPath = htmlIdx !== -1 ? args[htmlIdx + 1] : undefined;
+		const waveIdx = args.indexOf("--wave");
+		const waveSeq = waveIdx !== -1 ? Number(args[waveIdx + 1]) : undefined;
+		const wfId = resolveWorkflowId(
+			ctx,
+			args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a)),
+		);
+		if (!wfId) {
+			notify(
+				ctx,
+				"无法确定 workflow(在仓库根目录运行,或显式传 workflow id)",
+				"warning",
+			);
+			return;
+		}
+		const board = buildBoard(db, wfId, waveSeq);
+		if (!board) {
+			notify(ctx, `workflow 不存在: ${wfId}`, "error");
+			return;
+		}
+		if (htmlPath) {
+			try {
+				const out = path.resolve(ctx.cwd, htmlPath);
+				fs.writeFileSync(out, renderBoardHtml(board), "utf-8");
+				notify(ctx, `看板已导出: ${out}`);
+			} catch (e) {
+				notify(ctx, `导出失败: ${(e as Error).message}`, "error");
+			}
+			return;
+		}
+		ctx.ui.setWidget("workflow-board", renderBoardText(board));
+		notify(ctx, `[wf] ${wfId} 看板:${board.done}/${board.total} 完成`);
 	}
 
 	// ── /wf tree [workflowId] ───────────────────────────────

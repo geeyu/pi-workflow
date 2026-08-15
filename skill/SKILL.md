@@ -105,6 +105,14 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 /wf clean                                 # 清理残留 worktree / 归档
 ```
 
+## 4.5 看板
+
+```
+/wf board [workflowId] [--wave N]            # 终端 5 列看板(待办/进行中/待核对/完成/异常)
+/wf board <wf> --html out.html               # 导出单文件 HTML(浏览器打开/分享)
+wf board [workflowId] [--wave N] [--html out.html]
+```
+
 ## 5. 排查手册(重要)
 
 ### 5.1 先跑环境自检

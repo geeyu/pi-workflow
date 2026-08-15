@@ -909,6 +909,68 @@ async function main(): Promise<void> {
 		"重复 dotted 拒绝",
 	);
 
+	console.log("== T19 看板 buildBoard / 渲染 ==");
+	const boardMod = await import("../src/board.ts");
+	const demoBoard = boardMod.buildBoard(db2, "demo-wf");
+	assert(demoBoard !== null && demoBoard.total === 4, "看板 4 张卡片");
+	const colKeys = demoBoard!.columns.map((c) => c.key);
+	assert(
+		colKeys.join(",") === "todo,running,verify,done,abnormal",
+		"5 列顺序正确",
+	);
+	const doneCards = demoBoard!.columns.find((c) => c.key === "done")!.cards;
+	assert(doneCards.length === 2, "done 列 2 张");
+	const abnormalCards = demoBoard!.columns.find((c) => c.key === "abnormal")!.cards;
+	assert(
+		abnormalCards.length === 1 && abnormalCards[0].status === "needs-fix",
+		"异常列 needs-fix",
+	);
+	const text = boardMod.renderBoardText(demoBoard!);
+	assert(
+		text.some((l) => l.includes("待办")) && text.some((l) => l.includes("2/4")),
+		"文本看板含列头与进度",
+	);
+	const w2Board = boardMod.buildBoard(db2, "merge-wf", 2);
+	assert(w2Board !== null && w2Board.total === 1, "wave 2 过滤(1 张卡片)");
+	const html = boardMod.renderBoardHtml(demoBoard!);
+	assert(
+		html.includes("<!DOCTYPE html>") &&
+			html.includes("wf demo-wf 看板") &&
+			html.includes('<div class="board">'),
+		"HTML 看板结构",
+	);
+	const htmlEsc = boardMod.renderBoardHtml({
+		workflowId: 'x&<>"wf',
+		title: "t<>&",
+		goal: "g",
+		status: "running",
+		wave: null,
+		columns: [
+			{
+				key: "todo",
+				label: "待办",
+				cards: [
+					{
+						id: 'x&<>"wf-1',
+						dotted: "1",
+						title: "a<&>",
+						agent: "w",
+						status: "pending",
+						gate: false,
+						depth: 1,
+						summary: null,
+					},
+				],
+			},
+		],
+		total: 1,
+		done: 0,
+	});
+	assert(
+		!htmlEsc.includes('x&<>"wf-1') && htmlEsc.includes("x&amp;&lt;&gt;"),
+		"HTML 转义(XSS 防护)",
+	);
+
 	// 清理
 	try {
 		db2.close();
