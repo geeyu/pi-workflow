@@ -12,6 +12,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { canTransition, STEP_TRANSITIONS } from "./core/state.ts";
 
 export const DB_DIR = path.join(os.homedir(), ".pi", "agent", "workflows");
 export const DB_PATH =
@@ -731,6 +732,21 @@ export function updateStepStatus(
 	status: StepStatus,
 	extra?: { error?: string },
 ): void {
+	// 状态机接线(P0-4):强制校验非法迁移,给明确错误。同状态重复写入视为幂等。
+	const step = getStep(db, stepId);
+	if (!step) {
+		throw new Error(`步骤不存在: ${stepId}`);
+	}
+	const from = step.status;
+	if (from !== status && !canTransition(from, status)) {
+		const allowed =
+			STEP_TRANSITIONS[from] && STEP_TRANSITIONS[from]!.length > 0
+				? STEP_TRANSITIONS[from]!.join(" / ")
+				: "无(终态)";
+		throw new Error(
+			`非法状态迁移: ${stepId} ${from} → ${status}(允许: ${allowed});如确需变更请人工处理`,
+		);
+	}
 	const patch: Record<string, unknown> = { status, updated_at: now() };
 	if (extra?.error !== undefined) patch.error = extra.error;
 	if (status === "running" || status === "dispatched") {

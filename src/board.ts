@@ -12,6 +12,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getStepsByWave, getStepsByWorkflow } from "./db.ts";
 import { STATUS_ICON } from "./core/state.ts";
+import { sanitizeTerminalText } from "./sanitize.ts";
 
 export interface BoardCard {
 	id: string; // <workflowId>-<dotted>
@@ -75,12 +76,12 @@ export function buildBoard(
 	const cards: BoardCard[] = steps.map((s) => ({
 		id: s.id,
 		dotted: s.id.slice(workflowId.length + 1),
-		title: s.title,
+		title: sanitizeTerminalText(s.title),
 		agent: s.agent,
 		status: s.status,
 		gate: Boolean(s.gate),
 		depth: s.id.slice(workflowId.length + 1).split(".").length,
-		summary: s.summary,
+		summary: s.summary ? sanitizeTerminalText(s.summary) : null,
 	}));
 
 	const columns: BoardColumn[] = COLUMNS.map((c) => ({
@@ -92,8 +93,8 @@ export function buildBoard(
 	const done = columns.find((c) => c.key === "done")?.cards.length ?? 0;
 	return {
 		workflowId,
-		title: wf.title,
-		goal: wf.goal,
+		title: sanitizeTerminalText(wf.title),
+		goal: sanitizeTerminalText(wf.goal),
 		status: wf.status,
 		wave: waveSeq ?? null,
 		columns,

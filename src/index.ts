@@ -66,12 +66,17 @@ export {
 	NOTIFY_MAX_LINES,
 	type WorkflowNotifySender,
 } from "./ui/notify.ts";
+import { renderWorkflowNotify } from "./ui/renderers.ts";
 
 // ────────────────────────────────────────────────────────────
 // 插件入口(命令注册 + 生命周期)
 // ────────────────────────────────────────────────────────────
 export default function workflowExtension(pi: ExtensionAPI) {
 	const db = getDb();
+
+	// ── workflow-notify 结构化渲染(P0-3):状态字形着色 + /wf 命令高亮 ──
+	// 未注册/渲染器异常时 pi 自动降级 markdown(内容自带字形与命令,降级可读)
+	pi.registerMessageRenderer("workflow-notify", renderWorkflowNotify);
 
 	// ── /wf 命令:查注册表派发(command.ts)──────────────────
 	pi.registerCommand("wf", {
