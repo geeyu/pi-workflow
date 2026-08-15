@@ -625,8 +625,9 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 ### 实施状态
 
-- **P1 派发闭环 ✅(2026-08)** — 见 `~/.pi/agent/extensions/workflow/`(src/: index/cli/orchestrator/dispatch/db/validate/agents + skill/ + bin/ + test/: 73 断言验收测试);
-- P2-P5 待实施,按上表推进。
+- **P1 派发闭环 ✅(2026-08)** — src/: index/cli/orchestrator/dispatch/db/validate/agents + skill/ + bin/;
+- **P2 监听与批次 ✅(2026-08)** — src/monitor.ts(tab 存活轮询 5s/消失→aborted/崩溃恢复/就绪集/wave 串行 merge);验收:94 断言(含真实 gittree worktree 合并回主分支);
+- P3-P5 待实施,按上表推进。
 
 ---
 

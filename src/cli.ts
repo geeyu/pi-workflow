@@ -30,8 +30,14 @@ import {
 	getDb,
 	getAttemptsByStep,
 } from "./db.ts";
-import { importPlan, reportDone, reportFail, verifyStep } from "./orchestrator.ts";
+import {
+	importPlan,
+	reportDone,
+	reportFail,
+	verifyStep,
+} from "./orchestrator.ts";
 import { dispatchStep, resolveBin } from "./dispatch.ts";
+import { mergeWave } from "./monitor.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
 import { resolveIdentity } from "./index.ts";
 import type { PlanInput } from "./validate.ts";
@@ -55,14 +61,25 @@ function resolveWorkflowId(explicit?: string): string | null {
 }
 
 const STATUS_ICON: Record<string, string> = {
-	pending: "○", ready: "○", dispatched: "▶", running: "▶", reported: "◐",
-	"waiting-verify": "◐", done: "✓", skipped: "–", failed: "✗", aborted: "✗",
-	conflict: "⚠", "needs-fix": "↻",
+	pending: "○",
+	ready: "○",
+	dispatched: "▶",
+	running: "▶",
+	reported: "◐",
+	"waiting-verify": "◐",
+	done: "✓",
+	skipped: "–",
+	failed: "✗",
+	aborted: "✗",
+	conflict: "⚠",
+	"needs-fix": "↻",
 };
 
 function printStatusJson(wfId?: string): void {
 	const workflows = wfId
-		? [getWorkflow(db, wfId)].filter((w): w is NonNullable<typeof w> => Boolean(w))
+		? [getWorkflow(db, wfId)].filter((w): w is NonNullable<typeof w> =>
+				Boolean(w),
+			)
 		: listWorkflows(db);
 	const out = workflows.map((w) => {
 		const counts = stepStatusCounts(db, w.id);
@@ -77,7 +94,12 @@ function printStatusJson(wfId?: string): void {
 			repoPath: w.repo_path,
 			baseSha: w.base_sha,
 			boundWindow: winId ?? null,
-			steps: steps.map((s) => ({ id: s.id, status: s.status, agent: s.agent, gate: Boolean(s.gate) })),
+			steps: steps.map((s) => ({
+				id: s.id,
+				status: s.status,
+				agent: s.agent,
+				gate: Boolean(s.gate),
+			})),
 			counts,
 			costCents: cost?.cost_cents ?? 0,
 		};
@@ -87,7 +109,9 @@ function printStatusJson(wfId?: string): void {
 
 function printStatusText(wfId?: string): void {
 	const workflows = wfId
-		? [getWorkflow(db, wfId)].filter((w): w is NonNullable<typeof w> => Boolean(w))
+		? [getWorkflow(db, wfId)].filter((w): w is NonNullable<typeof w> =>
+				Boolean(w),
+			)
 		: listWorkflows(db);
 	if (workflows.length === 0) {
 		console.log("(无 workflow,先用 wf import <plan.json> 导入计划)");
@@ -97,15 +121,30 @@ function printStatusText(wfId?: string): void {
 		const counts = stepStatusCounts(db, w.id);
 		const steps = getStepsByWorkflow(db, w.id);
 		const cost = workflowCost(db, w.id);
-		const winId = getWorkflowMeta(db, w.id, WF_WINDOW_META_KEY) as string | undefined;
+		const winId = getWorkflowMeta(db, w.id, WF_WINDOW_META_KEY) as
+			| string
+			| undefined;
 		const done = (counts.done ?? 0) + (counts.skipped ?? 0);
 		const running = (counts.dispatched ?? 0) + (counts.running ?? 0);
-		const abnormal = (counts.failed ?? 0) + (counts.aborted ?? 0) + (counts.conflict ?? 0) + (counts["needs-fix"] ?? 0);
-		const costText = cost && cost.cost_cents > 0 ? ` $${(cost.cost_cents / 100).toFixed(2)}` : "";
-		console.log(`[${w.id}] ${w.title} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`);
-		console.log(`  repo: ${w.repo_path} | base: ${w.base_sha ?? "-"} | 绑定窗口: ${winId ?? "-"}`);
+		const abnormal =
+			(counts.failed ?? 0) +
+			(counts.aborted ?? 0) +
+			(counts.conflict ?? 0) +
+			(counts["needs-fix"] ?? 0);
+		const costText =
+			cost && cost.cost_cents > 0
+				? ` $${(cost.cost_cents / 100).toFixed(2)}`
+				: "";
+		console.log(
+			`[${w.id}] ${w.title} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
+		);
+		console.log(
+			`  repo: ${w.repo_path} | base: ${w.base_sha ?? "-"} | 绑定窗口: ${winId ?? "-"}`,
+		);
 		for (const s of getRunningSteps(db, w.id)) {
-			console.log(`  ▶ ${s.id} ${s.title} tab=${s.tab_id ? s.tab_id.slice(0, 8) : "?"}`);
+			console.log(
+				`  ▶ ${s.id} ${s.title} tab=${s.tab_id ? s.tab_id.slice(0, 8) : "?"}`,
+			);
 		}
 	}
 }
@@ -120,7 +159,9 @@ function printTree(wfId?: string): void {
 	for (const s of steps) {
 		const depth = s.id.slice(wf.length + 1).split(".").length;
 		const icon = STATUS_ICON[s.status] ?? "?";
-		console.log(`${"  ".repeat(depth - 1)}${icon} ${s.id.slice(wf.length + 1)} ${s.title} [${s.agent}${s.gate ? "/gate" : ""}]${s.error ? ` ✗ ${s.error}` : ""}`);
+		console.log(
+			`${"  ".repeat(depth - 1)}${icon} ${s.id.slice(wf.length + 1)} ${s.title} [${s.agent}${s.gate ? "/gate" : ""}]${s.error ? ` ✗ ${s.error}` : ""}`,
+		);
 	}
 }
 
@@ -129,10 +170,16 @@ function printTree(wfId?: string): void {
 // ────────────────────────────────────────────────────────────
 function cmdPlanInit(args: string[]): void {
 	const [name, goal] = args.filter((a) => !a.startsWith("--"));
-	const repo = args.includes("--repo") ? args[args.indexOf("--repo") + 1] : process.cwd();
-	const n = args.includes("--steps") ? Number(args[args.indexOf("--steps") + 1]) : 4;
+	const repo = args.includes("--repo")
+		? args[args.indexOf("--repo") + 1]
+		: process.cwd();
+	const n = args.includes("--steps")
+		? Number(args[args.indexOf("--steps") + 1])
+		: 4;
 	if (!name || !goal) {
-		console.error("用法: wf plan-init <name> \"<目标>\" [--repo <path>] [--steps N]");
+		console.error(
+			'用法: wf plan-init <name> "<目标>" [--repo <path>] [--steps N]',
+		);
 		process.exit(1);
 	}
 	const steps = Array.from({ length: n }, (_, i) => ({
@@ -166,7 +213,9 @@ function cmdImport(file: string | undefined): void {
 		for (const e of result.errors ?? []) console.error(`  ✗ ${e}`);
 		process.exit(1);
 	}
-	console.log(`✓ 已导入 ${result.workflowId}:${result.stepCount} 个步骤(wave ${result.wave})`);
+	console.log(
+		`✓ 已导入 ${result.workflowId}:${result.stepCount} 个步骤(wave ${result.wave})`,
+	);
 }
 
 async function cmdDispatch(args: string[]): Promise<void> {
@@ -217,6 +266,32 @@ function cmdVerify(args: string[]): void {
 	console.log(`✓ ${id} → ${res.status}`);
 }
 
+async function cmdMerge(args: string[]): Promise<void> {
+	const waveFlagIdx = args.indexOf("--wave");
+	const waveSeq =
+		waveFlagIdx !== -1 && args[waveFlagIdx + 1]
+			? Number(args[waveFlagIdx + 1])
+			: undefined;
+	const explicitWf = args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a));
+	const wfId = resolveWorkflowId(explicitWf);
+	if (!wfId) {
+		console.error("无法确定 workflow(传 id 或在仓库根目录运行)");
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, wfId);
+	if (!workflow) {
+		console.error(`workflow 不存在: ${wfId}`);
+		process.exit(1);
+	}
+	const res = await mergeWave(db, workflow, waveSeq ?? workflow.current_wave);
+	if (res.ok) {
+		console.log(`✓ wave ${res.wave} 合并完成:${res.merged.length} 个步骤合回主分支`);
+	} else {
+		console.error(`✗ wave ${res.wave} 合并未完成: ${res.error}`);
+		process.exit(1);
+	}
+}
+
 function cmdDone(args: string[]): void {
 	const [id, ...rest] = args;
 	if (!id || rest.length === 0) {
@@ -263,12 +338,16 @@ function cmdStep(id: string | undefined): void {
 		process.exit(1);
 	}
 	console.log(`[${step.id}] ${step.title}`);
-	console.log(`  状态: ${step.status} | agent: ${step.agent} | gate: ${step.gate} | worktree: ${step.worktree ?? "-"} | tab: ${step.tab_id ?? "-"}`);
+	console.log(
+		`  状态: ${step.status} | agent: ${step.agent} | gate: ${step.gate} | worktree: ${step.worktree ?? "-"} | tab: ${step.tab_id ?? "-"}`,
+	);
 	console.log(`  期望: ${step.expectations ?? "-"}`);
 	console.log(`  回报: ${step.report ?? "-"}`);
 	console.log(`  错误: ${step.error ?? "-"}`);
 	for (const a of getAttemptsByStep(db, step.id)) {
-		console.log(`  attempt#${a.attempt_no} ${a.status} tab=${a.tab_id ? a.tab_id.slice(0, 8) : "-"}${a.error ? ` 错误: ${a.error}` : ""}`);
+		console.log(
+			`  attempt#${a.attempt_no} ${a.status} tab=${a.tab_id ? a.tab_id.slice(0, 8) : "-"}${a.error ? ` 错误: ${a.error}` : ""}`,
+		);
 	}
 	const events = getEvents(db, { stepId: step.id, limit: 10 });
 	if (events.length > 0) {
@@ -282,9 +361,15 @@ function cmdEvents(args: string[]): void {
 	const limit = nums[0] ? Number(nums[0]) : 30;
 	const wfId = args.find((a) => !/^\d+$/.test(a) && a !== "--follow");
 	const show = (afterId: number): number => {
-		const events = getEvents(db, { workflowId: wfId ?? undefined, limit, afterId: afterId || undefined });
+		const events = getEvents(db, {
+			workflowId: wfId ?? undefined,
+			limit,
+			afterId: afterId || undefined,
+		});
 		for (const e of events.reverse()) {
-			console.log(`${new Date(e.created_at).toLocaleTimeString()} ${e.type}${e.step_id ? ` ${e.step_id}` : ""}${e.attempt_id ? ` #${e.attempt_id}` : ""}`);
+			console.log(
+				`${new Date(e.created_at).toLocaleTimeString()} ${e.type}${e.step_id ? ` ${e.step_id}` : ""}${e.attempt_id ? ` #${e.attempt_id}` : ""}`,
+			);
 		}
 		return events.length > 0 ? events[events.length - 1].id : afterId;
 	};
@@ -304,25 +389,35 @@ function cmdClean(): void {
 	const bin = resolveBin("gittree");
 	const res = execFileSync(bin, ["list"], { encoding: "utf-8" });
 	console.log(res.trim() || "(无 gittree worktree)");
-	console.log("提示:清理残留 worktree 用 gittree clean <name> --branch --force 或 clean all --yes(占用检测保护)");
+	console.log(
+		"提示:清理残留 worktree 用 gittree clean <name> --branch --force 或 clean all --yes(占用检测保护)",
+	);
 }
 
 function cmdDoctor(): void {
 	const checks: Array<[string, boolean, string]> = [];
-	checks.push(["node 版本 ≥ 22.13", Number(process.versions.node.split(".")[0]) >= 22, process.version]);
+	checks.push([
+		"node 版本 ≥ 22.13",
+		Number(process.versions.node.split(".")[0]) >= 22,
+		process.version,
+	]);
 	checks.push(["node:sqlite 可用", true, DB_PATH]);
 	const gittree = resolveBin("gittree");
 	checks.push(["gittree 可执行", fs.existsSync(gittree), gittree]);
 	const ghostctl = resolveBin("ghostctl");
 	checks.push(["ghostctl 可执行", fs.existsSync(ghostctl), ghostctl]);
 	try {
-		const py = execFileSync("/usr/bin/env", ["python3", "--version"], { encoding: "utf-8" }).trim();
+		const py = execFileSync("/usr/bin/env", ["python3", "--version"], {
+			encoding: "utf-8",
+		}).trim();
 		const ok = /3\.(1[0-9]|[2-9])/.test(py);
 		checks.push(["python3 ≥ 3.10(ghostctl 语法)", ok, py]);
 	} catch {
 		checks.push(["python3 ≥ 3.10(ghostctl 语法)", false, "python3 不可用"]);
 	}
-	const ver = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+	const ver = (
+		db.prepare("PRAGMA user_version").get() as { user_version: number }
+	).user_version;
 	checks.push(["数据库可打开(user_version)", ver >= 1, `v${ver} @ ${DB_PATH}`]);
 	let okAll = true;
 	for (const [name, ok, detail] of checks) {
@@ -334,28 +429,45 @@ function cmdDoctor(): void {
 }
 
 function cmdDebug(): void {
-	const ver = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+	const ver = (
+		db.prepare("PRAGMA user_version").get() as { user_version: number }
+	).user_version;
 	console.log(`DB: ${DB_PATH} (schema v${ver})`);
-	const tables = db.prepare(
-		"SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow%' ORDER BY name",
-	).all() as Array<{ name: string }>;
+	const tables = db
+		.prepare(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'workflow%' ORDER BY name",
+		)
+		.all() as Array<{ name: string }>;
 	console.log(`表(${tables.length}): ${tables.map((t) => t.name).join(", ")}`);
 	const wfs = listWorkflows(db);
 	console.log(`workflows(${wfs.length}):`);
 	for (const w of wfs) {
 		const counts = stepStatusCounts(db, w.id);
 		const winId = getWorkflowMeta(db, w.id, WF_WINDOW_META_KEY);
-		console.log(`  ${w.id} [${w.status}] wave=${w.current_wave} 绑定窗口=${winId ?? "-"} counts=${JSON.stringify(counts)}`);
+		console.log(
+			`  ${w.id} [${w.status}] wave=${w.current_wave} 绑定窗口=${winId ?? "-"} counts=${JSON.stringify(counts)}`,
+		);
 	}
 	const running = getRunningSteps(db);
 	if (running.length > 0) {
 		console.log(`运行中(${running.length}):`);
-		for (const s of running) console.log(`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`);
+		for (const s of running)
+			console.log(
+				`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`,
+			);
 	}
-	const evtTotal = (db.prepare("SELECT count(*) n FROM workflow_events").get() as { n: number }).n;
-	const attTotal = (db.prepare("SELECT count(*) n FROM workflow_attempts").get() as { n: number }).n;
+	const evtTotal = (
+		db.prepare("SELECT count(*) n FROM workflow_events").get() as { n: number }
+	).n;
+	const attTotal = (
+		db.prepare("SELECT count(*) n FROM workflow_attempts").get() as {
+			n: number;
+		}
+	).n;
 	console.log(`事件总数: ${evtTotal} | attempts: ${attTotal}`);
-	console.log(`gittree: ${resolveBin("gittree")} | ghostctl: ${resolveBin("ghostctl")}`);
+	console.log(
+		`gittree: ${resolveBin("gittree")} | ghostctl: ${resolveBin("ghostctl")}`,
+	);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -364,22 +476,50 @@ function cmdDebug(): void {
 async function main(): Promise<void> {
 	const [cmd, ...args] = process.argv.slice(2);
 	switch (cmd) {
-		case "plan-init": cmdPlanInit(args); break;
-		case "import": cmdImport(args[0]); break;
+		case "plan-init":
+			cmdPlanInit(args);
+			break;
+		case "import":
+			cmdImport(args[0]);
+			break;
 		case "status":
-			if (args.includes("--json")) printStatusJson(args.find((a) => !a.startsWith("--")));
+			if (args.includes("--json"))
+				printStatusJson(args.find((a) => !a.startsWith("--")));
 			else printStatusText(args.find((a) => !a.startsWith("--")));
 			break;
-		case "tree": printTree(args[0]); break;
-		case "step": cmdStep(args[0]); break;
-		case "events": cmdEvents(args); break;
-		case "dispatch": await cmdDispatch(args); break;
-		case "verify": cmdVerify(args); break;
-		case "done": cmdDone(args); break;
-		case "fail": cmdFail(args); break;
-		case "clean": cmdClean(); break;
-		case "doctor": cmdDoctor(); break;
-		case "debug": cmdDebug(); break;
+		case "tree":
+			printTree(args[0]);
+			break;
+		case "step":
+			cmdStep(args[0]);
+			break;
+		case "events":
+			cmdEvents(args);
+			break;
+		case "dispatch":
+			await cmdDispatch(args);
+			break;
+		case "verify":
+			cmdVerify(args);
+			break;
+		case "merge":
+			await cmdMerge(args);
+			break;
+		case "done":
+			cmdDone(args);
+			break;
+		case "fail":
+			cmdFail(args);
+			break;
+		case "clean":
+			cmdClean();
+			break;
+		case "doctor":
+			cmdDoctor();
+			break;
+		case "debug":
+			cmdDebug();
+			break;
 		case "help":
 		case undefined:
 			console.log(`pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手册)
@@ -393,6 +533,7 @@ async function main(): Promise<void> {
   wf events [wfId] [N] [--follow]                            审计流
   wf dispatch <dotted...> [--workflow <id>] [--dry-run]      派发子任务(真实开 tab)
   wf verify <id> approve|reject [原因]                       期望核对
+  wf merge [--wave N]                                        合并 wave 回主分支
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
   wf clean                                                   清理 worktree
   wf doctor                                                  环境自检

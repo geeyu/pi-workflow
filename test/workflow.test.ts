@@ -541,6 +541,148 @@ async function main(): Promise<void> {
 	);
 	assert(fromCwdSub?.stepId === "add-redis-cache-1.2", "cwd 子目录身份解析");
 
+	console.log("== T10 monitor 存活检测 ==");
+	const monitorMod = await import("../src/monitor.ts");
+	// 复用 T6 的 scratch 场景:重新派发(可重派)→ running + tab_id
+	const sWf2 = dbMod.getWorkflow(db2, "scratch-wf")!;
+	const sStep2 = dbMod.getStep(db2, "scratch-wf-1")!;
+	const redispatch = await dispatchMod.dispatchStep(db2, sWf2, sStep2, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeGhostctl,
+	});
+	assert(redispatch.ok, "重新派发成功(可重派)");
+	const tabId = redispatch.tabId!;
+	assert(tabId === "abcdef0123456789", "重派 tab_id");
+	// fake layout 不含该 terminal → pollOnce 标记 aborted
+	const fakeGone = path.join(tmpDir, "fake-ghostctl-gone.sh");
+	fs.writeFileSync(
+		fakeGone,
+		`#!/bin/bash\necho '{"windows":[{"tabs":[{"terminals":[]}]}]}'\n`,
+		{ mode: 0o755 },
+	);
+	const gone = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	assert(
+		gone.closed.includes("scratch-wf-1"),
+		"tab 消失未回报 → aborted",
+	);
+	const sAborted = dbMod.getStep(db2, "scratch-wf-1");
+	assert(sAborted?.status === "aborted", "步骤状态 aborted");
+	const evtClosed = dbMod
+		.getEvents(db2, { workflowId: "scratch-wf", limit: 100 })
+		.some((e) => e.type === "step_tab_closed");
+	assert(evtClosed, "step_tab_closed 事件");
+	// fake layout 含该 terminal → pollOnce 保持 running
+	const re2 = await dispatchMod.dispatchStep(db2, sWf2, dbMod.getStep(db2, "scratch-wf-1")!, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeGhostctl,
+	});
+	assert(re2.ok, "aborted 后可重派");
+	const alive = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
+	assert(alive.closed.length === 0, "tab 存活 → 保持 running");
+	assert(dbMod.getStep(db2, "scratch-wf-1")?.status === "running", "步骤保持 running");
+
+	console.log("== T11 就绪集 getReadySteps ==");
+	const readyWf = orchMod.importPlan(
+		db2,
+		{
+			name: "ready-wf",
+			title: "就绪集",
+			goal: "测试",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "方案", agent: "planner", task: "方案" },
+				{ id: "1.1", title: "A", agent: "worker", deps: ["1"], task: "A" },
+				{ id: "1.2", title: "B", agent: "worker", deps: ["1"], task: "B" },
+				{ id: "2", title: "评审", agent: "reviewer", deps: ["1.1", "1.2"], task: "评" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(readyWf.ok, "ready-wf 导入");
+	const ready1 = monitorMod.getReadySteps(db2, "ready-wf");
+	assert(
+		ready1.length === 1 && ready1[0].id === "ready-wf-1",
+		`就绪集初始仅顶层(${ready1.map((s) => s.id).join(",")})`,
+	);
+	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.done);
+	const ready2 = monitorMod.getReadySteps(db2, "ready-wf");
+	assert(
+		ready2.length === 2 &&
+			ready2.every((s) => s.id === "ready-wf-1.1" || s.id === "ready-wf-1.2"),
+		`1 done 后就绪集为 1.1/1.2(${ready2.map((s) => s.id).join(",")})`,
+	);
+	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.done);
+	const ready3 = monitorMod.getReadySteps(db2, "ready-wf");
+	assert(
+		ready3.length === 1 && ready3[0].id === "ready-wf-2",
+		`1.1/1.2 done 后就绪集为 2(${ready3.map((s) => s.id).join(",")})`,
+	);
+
+	console.log("== T12 mergeWave 真实合并 =");
+	const mergeWf = orchMod.importPlan(
+		db2,
+		{
+			name: "merge-wf",
+			title: "合并",
+			goal: "测试合并",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "改文件A", agent: "worker", task: "A" },
+				{ id: "2", title: "改文件B", agent: "worker", task: "B" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(mergeWf.ok, "merge-wf 导入");
+	const mWf = dbMod.getWorkflow(db2, "merge-wf")!;
+	for (const dotted of ["1", "2"]) {
+		const step = dbMod.getStep(db2, `merge-wf-${dotted}`)!;
+		const res = await dispatchMod.dispatchStep(db2, mWf, step, {
+			gittreeBin: "gittree",
+			ghostctlBin: fakeGhostctl,
+		});
+		assert(res.ok, `merge-wf-${dotted} 派发`);
+		// 子任务在 worktree 里真实提交
+		const wt = path.join(
+			scratchRepo,
+			".worktrees",
+			`gittree-wf-merge-wf-${dotted}`,
+		);
+		fs.writeFileSync(path.join(wt, `feat-${dotted}.txt`), `${dotted}\n`);
+		execFileSync("git", ["-C", wt, "add", "-A"]);
+		execFileSync("git", ["-C", wt, "commit", "-q", "-m", `feat ${dotted}`]);
+		dbMod.updateStepStatus(db2, `merge-wf-${dotted}`, dbMod.STEP_STATUS.done);
+	}
+	// 未全部完成时拒绝合并
+	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.running);
+	const blockedMerge = await monitorMod.mergeWave(db2, mWf, 1);
+	assert(!blockedMerge.ok && blockedMerge.error!.includes("未全部完成"), "未完成拒绝合并");
+	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.done);
+	// 真实串行合并
+	const merged = await monitorMod.mergeWave(db2, mWf, 1);
+	assert(merged.ok && merged.merged.length === 2, `wave 合并完成(${merged.merged.join(",")})`);
+	const waveRow = db2
+		.prepare("SELECT status FROM workflow_waves WHERE workflow_id='merge-wf' AND seq=1")
+		.get() as { status: string };
+	assert(waveRow.status === "merged", "wave → merged");
+	const evtMerged = dbMod
+		.getEvents(db2, { workflowId: "merge-wf", limit: 100 })
+		.some((e) => e.type === "wave_merged");
+	assert(evtMerged, "wave_merged 事件");
+	// 主分支应包含子任务提交
+	const log = execFileSync("git", ["-C", scratchRepo, "log", "--oneline", "-5"], {
+		encoding: "utf-8",
+	});
+	assert(log.includes("feat 1") && log.includes("feat 2"), `主分支含子任务提交(${log.trim().split("\n")[0]})`);
+	// merge --delete 后 worktree 已清理
+	assert(
+		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
+		"merge --delete 清理 worktree",
+	);
+
 	// 清理
 	try {
 		db2.close();

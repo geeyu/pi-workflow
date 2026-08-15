@@ -44,6 +44,12 @@ import {
 } from "./orchestrator.ts";
 import type { PlanInput } from "./validate.ts";
 import { dispatchStep, parseExpectations } from "./dispatch.ts";
+import {
+	getReadySteps,
+	mergeWave,
+	recoverStaleSteps,
+	startMonitor,
+} from "./monitor.ts";
 
 // ────────────────────────────────────────────────────────────
 // 身份解析
@@ -211,7 +217,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/);
-			try {
+					try {
 				switch (sub) {
 					case "import":
 						await cmdImport(ctx, rest);
@@ -231,6 +237,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 					case "verify":
 						cmdVerify(ctx, rest);
 						break;
+					case "merge":
+						await cmdMerge(ctx, rest);
+						break;
 					case "status":
 						cmdStatus(ctx, rest);
 						break;
@@ -246,7 +255,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 					default:
 						notify(
 							ctx,
-							`用法: /wf import|dispatch|context|done|fail|verify|status|tree|step|events\n示例: /wf status / /wf import plan.json / /wf done 1.1 '{"summary":"..."}'`,
+							`用法: /wf import|dispatch|context|done|fail|verify|merge|status|tree|step|events\n示例: /wf status / /wf import plan.json / /wf done 1.1 '{"summary":"..."}'`,
 							"warning",
 						);
 				}
@@ -313,14 +322,6 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			args.splice(wfFlagIdx, 2);
 		}
 		const tokens = args.filter((t) => t !== "--dry-run");
-		if (tokens.length === 0) {
-			notify(
-				ctx,
-				"用法: /wf dispatch <dotted>... [--dry-run] [--workflow <id>]",
-				"warning",
-			);
-			return;
-		}
 		const wfId = resolveWorkflowId(ctx, explicitWf);
 		if (!wfId) {
 			const all = listWorkflows(db);
@@ -336,8 +337,19 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			notify(ctx, `workflow 不存在: ${wfId}`, "error");
 			return;
 		}
+
+		// 无参数 = 派发当前 wave 的全部就绪步骤(依赖全 done 的 pending)
+		const readyTokens =
+			tokens.length === 0
+				? getReadySteps(db, wfId).map((s) => s.id.slice(wfId.length + 1))
+				: tokens;
+		if (readyTokens.length === 0) {
+			notify(ctx, `wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`);
+			return;
+		}
+
 		const results: string[] = [];
-		for (const token of tokens) {
+		for (const token of readyTokens) {
 			const step: StepRow | undefined =
 				getStep(db, token) ?? getStep(db, `${wfId}-${token}`);
 			if (!step) {
@@ -626,17 +638,82 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		);
 	}
 
+	// ── /wf merge [--wave N] ──────────────────────────────
+	async function cmdMerge(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): Promise<void> {
+		const waveFlagIdx = args.indexOf("--wave");
+		const explicitWave =
+			waveFlagIdx !== -1 && args[waveFlagIdx + 1]
+				? Number(args[waveFlagIdx + 1])
+				: undefined;
+		const wfId = resolveWorkflowId(
+			ctx,
+			args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a)),
+		);
+		if (!wfId) {
+			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			return;
+		}
+		const workflow = getWorkflow(db, wfId);
+		if (!workflow) {
+			notify(ctx, `workflow 不存在: ${wfId}`, "error");
+			return;
+		}
+		const waveSeq = explicitWave ?? workflow.current_wave;
+		const res = await mergeWave(db, workflow, waveSeq);
+		if (res.ok) {
+			notify(
+				ctx,
+				`wave ${waveSeq} 合并完成:${res.merged.length} 个步骤合回主分支${res.skipped > 0 ? `,${res.skipped} 个跳过` : ""}`,
+			);
+		} else {
+			notify(ctx, `wave ${waveSeq} 合并未完成: ${res.error}`, "warning");
+		}
+	}
+
 	// ── 注册本插件 skill(使用与排查手册)──────────────────
 	pi.on("resources_discover", async (_event, _ctx) => {
 		return { skillPaths: [path.join(EXT_DIR, "skill")] };
 	});
 
-	// ── 子 pi 身份:session_start 设置标题 ──────────────────
+	// ── 存活轮询句柄(编排者侧)────────────────────────────
+	let monitorStop: (() => void) | null = null;
+
+	// ── session_start:子 pi 设标题;编排者崩溃恢复 + 启动轮询 ─
 	pi.on("session_start", async (_event, ctx) => {
 		const ident = resolveIdentity(ctx.cwd);
 		if (ident?.stepId) {
 			ctx.ui.setTitle(`wf ${ident.workflowId}/${ident.dotted}`);
+		} else {
+			// 崩溃恢复:running/dispatched 但 tab 已消失 → aborted(设计 §4.5)
+			try {
+				const { closed } = await recoverStaleSteps(db);
+				if (closed.length > 0) {
+					ctx.ui.notify(
+						`[wf] 崩溃恢复:tab 已消失的步骤标 aborted: ${closed.join(", ")}`,
+						"warning",
+					);
+				}
+			} catch {
+				/* 恢复失败不阻塞启动 */
+			}
+			// 存活轮询(5s,设计决策 12)
+			monitorStop = startMonitor(db, {
+				onClosed: (closed) =>
+					ctx.ui.notify(
+						`[wf] tab 关闭未回报 → aborted: ${closed.join(", ")}`,
+						"warning",
+					),
+				onTick: () => renderWidget(ctx, db),
+			});
 		}
 		renderWidget(ctx, db);
+	});
+
+	pi.on("session_shutdown", async () => {
+		monitorStop?.();
+		monitorStop = null;
 	});
 }

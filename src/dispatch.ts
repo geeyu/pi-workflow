@@ -303,13 +303,13 @@ async function findTerminalId(
 	return null;
 }
 
-interface RunResult {
+export interface RunResult {
 	code: number;
 	stdout: string;
 	stderr: string;
 }
 
-function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
+export function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
 	return new Promise((resolve) => {
 		// Ghostty 新窗口的非交互 shell 的 PATH 极简(无 brew),会命中系统旧版
 		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。

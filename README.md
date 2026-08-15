@@ -107,5 +107,16 @@ node --experimental-strip-types test/workflow.test.ts
 ## 状态
 
 - P1 派发闭环 ✅(db + import + dispatch + context/done/fail + verify + status/tree/step/events)
-- P2 监听与批次(monitor.ts:ghostctl 轮询 + wave 推进 + merge) — 待实施
+- P2 监听与批次 ✅(monitor.ts:tab 存活轮询 5s + 消失→aborted + 崩溃恢复 + 就绪集派发 + wave 串行 merge)
 - P3-P5 见设计文档 §11
+
+### P2 新增用法
+
+```text
+/wf dispatch                    # 无参数 = 派发当前 wave 全部就绪步骤(依赖全 done)
+/wf merge [--wave N]            # wave 全部终态后串行合回主分支(冲突→conflict)
+wf merge [--wave N]             # CLI 同款
+```
+
+- 子任务 tab 被关闭且未回报 → monitor 自动标 aborted 并通知(5s 内)
+- 编排者 pi 重启 → session_start 崩溃恢复:tab 已消失的步骤标 aborted
