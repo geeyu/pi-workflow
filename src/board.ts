@@ -11,6 +11,7 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import { getStepsByWave, getStepsByWorkflow } from "./db.ts";
+import { STATUS_ICON } from "./core/state.ts";
 
 export interface BoardCard {
 	id: string; // <workflowId>-<dotted>
@@ -52,20 +53,8 @@ const COLUMNS: Array<{ key: string; label: string; statuses: string[] }> = [
 	},
 ];
 
-export const STATUS_ICON_BOARD: Record<string, string> = {
-	pending: "○",
-	ready: "○",
-	dispatched: "▶",
-	running: "▶",
-	reported: "◐",
-	"waiting-verify": "◐",
-	done: "✓",
-	skipped: "–",
-	failed: "✗",
-	aborted: "✗",
-	conflict: "⚠",
-	"needs-fix": "↻",
-};
+/** 兼容导出名(单一来源 core/state.ts STATUS_ICON,arch-refactor §5.2) */
+export const STATUS_ICON_BOARD: Record<string, string> = STATUS_ICON;
 
 /** 收集看板数据(可按 wave 过滤) */
 export function buildBoard(
