@@ -105,6 +105,11 @@ export interface PollResult {
 	timedOut: string[]; // 本次检测到超时的步骤 id
 }
 
+/** 连续未命中轮询次数达到该值才判 tab 关闭(抗 Ghostty layout 瞬时抖动) */
+export const TAB_MISS_LIMIT = 2;
+/** 未命中计数存 workflow_step_metadata 的 key */
+export const TAB_MISS_KEY = "tab_miss_count";
+
 /**
  * 存活检测一轮:running/dispatched 且记录了 tab_id 的步骤,
  * 其 terminal 不在布局中 → 事件 step_tab_closed → 步骤/attempt 标 aborted。
@@ -166,7 +171,22 @@ export async function pollOnce(
 		if (!live) continue; // 查询失败 → 本轮跳过,不误标 aborted
 		for (const s of steps) {
 			if (!s.tab_id) continue;
-			if (live.has(s.tab_id)) continue;
+			if (live.has(s.tab_id)) {
+				// 存活 → 清零未命中计数(Ghostty layout 偶发缺项,单次未命中不判死)
+				const miss = getStepMeta(db, s.id, TAB_MISS_KEY);
+				if (miss !== undefined && miss !== null) {
+					setStepMeta(db, s.id, TAB_MISS_KEY, 0);
+				}
+				continue;
+			}
+			// 未命中 → 计数,连续 TAB_MISS_LIMIT 次才判关闭
+			const prev = (getStepMeta(db, s.id, TAB_MISS_KEY) as number | null) ?? 0;
+			const next = prev + 1;
+			if (next < TAB_MISS_LIMIT) {
+				setStepMeta(db, s.id, TAB_MISS_KEY, next);
+				continue;
+			}
+			setStepMeta(db, s.id, TAB_MISS_KEY, 0);
 			// tab 消失且未回报 → aborted
 			updateStepStatus(db, s.id, STEP_STATUS.aborted, {
 				error: "tab 已关闭(未回报)",

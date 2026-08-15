@@ -1114,7 +1114,8 @@ async function cmdPoll(args: string[]): Promise<void> {
 		console.log(text);
 		process.exitCode = code;
 	};
-	const tick = (): void => {
+	// 返回 true = 已终态(finish 已调用,调用方不得再建 interval)
+	const tick = (): boolean => {
 		const steps = getStepsByWorkflow(db, wfId);
 		const { reached, unreachable, notStarted } = pollTargetReached(steps, until);
 		const elapsed = Math.round((Date.now() - start) / 1000);
@@ -1127,14 +1128,14 @@ async function cmdPoll(args: string[]): Promise<void> {
 				console.error(`  ✗ ${id} → wf step ${id} 看原因 → wf retry ${id}`);
 			}
 			finish(2, `不可达: ${unreachable.join(", ")}`);
-			return;
+			return true;
 		}
 		if (reached) {
 			const summary =
 				`达成(${until}${until !== "skipped" ? " 或 skipped" : ""}): ` +
 				`${fmtCounts() || "(无步骤)"}`;
 			finish(0, summary);
-			return;
+			return true;
 		}
 		if (Date.now() >= deadline) {
 			const pendingSteps = steps
@@ -1144,11 +1145,16 @@ async function cmdPoll(args: string[]): Promise<void> {
 				1,
 				`超时(${timeout}s): 未达成 ${pendingSteps.length} 步: ${pendingSteps.join(", ") || "(无)"}`,
 			);
-			return;
+			return true;
 		}
+		return false;
 	};
-	tick();
-	timer = setInterval(tick, interval * 1000);
+	// 首次 tick 即终态则不建 interval(否则 exitCode 已设但进程滞留,多跑一轮)
+	if (!tick()) {
+		timer = setInterval(() => {
+			if (tick()) clearInterval(timer);
+		}, interval * 1000);
+	}
 	process.on("SIGINT", () => {
 		if (timer) clearInterval(timer);
 		console.error(

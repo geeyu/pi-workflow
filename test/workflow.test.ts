@@ -767,15 +767,22 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(redispatch.ok, "重新派发成功(可重派)");
 	const tabId = redispatch.tabId!;
 	assert(tabId === "abcdef0123456789", "重派 tab_id");
-	// fake layout 不含该 terminal → pollOnce 标记 aborted
+	// fake layout 不含该 terminal → 单次未命中不判死(抗 Ghostty layout 瞬时抖动)
 	const fakeGone = path.join(tmpDir, "fake-ghostctl-gone.sh");
 	fs.writeFileSync(
 		fakeGone,
 		`#!/bin/bash\necho '{"windows":[{"tabs":[{"terminals":[]}]}]}'\n`,
 		{ mode: 0o755 },
 	);
+	const gone1 = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	assert(gone1.closed.length === 0, "单次未命中不误判(抗抖动)");
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
+		"单次未命中后仍 running",
+	);
+	// 连续两次未命中 → aborted
 	const gone = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
-	assert(gone.closed.includes("scratch-wf-1"), "tab 消失未回报 → aborted");
+	assert(gone.closed.includes("scratch-wf-1"), "连续 2 次未命中 → aborted");
 	const sAborted = dbMod.getStep(db2, "scratch-wf-1");
 	assert(sAborted?.status === "aborted", "步骤状态 aborted");
 	const evtClosed = dbMod
@@ -798,6 +805,15 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
 		"步骤保持 running",
+	);
+	// 命中清零:未命中 1 次 → 命中 1 次 → 再未命中 1 次,仍不判死(计数已被清零)
+	await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
+	const flicker = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	assert(flicker.closed.length === 0, "命中后计数清零,抖动不累积");
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
+		"清零后仍 running",
 	);
 
 	console.log("== T11 就绪集 getReadySteps ==");
