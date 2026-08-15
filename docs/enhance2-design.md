@@ -1,3 +1,7 @@
+> [!NOTE] 历史归档(2026-08-15)
+> 本文是早期 workflow(wf-enhance / wf-enhance2)施工过程的产物,描述的能力**已全部实现并可能已演进**。
+> 权威文档:DESIGN.md(设计)、skill/SKILL.md(使用手册)。如与现状冲突,以 DESIGN.md / SKILL.md / 代码为准。
+
 # wf-enhance2 增强方案(wave 1 step 1 输出)
 
 五个 wf CLI 子命令(inject / poll / session / open-tab / fix-tab)+ skill「AI 编排操作速查」章节。

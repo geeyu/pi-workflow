@@ -1,3 +1,7 @@
+> [!NOTE] 实施状态(2026-08-15)
+> 本文为架构重构(wf-arch)的施工契约/记录,**已全部实施并合并回主分支**(合并树 276 测试全绿)。
+> 当前代码结构以本文为准;如后续再重构,请更新 DESIGN.md 后再改本文。
+
 # wf-arch step2 整体评审记录(架构整理:命令注册表 + 模块拆分 + 常量收敛)
 
 评审对象:step 1.1(commit `611124b`,worktree `gittree-wf-wf-arch-1.1`,命令注册表化)+ step 1.2(commit `31eafe6`,worktree `gittree-wf-wf-arch-1.2`,模块拆分与常量收敛)。

@@ -1,3 +1,7 @@
+> [!NOTE] 历史归档(2026-08-15)
+> 本文是早期 workflow(wf-enhance / wf-enhance2)施工过程的产物,描述的能力**已全部实现并可能已演进**。
+> 权威文档:DESIGN.md(设计)、skill/SKILL.md(使用手册)。如与现状冲突,以 DESIGN.md / SKILL.md / 代码为准。
+
 # wf-enhance2 step2 整体评审记录
 
 评审对象:step 1.1(commit 895501c,worktree gittree-wf-wf-enhance2-1.1)+ step 1.2(commit d413717,worktree gittree-wf-wf-enhance2-1.2),依据 docs/enhance2-design.md(step 1 输出,commit 108210e)。

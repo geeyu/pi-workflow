@@ -28,7 +28,7 @@
 | 任务 id | **层级化点号 id**(`1`、`1.1`、`1.2.3`),层级即 id 前缀,worktree 命名 `wf-<workflow>-<dotted>` |
 | gate | **执行前设定(期望/验收标准),执行后更新(子任务回报 → 编排者核对)** |
 | worktree | 每步一个,`gittree create wf-<workflow>-<step>`,并行任务同 base_sha |
-| 子任务形态 | 可见交互式子 pi,`ghostctl new-window --cwd <worktree> --command "pi" --input <短指引>`,一个任务一个 tab |
+| 子任务形态 | 可见交互式子 pi,`ghostctl new-tab --window-id <绑定窗口> --cwd <worktree> --command "pi" --input <短指引>`,一个任务一个 tab |
 | 任务传递 | **任务 markdown 写入数据库**(workflow_steps.task_md,派发时冻结副本入 workflow_attempts.task_md),`--input` 只注入短指引(身份 + 指向 `/wf context`),杜绝长文本粘贴错乱 |
 | 上下文 | **不复用父会话**:新会话,子 agent 在 worktree 内自主探索、自己发挥 |
 | 完成回报 | 子 pi 内 `/wf done <stepId> <JSON>` 写库;监听端轮询 `ghostctl layout --json` 按 tab 标题感知存活 |
@@ -40,9 +40,9 @@
 | 积木 | 用途 | 本插件怎么用 |
 | --- | --- | --- |
 | `gittree` 插件 | worktree 创建/合并/清理/占用检测 | `gittree create/merge/clean` 照用 |
-| `ghostctl` | Ghostty 布局查询/建 tab/关 tab/输入 | 派发开 tab(`new-window --cwd --command --input`)、监听轮询、steer 注入文本 |
+| `ghostctl` | Ghostty 布局查询/建 tab/关 tab/输入 | 派发开 tab(`new-tab --window-id --cwd --command --input`)、监听轮询、steer 注入文本 |
 | `ghostty-fork` 扩展(`/fork-split`) | 分屏开子 pi 复用当前会话 | 可作为手动替代路径(用户想复用上下文时手动用) |
-| 官方 `subagent` 示例 | 无头子进程方案 | 保留为可选的 headless 模式(§5.8),不阻塞主路线 |
+| 官方 `subagent` 示例 | 无头子进程方案 | 保留为可选的 headless 模式(§5 决策 8,未实现),不阻塞主路线 |
 | `ctx.ui.setTitle` / 环境变量(PI_WF_*) | 设置终端标题 / 传递身份 | 子 pi 身份绑定:标题供监听匹配,env 供 /wf context 定位任务 |
 | `~/.pi/agent/agents/*.md` | agent 定义(model/tools/system prompt) | 原样复用 |
 | 内置 `/goal` `/list` `/loop` | 单线编排 | 并行批次之外可用 |
@@ -54,31 +54,46 @@
 ```text
 workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 ├── src/
-│   ├── index.ts        # 入口:/wf 命令族 + widget + 子 pi 身份绑定 + skill 注册
-│   ├── cli.ts          # 辅助 CLI(创建/执行/排查,bin/wf 入口)
-│   ├── db.ts           # node:sqlite 封装:schema 迁移、读写、事件写入
-│   ├── orchestrator.ts # 编排流程:import→dispatch→verify→merge→goal-check→next(纯逻辑,可测)
-│   ├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引注入 + ghostctl new-tab(绑定窗口)
+│   ├── index.ts        # 入口:/wf 命令查注册表 + footer 状态条 + 生命周期(monitor 启停)
+│   ├── cli.ts          # CLI 适配器:main 查注册表,统一退出码(0/1/2/3);bin/wf 入口
+│   ├── command.ts      # ★ 命令注册表:32 条 CommandDef 双入口共享(见 §9.1)
+│   ├── core/
+│   │   ├── db.ts           # node:sqlite 封装:schema 迁移、读写、事件写入
+│   │   └── state.ts        # ★ STATUS_ICON 单一来源 + 状态机迁移表(STEP/WORKFLOW_TRANSITIONS)
+│   ├── exec/
+│   │   ├── dispatch.ts     # 派发流程(dispatchStep/重试/去重复用/tab 存活检测)
+│   │   ├── shell.ts        # run/resolveBin/piInvocation(进程与二进制解析)
+│   │   ├── window.ts       # Ghostty:绑定窗口/开 tab/terminal 反查/注入
+│   │   └── template.ts     # 任务 markdown 渲染 + 依赖结果模板注入
+│   ├── observe/
+│   │   ├── monitor.ts      # 存活轮询(5s)+ 状态事件检测 + 崩溃恢复
+│   │   └── wave.ts         # wave 串行合并(mergeWave)
+│   ├── ui/
+│   │   ├── status.ts       # footer 状态条渲染(setStatus,powerline 兼容)
+│   │   ├── notify.ts       # 主控自主编排通知(sendMessage followUp)
+│   │   └── board.ts        # 看板构建/文本/HTML 渲染
+│   ├── orchestrator.ts # 编排流程:import→report→verify→goal-check→next(纯逻辑,可测)
+│   ├── planner.ts      # headless planner agent 自动拆解
 │   ├── validate.ts     # 计划 JSON 校验(层级 id、agent 存在、deps 无环、期望格式)
-│   └── agents.ts       # agent 发现(零依赖,frontmatter 解析)
+│   ├── agents.ts       # agent 发现(零依赖,frontmatter 解析)
+│   └── session.ts      # 主控 pi 会话 jsonl 解析(供 wf session)
 ├── skill/
 │   └── SKILL.md        # 使用与排查手册(经 resources_discover 自动注册)
 ├── bin/
-│   └── wf              # CLI 入口(软链 ~/.local/bin/wf)
+│   └── wf              # CLI 入口(node 自动兜底:WF_NODE→PATH→fnm→brew)
 ├── test/
-│   └── workflow.test.ts # 验收测试(73 断言)
+│   └── workflow.test.ts # 验收测试(T1-T25b,276 断言)
+├── docs/               # 设计/评审记录(arch-review/arch-refactor/review-arch 等)
 ├── DESIGN.md           # 本设计文档
 ├── README.md           # 使用说明
 └── package.json        # pi.extensions 入口声明 + npm test
-
-monitor.ts(P2 实施):监听 ghostctl layout 轮询 → tab 存活 → 状态同步
 ```
 
 运行时形态:
 
 ```text
 ┌─ 主 pi(编排者)─────────────────────────────────────────────┐
-│  1. /wf start "<需求目标>"                                   │
+│  1. /wf import plan.json / /wf plan "<需求目标>"            │
 │  2. 了解仓库上下文(主 agent 探索,摘要入库)                    │
 │  3. /wf plan → planner 生成计划 JSON(层级 id)→ 校验 → 落库   │
 │  4. /wf dispatch 1.1 1.2 ──┐                                 │
@@ -387,7 +402,7 @@ merge 冲突 ──► conflict ──(人工解决)──► /wf resolve-confli
 ### 4.2 工作流状态(存 `workflow.status`)
 
 ```text
-idle ──(/wf start)──► running ──(全部 wave 合并完成)──► verifying ──(目标核对通过)──► completed
+idle ──(import/plan 后首派发)──► running ──(全部 wave 合并完成)──► verifying ──(目标核对通过)──► completed
                      │                                └──(未达成)──► running(拆 gap wave 补齐)
                      │  ├──(/wf pause / 预算超)──► paused ──(/wf resume)──► running
                      │  ├──(不可恢复失败)──► failed(修复后 /wf retry 或重跑)
@@ -440,7 +455,7 @@ wave N 拆解(并行/串行组合,视依赖而定)
   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
      → 写入 workflow_steps.task_md;事件 step_dispatched
   3. 组装短指引 pointer(身份 + 指向 /wf context + 回报方式)→ 写入 workflow_attempts.pointer
-  4. ghostctl new-window --cwd <worktree> \
+  4. ghostctl new-tab --window-id <绑定窗口> --cwd <worktree> \
         --command "env PI_WF_WORKFLOW=<workflowId> PI_WF_STEP=<dotted> pi" \
         --input "<短指引>"
      (事件 step_tab_opened,记录 tab_id)
@@ -516,7 +531,7 @@ workflow: add-redis-cache | step: 1.1 | wave: 2
 
 ```text
 dispatch:gittree create wf-<workflow>-<dotted>(基于 base_sha,事件 worktree_created)
-        task_md 渲染入库 + 短指引注入 + ghostctl new-window(事件 step_dispatched / step_tab_opened)
+        task_md 渲染入库 + 短指引注入 + ghostctl new-tab 到绑定窗口(事件 step_dispatched / step_tab_opened)
 成功:子 pi 内 git commit → 编排者侧 /wf merge(事件 worktree_merged)
 失败/重派:gittree clean <name> --branch --force 重建(事件 worktree_cleaned)
 清理:/wf clean → gittree clean all --yes(仅 gittree- 前缀,占用中自动跳过)
@@ -536,7 +551,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 ### 8.1 看板即查询
 
-本期不做呈现(§8.2 未来实现),只保证数据完备 + 实时 widget:
+已实现:`/wf board [--wave N]`(终端 5 列)+ `--html` 单文件导出;数据全部来自下述查询:
 
 - 列分布:`SELECT status, count(*) FROM workflow_steps WHERE workflow_id=? GROUP BY status`;
 - 看板列映射:pending/ready→待办,dispatched/running→进行中,reported/waiting-verify→待核对,done/skipped→完成,failed/aborted/conflict/needs-fix→异常;
@@ -547,40 +562,45 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 - 任务树:`WITH RECURSIVE` 按 id 前缀展开,或直接 `ORDER BY sort_order`(点号路径天然层级);
 - 文件反查:`SELECT s.id, s.title FROM workflow_steps s, json_each(s.files_changed) WHERE json_each.value LIKE 'src/auth/%'`。
 
-### 8.2 看板呈现(未来,优先级排序)
+### 8.2 看板呈现(已实现 + 规划)
 
-| 形态 | 说明 | 优先级 |
+| 形态 | 状态 | 说明 |
 | --- | --- | --- |
-| pi 内 TUI 看板 `/wf board` | pi-tui 组件渲染看板列 + 卡片,层级 id 直接成树 | P5a |
-| 同步思源数据库 | 订阅 workflow_events 增推送到思源 AV(属性视图/看板) | P5b |
-| 静态 HTML 看板 | `/wf board --html out.html` 快照单文件 | P5c |
+| pi 内 TUI 看板 `/wf board` | ✅ 已实现 | 终端 5 列(待办/进行中/待核对/完成/异常),层级缩进 + 摘要 |
+| 静态 HTML 看板 `/wf board --html out.html` | ✅ 已实现 | 单文件快照,浏览器打开/分享 |
+| 同步思源数据库 | 规划中 | 订阅 workflow_events 增推送到思源 AV(属性视图/看板) |
 
-本期:编辑区上方 widget(`wf: add-redis-cache wave2 5/12 ✓4 ⏳1 ✗0 $1.23`)+ `/wf status` 文本全景。
+实时展示:编排者 footer 状态条(`ctx.ui.setStatus("wf", …)`,powerline 兼容)+ `/wf status` 文本全景 + `/wf board`。
 
 ---
 
 ## 9. 命令与 UI
 
-### 9.1 /wf 命令族(编排者侧)
+### 9.1 命令族(32 条,双入口共享;/wf 与 wf CLI 同一注册表)
 
-| 命令 | 作用 |
-| --- | --- |
-| `/wf start "<需求目标>"` | 编排入口:记 goal,引导 recon → plan |
-| `/wf plan` | planner agent 拆解当前 wave(JSON 契约 → 校验 → 落库,写 step_created) |
-| `/wf import <steps.json>` | 手工 JSON 走同一校验通道(不经过 planner) |
-| `/wf next` | 评估上 wave 合并结果,拆下一 wave |
-| `/wf dispatch <dotted>… [--parallel]` | 派发:worktree + task_md 入库 + 短指引 + 开 tab(写 step_dispatched) |
-| `/wf verify <dotted> [approve\|reject <原因>]` | 核对期望 vs 回报(gate 更新环节) |
-| `/wf merge [--wave N]` | wave 全部终态后串行合并;冲突转 conflict |
-| `/wf resolve-conflict <dotted>` | 冲突已人工解决,继续 |
-| `/wf goal-check [approve\|reject <原因>]` | 目标完成度核对(verifying 状态,见 §4.4) |
-| `/wf steer <dotted> <文本>` | 向子任务 tab 注入文本(ghostctl input) |
-| `/wf pause` / `/wf resume` / `/wf abort` | 暂停(不杀 tab,停止推进)/ 恢复 / 杀所有子 tab 进程 |
-| `/wf status` / `/wf tree` / `/wf step <id>` / `/wf events [--follow]` | 全景 / 层级任务树 / 单步详情(含 attempts)/ 审计流 |
-| `/wf retry <dotted> [--fresh]` | 重派(默认复用原 worktree,`--fresh` 重建) |
-| `/wf skip <dotted> [reason]` | 人工终态(写事件) |
-| `/wf close-tab <dotted>` | 确认可关闭该任务 tab |
-| `/wf clean` | 清理残留 worktree / 归档终态 workflow |
+| 命令 | 入口 | 作用 |
+| --- | --- | --- |
+| `/wf plan "<目标>" [--repo] [--workflow] [--dry-run]` | both | planner agent 自动拆解(无 id=新建,有 id=追加 gap wave) |
+| `/wf import <plan.json>` | both | 手工 JSON 走同一校验通道(不经过 planner) |
+| `/wf plan-init` | cli | 生成 plan.json 模板 |
+| `/wf dispatch <dotted…> [--workflow] [--dry-run]` | both | 派发:worktree + task_md 入库 + 短指引 + 开 tab(写 step_dispatched);无参=派发就绪集 |
+| `/wf verify <dotted> [approve\|reject <原因>]` | both | 核对期望 vs 回报(gate 更新环节) |
+| `/wf merge [--wave N]` | both | wave 全部终态后串行合并;冲突转 conflict |
+| `/wf resolve-conflict <stepId>` | both | 冲突已人工解决,继续 |
+| `/wf goal-check [--workflow <id>] [approve\|reject <原因>]` | both | 目标完成度核对(verifying 状态,见 §4.4) |
+| `/wf next [--note <说明>]` | both | 滚动到下一 wave(gap wave 用) |
+| `/wf retry <dotted> [--fresh]` | both | 重派(默认复用原 worktree,`--fresh` 重建);**tab 仍存活则复用不重开**(实时去重) |
+| `/wf skip <stepId> <原因>` | both | 人工终态:非终态 → skipped(依赖视为 done) |
+| `/wf steer <dotted> <文本>` | pi | 向子任务 tab 注入文本(CLI 用 `wf inject <target> <text...>` 等价) |
+| `/wf resume [--workflow <id>]` | both | paused → running(预算超限暂停后恢复) |
+| `/wf rebind-window [wfId]` | both | 绑定窗口已关闭时,重绑当前焦点窗口 |
+| `/wf status [--all]` / `/wf tree` / `/wf board [--wave N] [--html]` | both | 全景 / 层级任务树 / 看板(终端列 + HTML 导出) |
+| `/wf step <id>` / `/wf events [N] [--follow]` | both | 单步详情(含 attempts)/ 审计流 |
+| `/wf context [stepId]` | both | 读任务详情:无参按身份解析(子 pi),显式传 stepId(CLI) |
+| `/wf done <id> '<JSON>'` / `/wf fail <id> <原因>` | both | 回报(子任务侧) |
+| `wf inject/poll/session/open-tab/fix-tab/tabs/cleanup/clean/doctor/debug` | cli | 排查/自动化专用(详见 skill/SKILL.md §4.6 命令矩阵) |
+
+不再存在的设计命令(已被替代):`/wf start`(用 import/plan 直接建)、`/wf pause`(预算护栏自动 pause)、`/wf abort`、`/wf close-tab`(cleanup 统一关终态 tab)。
 
 ### 9.2 子 pi 侧命令(子任务 tab 内)
 
@@ -588,16 +608,17 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 | --- | --- |
 | `/wf done <dotted> <JSON>` | 回报完成(写 workflow_attempts/workflow_steps/workflow_events) |
 | `/wf fail <dotted> <原因>` | 主动报失败 |
-| `/wf context` | 从 DB 读 workflow_steps.task_md(优先本次派发的 workflow_attempts.task_md 冻结版)回显任务详情 |
+| `/wf context` | 从 DB 读 workflow_steps.task_md(优先本次派发的 workflow_attempts.task_md 冻结版)回显任务详情;CLI 同款 `wf context [stepId]` |
 
 ### 9.3 工具(主 agent 用)
 
-`workflow` 工具:`{action: start|plan|dispatch|verify|merge|goal-check|next|status}`。工具与命令共用 orchestrator.ts,主 agent 在流程 1-7 中按需调用。
+`workflow` 工具(`/wf plan/dispatch/verify/merge/goal-check` 等)与命令共用 orchestrator.ts,主 agent 在流程 1-7 中按需调用。
 
 ### 9.4 UI
 
 - 子 tab 标题:`wf <workflowId>/<dotted>`(`ctx.ui.setTitle`,session_start 时设);
-- 编排者 widget:wave/步骤分布/进行中 tab/成本,监听事件实时刷新。
+- 编排者 footer 状态条:`ctx.ui.setStatus("wf", …)`(pi 原生 footer 与 pi-powerline-footer 的 extension_statuses 段都渲染;monitor 5s tick + 每次 /wf 命令后刷新;无活动 workflow 自动清空);
+- 编排者 widget:status/tree/board/step/events/goal-check 按命令展示,监听事件实时刷新。
 
 ---
 
@@ -615,11 +636,11 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 | 阶段 | 内容 | 验收标准 |
 | --- | --- | --- |
-| **P1 派发闭环** | db.ts(完整 schema,§3)+ dispatch.ts(gittree create + task_md 渲染入库 + 短指引 + ghostctl new-window)+ `/wf context/done/fail` + `/wf status` + 手工 `/wf verify` | 手动 `/wf import` 一个含 1.1/1.2 的计划 → dispatch 出两个 tab,子 pi 经 `/wf context` 取任务、`/wf done` 回报后 DB 完整留痕,`/wf tree` 显示层级 |
+| **P1 派发闭环** | db.ts(完整 schema,§3)+ dispatch.ts(gittree create + task_md 渲染入库 + 短指引 + ghostctl new-tab)+ `/wf context/done/fail` + `/wf status` + 手工 `/wf verify` | 手动 `/wf import` 一个含 1.1/1.2 的计划 → dispatch 出两个 tab,子 pi 经 `/wf context` 取任务、`/wf done` 回报后 DB 完整留痕,`/wf tree` 显示层级 |
 | **P2 监听与批次** | monitor.ts(ghostctl 轮询 + 标题匹配)+ wave 推进(就绪集按 deps 并行/串行)+ `/wf merge` + 崩溃恢复(按 tab_id 重连) | 3 并行任务各改各文件,wave 完成串行合回;关一个 tab 不回报 → 自动 aborted;杀 pi 重启后状态重连 |
 | **P3 期望核对** | expectations 设定(任务 markdown 注入)+ 自动/人工核对 + needs-fix 闭环 + retry + 预算护栏 + steer | "执行前设定期望 → 回报 → 核对不达标 → needs-fix 重派 → 达标"全链路事件完整 |
 | **P4 智能编排** | `/wf plan` / `/wf next` 自动拆解(planner JSON 契约)+ **目标把关闭环**(verifying + goal-check + gap wave) | 一条需求目标 → 自动 recon+plan+wave 迭代执行 → 目标核对通过才 completed,未达成自动补 wave |
-| **P5 看板(未来)** | §8.2 三形态按优先级实现 | 看板数据全部来自 §8.1 查询 |
+| **P5 看板** | §8.2:终端列看板 ✅ + HTML 导出 ✅;思源同步规划中 | 看板数据全部来自 §8.1 查询 |
 
 每阶段结束:`/reload` 热加载验证 + 真实小仓库演练 + 文档更新。
 
@@ -646,12 +667,12 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 6. **监听**:ghostctl layout 轮询按标题匹配,`/wf done` 为正式回报通道,tab 消失为兜底;
 7. **迭代批次**:wave 内并行/串行,合并冲突解决后再拆下一 wave;
 8. **目标把关**:workflow 结束前必须核对最初目标全部达成(verifying → completed / gap wave),否则不允许结束;
-9. 看板形态本期不做,先保证数据模型完整(§8);
+9. 看板已实现(§8.1/8.2):终端 5 列 + HTML 导出;思源同步规划中;
 10. **不参考 pi-dynamic-workflows**:不符合要求,自研初版完成后再看生态;
 11. **任务传递**:任务 markdown 写入数据库(`workflow_steps.task_md` 当前版 + `workflow_attempts.task_md` 冻结版),`--input` 只注入短指引,子 agent 经 `/wf context` 自取任务;
 12. **监听轮询间隔**:5s(可配);
-13. **tab 生命周期**:子任务完成不自动关 tab,留给人看;`/wf close-tab` 手动关;
-14. **headless 模式**:保留(§5.8)。
+13. **tab 生命周期**:子任务完成不自动关 tab(留给人看);`wf cleanup` 统一关终态 tab + 清 .pi-glla(合并前置);
+14. **headless 模式**:设计保留(§5 决策 8),尚未实现;当前子任务形态为可见 tab。
 
 ### 待确认
 

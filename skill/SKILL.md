@@ -385,14 +385,21 @@ wf cleanup           # ④ 收尾清理:关终态 tab + 清 .pi-glla
 ```bash
 wf plan-init <name> "<目标>" [--repo <path>] [--steps N]   # 生成 plan.json 模板
 wf import <plan.json>                                      # 校验 + 落库
+wf plan "<目标>" [--repo] [--workflow] [--dry-run]           # planner 自动拆解(无 id=新建,有 id=追加)
 wf status [--json]                                         # 状态全景
 wf tree [workflowId]                                       # 任务树
 wf step <id>                                               # 单步详情
+wf context [stepId]                                        # 任务正文(无参=身份解析,子 pi 用)
 wf events [workflowId] [N] [--follow]                      # 审计流(可跟随)
 wf dispatch <dotted...> [--workflow <id>] [--dry-run]      # 派发(自动化/无头)
 wf verify <id> approve|reject [原因]                       # 核对
 wf merge [--wave N]                                         # 合并 wave 回主分支
-wf retry <id> [--fresh]                                     # 重派失败/中止/待修步骤
+wf retry <id> [--fresh]                                     # 重派失败/中止/待修步骤(tab 存活则复用不重开)
+wf skip <id> <原因>                                         # 人工终态:非终态 → skipped
+wf resolve-conflict <stepId>                               # 冲突解决后确认 → done,继续 merge
+wf goal-check [--workflow <id>] [approve|reject <原因>]      # 目标把关(不在仓库根目录时务必 --workflow)
+wf next [--note <说明>]                                     # 滚动到下一 wave
+wf resume [--workflow <id>]                                # 预算超限暂停后恢复
 wf rebind-window [wfId]                                    # 重新绑定窗口(绑定窗口已关闭时)
 wf done <id> '<JSON>' | wf fail <id> <原因>                # 回报(子任务侧)
 wf tabs [workflowId] [--json]                               # 子任务 tab 状态(存活判定)
@@ -406,6 +413,8 @@ wf session [workflowId|--last] [-n N] [--json]             # 读主控会话最�
 wf open-tab <stepId>                                       # 手动补开子任务 tab 并恢复 running
 wf fix-tab <stepId> <tid|auto>                             # 修复 DB 步骤 tab 状态(排查用,只改状态)
 ```
+
+(双入口命令矩阵与 /wf 独有命令见 §4.6;`/wf steer` 等价 `wf inject`。)
 
 ## 7. 安全须知
 

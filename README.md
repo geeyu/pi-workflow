@@ -17,38 +17,45 @@ pi install git:github.com/geeyu/pi-workflow
 
 ## 技能与辅助脚本
 
-- **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 创建/执行/子任务/核对/**排查手册**(§5 常见问题对照表 + SQL 查询 + 重置)。
-- **CLI**:`bin/wf`(已软链 `~/.local/bin/wf`)—— 不依赖 pi 交互的创建/执行/排查:
+- **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 创建/执行/子任务/核对/**排查手册**(§5 常见问题对照表 + SQL 查询列名速查 + 重置)+ **§4.6 双入口命令矩阵**。
+- **CLI**:`bin/wf`(已软链 `~/.local/bin/wf`)—— 不依赖 pi 交互的创建/执行/排查;node 自动兑底(WF_NODE→PATH→fnm→brew),裸 PATH 可用:
 
 ```bash
 wf doctor               # 环境自检(node/gittree/ghostctl/python3/DB)
 wf plan-init <name> "<目标>" [--repo <path>]   # 生成 plan.json 模板
 wf import plan.json     # 校验 + 落库
+wf plan "<目标>"         # planner agent 自动拆解
 wf status [--json]      # 状态全景
-wf tree / wf step <id>  # 任务树 / 单步详情
+wf tree / wf step <id> / wf context <id>   # 任务树 / 单步详情 / 任务正文
 wf events [--follow]    # 审计流
 wf dispatch <dotted...> [--dry-run]  # 派发(无头)
 wf verify <id> approve|reject / wf done <id> '<JSON>' / wf fail <id> <原因>
-wf clean / wf debug     # 清理 / 诊断
+wf merge / wf retry <id> [--fresh] / wf skip <id> <原因> / wf goal-check --workflow <id> approve
+wf inject <target> <text...> / wf poll / wf session / wf open-tab / wf fix-tab
+wf tabs / wf cleanup / wf clean / wf debug     # 排查/清理
 ```
+
+全部 32 条命令清单与双入口差异见 skill/SKILL.md §4.6。
 
 ## 文件结构
 
 ```text
 src/
-├── index.ts        # /wf 命令族 + widget + 子 pi 身份绑定 + skill 注册
-├── cli.ts          # 辅助 CLI(与插件共享核心逻辑,bin/wf 入口)
-├── db.ts           # node:sqlite 封装:schema 迁移(user_version)、读写、事件双写
-├── orchestrator.ts # 核心流程:importPlan / reportDone / reportFail / verifyStep(纯逻辑,可测)
-├── dispatch.ts     # 派发:gittree create + task_md 渲染入库 + 短指引 + ghostctl new-tab(绑定窗口)
-├── validate.ts     # 计划 JSON 校验(层级点号 id / agent / deps 无环)+ packDotted
-└── agents.ts       # agent 发现(~/.pi/agent/agents/*.md,frontmatter 格式,零依赖)
-skill/
-└── SKILL.md        # 使用与排查手册(自动注册)
-bin/
-└── wf              # CLI 入口(软链 ~/.local/bin/wf)
-test/
-└── workflow.test.ts # 验收测试(73 断言)
+├── index.ts        # pi 插件入口:命令查注册表 + footer 状态条 + 生命周期
+├── cli.ts          # CLI 适配器(bin/wf 入口),与插件共享命令注册表
+├── command.ts      # ★ 命令注册表:32 条 CommandDef 双入口共享
+├── core/           # db.ts(SQLite repository)+ state.ts(图标/状态机迁移表单一来源)
+├── exec/           # dispatch.ts(派发/重试/去重)+ shell.ts(进程)+ window.ts(Ghostty)+ template.ts(任务渲染)
+├── observe/        # monitor.ts(存活轮询/事件检测)+ wave.ts(wave 合并)
+├── ui/             # status.ts(footer 状态条)+ notify.ts(主控通知)+ board.ts(看板)
+├── orchestrator.ts # 核心流程:importPlan / reportDone / verifyStep / goal-check(纯逻辑,可测)
+├── planner.ts      # planner agent(headless)自动拆解
+├── validate.ts     # 计划 JSON 校验(层级点号 id / agent / deps 无环)
+├── agents.ts       # agent 发现(~/.pi/agent/agents/*.md,frontmatter 格式,零依赖)
+└── session.ts      # 主控会话 jsonl 解析
+skill/SKILL.md      # 使用与排查手册(自动注册)
+bin/wf              # CLI 入口(软链 ~/.local/bin/wf)
+test/workflow.test.ts # 验收测试(T1-T25b,276 断言)
 ```
 
 ## 使用(编排者侧,仓库根目录)
@@ -110,7 +117,7 @@ node --experimental-strip-types test/workflow.test.ts
 - P2 监听与批次 ✅(monitor.ts:tab 存活轮询 5s + 消失→aborted + 崩溃恢复 + 就绪集派发 + wave 串行 merge)
 - P3 期望核对 ✅(retry 上下文注入 + max_retries + steer + resolve-conflict + usage 自报 + 预算护栏 + 超时检查)
 - P4 智能编排 ✅(/wf plan 自动拆解 + goal-check 目标把关 + /wf next wave 滚动 + /wf resume)
-- P5 看板 ✅(/wf board 终端列看板 + --html 单文件导出;思源同步见设计文档 §8.2 待实施)
+- P5 看板 ✅(/wf board 终端列看板 + --html 单文件导出;思源同步规划中,见设计文档 §8.2)
 
 ### P5 新增用法
 
