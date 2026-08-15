@@ -19,7 +19,6 @@ import {
 	buildUpdate,
 	getLatestAttempt,
 	getRunningSteps,
-	getStep,
 	getStepsByWave,
 	getStepsByWorkflow,
 	getWave,
@@ -55,26 +54,26 @@ export async function fetchLiveTabIds(
 
 export interface PollResult {
 	closed: string[]; // 本次检测到 tab 消失的步骤 id
+	timedOut: string[]; // 本次检测到超时的步骤 id
 }
 
 /**
  * 存活检测一轮:running/dispatched 且记录了 tab_id 的步骤,
  * 其 terminal 不在布局中 → 事件 step_tab_closed → 步骤/attempt 标 aborted。
  * 无 tab_id 的步骤跳过(无法判定,交给人工)。
+ * 另检查 timeout_min 超时(设计 §10 护栏):running 超时 → aborted。
  */
 export async function pollOnce(
 	db: DatabaseSync,
 	opts: { ghostctlBin?: string } = {},
 ): Promise<PollResult> {
 	const running = getRunningSteps(db);
-	if (running.length === 0) return { closed: [] };
+	if (running.length === 0) return { closed: [], timedOut: [] };
 
 	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
 	// 按仓库分组,每个仓库一次 layout
 	const byRepo = new Map<string, StepRow[]>();
 	for (const s of running) {
-		const wf = getStep(db, s.id)?.workflow_id;
-		void wf;
 		const repo = getRepoOfStep(db, s.id);
 		if (!repo) continue;
 		if (!byRepo.has(repo)) byRepo.set(repo, []);
@@ -82,19 +81,57 @@ export async function pollOnce(
 	}
 
 	const closed: string[] = [];
+	const timedOut: string[] = [];
+	const nowMs = Date.now();
+	// 超时检查(不依赖 ghostctl)
+	for (const s of running) {
+		if (
+			s.status === "running" &&
+			s.started_at &&
+			s.timeout_min > 0 &&
+			nowMs - s.started_at > s.timeout_min * 60_000
+		) {
+			const reason = `超时(${s.timeout_min}min 未完成)`;
+			updateStepStatus(db, s.id, STEP_STATUS.aborted, { error: reason });
+			const attempt = getLatestAttempt(db, s.id);
+			if (attempt && attempt.status === ATTEMPT_STATUS.running) {
+				buildUpdate(
+					db,
+					"workflow_attempts",
+					{ status: "aborted", error: reason, finished_at: Date.now() },
+					{ id: attempt.id },
+				);
+			}
+			addEvent(db, {
+				workflowId: s.workflow_id,
+				stepId: s.id,
+				attemptId: attempt?.id,
+				type: EVT.stepAborted,
+				payload: { reason },
+			});
+			timedOut.push(s.id);
+		}
+	}
+
 	for (const [repo, steps] of byRepo) {
 		const live = await fetchLiveTabIds(ghostctlBin, repo);
 		for (const s of steps) {
 			if (!s.tab_id) continue;
 			if (live.has(s.tab_id)) continue;
 			// tab 消失且未回报 → aborted
-			updateStepStatus(db, s.id, STEP_STATUS.aborted, { error: "tab 已关闭(未回报)" });
+			updateStepStatus(db, s.id, STEP_STATUS.aborted, {
+				error: "tab 已关闭(未回报)",
+			});
 			const attempt = getLatestAttempt(db, s.id);
 			if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 				buildUpdate(
 					db,
 					"workflow_attempts",
-					{ status: "aborted", error: "tab 已关闭(未回报)", finished_at: Date.now() },
+					{
+						status: "aborted",
+						error: "tab 已关闭(未回报)",
+						finished_at: Date.now(),
+					},
 					{ id: attempt.id },
 				);
 			}
@@ -108,7 +145,7 @@ export async function pollOnce(
 			closed.push(s.id);
 		}
 	}
-	return { closed };
+	return { closed, timedOut };
 }
 
 /** 步骤所属仓库根(workflow.repo_path) */
@@ -185,7 +222,9 @@ export function getReadySteps(
 	const steps = waveId
 		? getStepsByWave(db, waveId)
 		: getStepsByWorkflow(db, workflowId);
-	return steps.filter((s) => s.status === STEP_STATUS.pending && depsDone(db, s));
+	return steps.filter(
+		(s) => s.status === STEP_STATUS.pending && depsDone(db, s),
+	);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -216,11 +255,25 @@ export async function mergeWave(
 	const gittreeBin = opts.gittreeBin ?? resolveBin("gittree");
 	const wave = getWave(db, workflow.id, waveSeq);
 	if (!wave) {
-		return { ok: false, wave: waveSeq, merged: [], conflicts: [], skipped: 0, error: `wave ${waveSeq} 不存在` };
+		return {
+			ok: false,
+			wave: waveSeq,
+			merged: [],
+			conflicts: [],
+			skipped: 0,
+			error: `wave ${waveSeq} 不存在`,
+		};
 	}
 	const steps = getStepsByWave(db, wave.id);
 	if (steps.length === 0) {
-		return { ok: false, wave: waveSeq, merged: [], conflicts: [], skipped: 0, error: `wave ${waveSeq} 没有步骤` };
+		return {
+			ok: false,
+			wave: waveSeq,
+			merged: [],
+			conflicts: [],
+			skipped: 0,
+			error: `wave ${waveSeq} 没有步骤`,
+		};
 	}
 
 	const notFinal = steps.filter(
@@ -245,7 +298,11 @@ export async function mergeWave(
 		if (s.status === STEP_STATUS.skipped || !s.worktree) {
 			continue;
 		}
-		const res = await run(gittreeBin, ["merge", s.worktree, "--delete"], workflow.repo_path);
+		const res = await run(
+			gittreeBin,
+			["merge", s.worktree, "--delete"],
+			workflow.repo_path,
+		);
 		if (res.code === 0) {
 			merged.push(s.id);
 			addEvent(db, {
@@ -263,7 +320,10 @@ export async function mergeWave(
 				workflowId: workflow.id,
 				stepId: s.id,
 				type: EVT.mergeConflict,
-				payload: { worktree: s.worktree, detail: (res.stderr || res.stdout).slice(0, 500) },
+				payload: {
+					worktree: s.worktree,
+					detail: (res.stderr || res.stdout).slice(0, 500),
+				},
 			});
 			conflicts.push(s.id);
 			break; // 冲突中断后续合并(需人工解决)
@@ -271,25 +331,50 @@ export async function mergeWave(
 	}
 
 	if (conflicts.length === 0) {
-		buildUpdate(db, "workflow_waves", { status: "merged", merged_at: Date.now() }, { id: wave.id });
+		buildUpdate(
+			db,
+			"workflow_waves",
+			{ status: "merged", merged_at: Date.now() },
+			{ id: wave.id },
+		);
 		addEvent(db, {
 			workflowId: workflow.id,
 			waveId: wave.id,
 			type: EVT.waveMerged,
 			payload: { wave: waveSeq, merged },
 		});
-		return { ok: true, wave: waveSeq, merged, conflicts, skipped: steps.length - merged.length };
+		return {
+			ok: true,
+			wave: waveSeq,
+			merged,
+			conflicts,
+			skipped: steps.length - merged.length,
+		};
 	}
 
-	return { ok: false, wave: waveSeq, merged, conflicts, skipped: 0, error: `wave ${waveSeq} 存在冲突,解决后 /wf resolve-conflict` };
+	return {
+		ok: false,
+		wave: waveSeq,
+		merged,
+		conflicts,
+		skipped: 0,
+		error: `wave ${waveSeq} 存在冲突,解决后 /wf resolve-conflict`,
+	};
 }
 
 /** 供测试/诊断:wave 合并进度预览(不执行) */
-export function mergePreview(db: DatabaseSync, workflowId: string, waveSeq: number): string[] {
+export function mergePreview(
+	db: DatabaseSync,
+	workflowId: string,
+	waveSeq: number,
+): string[] {
 	const wave = getWave(db, workflowId, waveSeq);
 	if (!wave) return [];
 	const steps = getStepsByWave(db, wave.id);
 	return [...steps]
 		.sort((a, b) => a.sort_order - b.sort_order)
-		.map((s) => `${s.id} [${s.status}] ${s.worktree ? worktreeName(workflowId, s.id.slice(workflowId.length + 1)) : "(无 worktree)"}`);
+		.map(
+			(s) =>
+				`${s.id} [${s.status}] ${s.worktree ? worktreeName(workflowId, s.id.slice(workflowId.length + 1)) : "(无 worktree)"}`,
+		);
 }

@@ -11,6 +11,7 @@ import {
 	ATTEMPT_STATUS,
 	EVT,
 	STEP_STATUS,
+	type WorkflowRow,
 	addEvent,
 	addStepDeps,
 	buildUpdate,
@@ -23,6 +24,7 @@ import {
 	setStepMeta,
 	updateStepReport,
 	updateStepStatus,
+	workflowCost,
 } from "./db.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { validatePlan, type PlanInput } from "./validate.ts";
@@ -186,6 +188,8 @@ export function reportDone(
 		);
 	}
 	updateStepReport(db, stepId, report);
+	// 可选 usage 自报(设计 P3 预算护栏数据源):{input, output, costCents, turns}
+	applyUsage(db, stepId, attempt, report.usage);
 	const nextStatus =
 		step.gate === 1 ? STEP_STATUS.waitingVerify : STEP_STATUS.reported;
 	updateStepStatus(db, stepId, nextStatus);
@@ -197,6 +201,83 @@ export function reportDone(
 		payload: { report, gate: step.gate === 1 },
 	});
 	return { ok: true, status: nextStatus };
+}
+
+interface UsageReport {
+	input?: number;
+	output?: number;
+	costCents?: number;
+	turns?: number;
+}
+
+/** 把子 agent 自报的 usage 写入 attempt 明细 + step 汇总(幂等:只处理当前 attempt) */
+function applyUsage(
+	db: DatabaseSync,
+	stepId: string,
+	attempt: ReturnType<typeof getLatestAttempt>,
+	usageRaw: unknown,
+): void {
+	if (typeof usageRaw !== "object" || usageRaw === null) return;
+	const u = usageRaw as UsageReport;
+	const usage = {
+		input: Number(u.input) || 0,
+		output: Number(u.output) || 0,
+		costCents: Number(u.costCents) || 0,
+		turns: Number(u.turns) || 0,
+	};
+	if (usage.input + usage.output + usage.costCents + usage.turns === 0) return;
+	if (attempt) {
+		buildUpdate(
+			db,
+			"workflow_attempts",
+			{
+				usage_input: usage.input,
+				usage_output: usage.output,
+				usage_cost_cents: usage.costCents,
+				usage_turns: usage.turns,
+			},
+			{ id: attempt.id },
+		);
+	}
+	const stepRow = getStep(db, stepId);
+	if (stepRow) {
+		buildUpdate(
+			db,
+			"workflow_steps",
+			{
+				usage_input: (stepRow.usage_input ?? 0) + usage.input,
+				usage_output: (stepRow.usage_output ?? 0) + usage.output,
+				usage_cost_cents: (stepRow.usage_cost_cents ?? 0) + usage.costCents,
+				usage_turns: (stepRow.usage_turns ?? 0) + usage.turns,
+			},
+			{ id: stepId },
+		);
+	}
+}
+
+export interface BudgetCheck {
+	ok: boolean;
+	reason?: string;
+}
+
+/**
+ * 预算护栏(设计 §10):累计成本(budget_cents 美分)超限 → 拒绝继续派发。
+ * 未设预算或暂无 usage 数据时放行。
+ */
+export function checkBudget(
+	db: DatabaseSync,
+	workflow: WorkflowRow,
+): BudgetCheck {
+	if (!workflow.budget_cents) return { ok: true };
+	const cost = workflowCost(db, workflow.id);
+	const spent = cost?.cost_cents ?? 0;
+	if (spent >= workflow.budget_cents) {
+		return {
+			ok: false,
+			reason: `预算已用尽(${(spent / 100).toFixed(2)} / ${(workflow.budget_cents / 100).toFixed(2)} 元);需调整预算或人工处理`,
+		};
+	}
+	return { ok: true };
 }
 
 /** 子任务主动报失败(/wf fail) */

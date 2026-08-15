@@ -23,6 +23,7 @@ import {
 	addEvent,
 	buildUpdate,
 	createAttempt,
+	getLatestAttempt,
 	getStep,
 	getStepDeps,
 	getStepMeta,
@@ -145,46 +146,58 @@ export function renderTaskMd(
 	step: StepRow,
 	waveSeq: number,
 ): string {
-	// 原始任务文本:优先 step_metadata.task_raw(import 时写入),退化到 task_md
-	const rawTask =
-		(getStepMeta(db, step.id, "task_raw") as string | undefined) ??
-		step.task_md;
-	const renderedTask = injectDeps(
-		rawTask,
-		getDepSummaries(db, step),
-		workflow.repo_path,
-	);
+// 原始任务文本:优先 step_metadata.task_raw(import 时写入),退化到 task_md
+const rawTask =
+(getStepMeta(db, step.id, "task_raw") as string | undefined) ??
+step.task_md;
+const renderedTask = injectDeps(
+rawTask,
+getDepSummaries(db, step),
+workflow.repo_path,
+);
 
-	const expectations = parseExpectations(step.expectations);
-	const expLines =
-		expectations.length > 0
-			? expectations.map((e) => `- ${e}`).join("\n")
-			: "- (未设定,自主判断完成标准)";
+const expectations = parseExpectations(step.expectations);
+const expLines =
+expectations.length > 0
+? expectations.map((e) => `- ${e}`).join("\n")
+: "- (未设定,自主判断完成标准)";
 
-	const dotted = step.id.slice(workflow.id.length + 1);
+const dotted = step.id.slice(workflow.id.length + 1);
+const lines = [
+`# 任务 ${dotted}(workflow: ${workflow.id}, wave ${waveSeq})`,
+``,
+`## 需求目标`,
+workflow.goal.trim() || "(无)",
+``,
+`## 本步任务`,
+renderedTask.trim() || "(无任务描述,自行理解目标)",
+``,
+`## 期望/验收标准(执行前设定)`,
+expLines,
+``,
+`## 约束`,
+`- 你工作在 worktree ${step.worktree ?? worktreeName(workflow.id, dotted)} 内,只改动该目录下的文件`,
+`- 不要使用 git stash / 不要动 .worktrees/ 与主工作区`,
+`- 完成后在 worktree 内提交 git commit`,
+``,
+`## 输出契约`,
+`完成任务后,执行 /wf done ${dotted},参数为 JSON:`,
+`{"summary": "...", "filesChanged": [...], "issues": [...], "tests": "passed|failed|none"}`,
+`完成后可自行关闭本 tab。`,
+];
 
-	return [
-		`# 任务 ${dotted}(workflow: ${workflow.id}, wave ${waveSeq})`,
-		``,
-		`## 需求目标`,
-		workflow.goal.trim() || "(无)",
-		``,
-		`## 本步任务`,
-		renderedTask.trim() || "(无任务描述,自行理解目标)",
-		``,
-		`## 期望/验收标准(执行前设定)`,
-		expLines,
-		``,
-		`## 约束`,
-		`- 你工作在 worktree ${step.worktree ?? worktreeName(workflow.id, dotted)} 内,只改动该目录下的文件`,
-		`- 不要使用 git stash / 不要动 .worktrees/ 与主工作区`,
-		`- 完成后在 worktree 内提交 git commit`,
-		``,
-		`## 输出契约`,
-		`完成任务后,执行 /wf done ${dotted},参数为 JSON:`,
-		`{"summary": "...", "filesChanged": [...], "issues": [...], "tests": "passed|failed|none"}`,
-		`完成后可自行关闭本 tab。`,
-	].join("\n");
+// 重派上下文:needs-fix / failed / aborted 时注入上次失败原因与回报(设计 P3)
+if (["needs-fix", "failed", "aborted"].includes(step.status)) {
+const attempt = getLatestAttempt(db, step.id);
+const parts: string[] = [``, `## 上次尝试反馈(重派参考)`];
+if (attempt?.error) parts.push(`- 原因: ${attempt.error}`);
+else if (step.error) parts.push(`- 原因: ${step.error}`);
+if (attempt?.report) parts.push(`- 上次回报: ${attempt.report}`);
+else if (step.report) parts.push(`- 上次回报: ${step.report}`);
+if (parts.length > 2) lines.push(...parts);
+}
+
+return lines.join("\n");
 }
 
 /** 组装短指引(注入子 pi 首条消息,不传长任务正文) */
@@ -374,6 +387,8 @@ export function resolveBin(name: "gittree" | "ghostctl"): string {
 
 export interface DispatchOptions {
 	dryRun?: boolean;
+	/** fresh=true:先 gittree clean --branch --force 重建 worktree(设计 §7.1) */
+	fresh?: boolean;
 	/** 覆盖 gittree/ghostctl 可执行文件(测试用) */
 	gittreeBin?: string;
 	ghostctlBin?: string;
@@ -411,6 +426,16 @@ export async function dispatchStep(
 		};
 	}
 
+	// 重试上限(设计 P3:超过 max_retries 拒绝,提示人工处理)
+	const isRetry = ["failed", "aborted", "needs-fix"].includes(step.status);
+	if (isRetry && step.retries_done >= step.max_retries) {
+		return {
+			ok: false,
+			stepId: step.id,
+			error: `已重试 ${step.retries_done}/${step.max_retries} 次,超过上限;请人工处理后 /wf skip 或调整计划`,
+		};
+	}
+
 	// 依赖未完成拒绝派发(设计 §4.3 wave 顺序语义:先依赖,后并行,再后续)
 	if (!depsDone(db, step)) {
 		const pending = getStepDeps(db, step.id).filter((depId) => {
@@ -439,6 +464,28 @@ export async function dispatchStep(
 
 	// 0. 冻结 base_sha(首次派发)
 	await ensureBaseSha(db, workflow);
+
+	// 0.5 fresh:先清理旧 worktree 重建(事件 worktree_cleaned,设计 §7.1)
+	if (opts.fresh) {
+		const cleanRes = await run(
+			opts.gittreeBin ?? resolveBin("gittree"),
+			["clean", wtName, "--branch", "--force"],
+			workflow.repo_path,
+		);
+		if (cleanRes.code !== 0) {
+			return {
+				ok: false,
+				stepId: step.id,
+				error: `gittree clean 失败(可能仍被占用): ${cleanRes.stderr || cleanRes.stdout}`,
+			};
+		}
+		addEvent(db, {
+			workflowId: workflow.id,
+			stepId: step.id,
+			type: EVT.worktreeCleaned,
+			payload: { worktree: wtName, fresh: true },
+		});
+	}
 
 	// 1. worktree(事件 worktree_created)
 	const createRes = await run(
@@ -472,6 +519,7 @@ export async function dispatchStep(
 			task_md: taskMd,
 			worktree: wtName,
 			status: "dispatched",
+			retries_done: isRetry ? step.retries_done + 1 : step.retries_done,
 			updated_at: Date.now(),
 		},
 		{ id: step.id },
@@ -480,7 +528,11 @@ export async function dispatchStep(
 		workflowId: workflow.id,
 		stepId: step.id,
 		type: EVT.stepDispatched,
-		payload: { dotted, worktree: wtName },
+		payload: {
+			dotted,
+			worktree: wtName,
+			retry: isRetry ? step.retries_done + 1 : undefined,
+		},
 	});
 
 	// 3. attempt 行(冻结 task_md + pointer)

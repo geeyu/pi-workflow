@@ -285,9 +285,44 @@ async function cmdMerge(args: string[]): Promise<void> {
 	}
 	const res = await mergeWave(db, workflow, waveSeq ?? workflow.current_wave);
 	if (res.ok) {
-		console.log(`✓ wave ${res.wave} 合并完成:${res.merged.length} 个步骤合回主分支`);
+		console.log(
+			`✓ wave ${res.wave} 合并完成:${res.merged.length} 个步骤合回主分支`,
+		);
 	} else {
 		console.error(`✗ wave ${res.wave} 合并未完成: ${res.error}`);
+		process.exit(1);
+	}
+}
+
+async function cmdRetry(args: string[]): Promise<void> {
+	const fresh = args.includes("--fresh");
+	const token = args.find((a) => a !== "--fresh");
+	if (!token) {
+		console.error("用法: wf retry <id> [--fresh]");
+		process.exit(1);
+	}
+	const step =
+		getStep(db, token) ?? getStep(db, `${resolveWorkflowId()}-${token}`);
+	if (!step) {
+		console.error(`✗ 步骤不存在: ${token}`);
+		process.exit(1);
+	}
+	if (!["failed", "aborted", "needs-fix"].includes(step.status)) {
+		console.error(`✗ 状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`);
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, step.workflow_id);
+	if (!workflow) {
+		console.error(`✗ workflow 不存在: ${step.workflow_id}`);
+		process.exit(1);
+	}
+	const res = await dispatchStep(db, workflow, step, { fresh });
+	if (res.ok) {
+		console.log(
+			`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
+		);
+	} else {
+		console.error(`✗ 重派失败: ${res.error}`);
 		process.exit(1);
 	}
 }
@@ -505,6 +540,9 @@ async function main(): Promise<void> {
 		case "merge":
 			await cmdMerge(args);
 			break;
+		case "retry":
+			await cmdRetry(args);
+			break;
 		case "done":
 			cmdDone(args);
 			break;
@@ -534,6 +572,7 @@ async function main(): Promise<void> {
   wf dispatch <dotted...> [--workflow <id>] [--dry-run]      派发子任务(真实开 tab)
   wf verify <id> approve|reject [原因]                       期望核对
   wf merge [--wave N]                                        合并 wave 回主分支
+  wf retry <id> [--fresh]                                     重派失败/中止/待修步骤(--fresh 重建 worktree)
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
   wf clean                                                   清理 worktree
   wf doctor                                                  环境自检

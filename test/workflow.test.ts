@@ -218,7 +218,7 @@ async function main(): Promise<void> {
 	const steps = dbMod.getStepsByWorkflow(db2, "demo-wf");
 	assert(steps.length === 4, "4 个步骤落库");
 	assert(
-		steps.every((s) => s.task_md === s.task_md),
+		steps.every((s) => s.task_md === DEMO_PLAN.steps.find((p) => p.id === s.id.slice("demo-wf".length + 1))?.task),
 		"task_md 初值 = 原始任务文本",
 	);
 	const dupImport = orchMod.importPlan(db2, DEMO_PLAN, tmpDir, AGENTS);
@@ -543,6 +543,13 @@ async function main(): Promise<void> {
 
 	console.log("== T10 monitor 存活检测 ==");
 	const monitorMod = await import("../src/monitor.ts");
+	// T7 已 fail 过 scratch-wf-1 一次(retries_done=1);调大上限以便本测试多次重派
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ max_retries: 5 },
+		{ id: "scratch-wf-1" },
+	);
 	// 复用 T6 的 scratch 场景:重新派发(可重派)→ running + tab_id
 	const sWf2 = dbMod.getWorkflow(db2, "scratch-wf")!;
 	const sStep2 = dbMod.getStep(db2, "scratch-wf-1")!;
@@ -561,10 +568,7 @@ async function main(): Promise<void> {
 		{ mode: 0o755 },
 	);
 	const gone = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
-	assert(
-		gone.closed.includes("scratch-wf-1"),
-		"tab 消失未回报 → aborted",
-	);
+	assert(gone.closed.includes("scratch-wf-1"), "tab 消失未回报 → aborted");
 	const sAborted = dbMod.getStep(db2, "scratch-wf-1");
 	assert(sAborted?.status === "aborted", "步骤状态 aborted");
 	const evtClosed = dbMod
@@ -572,14 +576,22 @@ async function main(): Promise<void> {
 		.some((e) => e.type === "step_tab_closed");
 	assert(evtClosed, "step_tab_closed 事件");
 	// fake layout 含该 terminal → pollOnce 保持 running
-	const re2 = await dispatchMod.dispatchStep(db2, sWf2, dbMod.getStep(db2, "scratch-wf-1")!, {
-		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
-	});
+	const re2 = await dispatchMod.dispatchStep(
+		db2,
+		sWf2,
+		dbMod.getStep(db2, "scratch-wf-1")!,
+		{
+			gittreeBin: "gittree",
+			ghostctlBin: fakeGhostctl,
+		},
+	);
 	assert(re2.ok, "aborted 后可重派");
 	const alive = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
 	assert(alive.closed.length === 0, "tab 存活 → 保持 running");
-	assert(dbMod.getStep(db2, "scratch-wf-1")?.status === "running", "步骤保持 running");
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
+		"步骤保持 running",
+	);
 
 	console.log("== T11 就绪集 getReadySteps ==");
 	const readyWf = orchMod.importPlan(
@@ -593,7 +605,13 @@ async function main(): Promise<void> {
 				{ id: "1", title: "方案", agent: "planner", task: "方案" },
 				{ id: "1.1", title: "A", agent: "worker", deps: ["1"], task: "A" },
 				{ id: "1.2", title: "B", agent: "worker", deps: ["1"], task: "B" },
-				{ id: "2", title: "评审", agent: "reviewer", deps: ["1.1", "1.2"], task: "评" },
+				{
+					id: "2",
+					title: "评审",
+					agent: "reviewer",
+					deps: ["1.1", "1.2"],
+					task: "评",
+				},
 			],
 		},
 		tmpDir,
@@ -659,13 +677,21 @@ async function main(): Promise<void> {
 	// 未全部完成时拒绝合并
 	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.running);
 	const blockedMerge = await monitorMod.mergeWave(db2, mWf, 1);
-	assert(!blockedMerge.ok && blockedMerge.error!.includes("未全部完成"), "未完成拒绝合并");
+	assert(
+		!blockedMerge.ok && blockedMerge.error!.includes("未全部完成"),
+		"未完成拒绝合并",
+	);
 	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.done);
 	// 真实串行合并
 	const merged = await monitorMod.mergeWave(db2, mWf, 1);
-	assert(merged.ok && merged.merged.length === 2, `wave 合并完成(${merged.merged.join(",")})`);
+	assert(
+		merged.ok && merged.merged.length === 2,
+		`wave 合并完成(${merged.merged.join(",")})`,
+	);
 	const waveRow = db2
-		.prepare("SELECT status FROM workflow_waves WHERE workflow_id='merge-wf' AND seq=1")
+		.prepare(
+			"SELECT status FROM workflow_waves WHERE workflow_id='merge-wf' AND seq=1",
+		)
 		.get() as { status: string };
 	assert(waveRow.status === "merged", "wave → merged");
 	const evtMerged = dbMod
@@ -673,14 +699,91 @@ async function main(): Promise<void> {
 		.some((e) => e.type === "wave_merged");
 	assert(evtMerged, "wave_merged 事件");
 	// 主分支应包含子任务提交
-	const log = execFileSync("git", ["-C", scratchRepo, "log", "--oneline", "-5"], {
-		encoding: "utf-8",
-	});
-	assert(log.includes("feat 1") && log.includes("feat 2"), `主分支含子任务提交(${log.trim().split("\n")[0]})`);
+	const log = execFileSync(
+		"git",
+		["-C", scratchRepo, "log", "--oneline", "-5"],
+		{
+			encoding: "utf-8",
+		},
+	);
+	assert(
+		log.includes("feat 1") && log.includes("feat 2"),
+		`主分支含子任务提交(${log.trim().split("\n")[0]})`,
+	);
 	// merge --delete 后 worktree 已清理
 	assert(
-		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
+		!fs.existsSync(
+			path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1"),
+		),
 		"merge --delete 清理 worktree",
+	);
+
+	console.log("== T13 retry 上下文注入 / max_retries ==");
+	// ready-wf-2 依赖 1.1/1.2(已 done),标 failed 后重派
+	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.failed, {
+		error: "编译失败",
+	});
+	const rw = dbMod.getWorkflow(db2, "ready-wf")!;
+	const rwStep2 = dbMod.getStep(db2, "ready-wf-2")!;
+	const retryMd = dispatchMod.renderTaskMd(db2, rw, rwStep2, 1);
+	assert(
+		retryMd.includes("上次尝试反馈") && retryMd.includes("编译失败"),
+		"重派注入上次失败原因",
+	);
+	const retryRes = await dispatchMod.dispatchStep(db2, rw, rwStep2, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeGhostctl,
+	});
+	assert(retryRes.ok, "failed 可重派");
+	assert(
+		dbMod.getStep(db2, "ready-wf-2")?.retries_done === 1,
+		"retries_done 递增",
+	);
+	// 再失败 → 超过 max_retries(默认 1)拒绝
+	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.failed, {
+		error: "又失败",
+	});
+	const over = await dispatchMod.dispatchStep(
+		db2,
+		rw,
+		dbMod.getStep(db2, "ready-wf-2")!,
+		{ gittreeBin: "gittree", ghostctlBin: fakeGhostctl },
+	);
+	assert(!over.ok && over.error!.includes("上限"), "超过 max_retries 拒绝");
+
+	console.log("== T14 usage 落库 + budget 护栏 ==");
+	const r14 = orchMod.reportDone(db2, "ready-wf-2", {
+		summary: "完成",
+		filesChanged: [],
+		issues: [],
+		tests: "passed",
+		usage: { input: 1000, output: 500, costCents: 200, turns: 3 },
+	});
+	assert(r14.ok, "带 usage 回报成功");
+	const att2 = dbMod.getLatestAttempt(db2, "ready-wf-2");
+	assert(
+		att2?.usage_input === 1000 && att2?.usage_cost_cents === 200,
+		"attempt usage 落库",
+	);
+	const step2b = dbMod.getStep(db2, "ready-wf-2");
+	assert(step2b?.usage_cost_cents === 200, "step usage 汇总");
+	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
+	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
+	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
+	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
+	assert(budgetOk.ok, "无预算放行");
+
+	console.log("== T15 超时检查 ==");
+	// 构造 running 但 started_at 在 timeout_min 之前的步骤
+	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
+	db2.prepare(
+		"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
+	).run(Date.now() - 3 * 60 * 1000);
+	const poll = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
+	assert(poll.timedOut.includes("ready-wf-1"), "超时标 aborted");
+	assert(
+		dbMod.getStep(db2, "ready-wf-1")?.status === "aborted",
+		"超时步骤 aborted",
 	);
 
 	// 清理

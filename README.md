@@ -108,7 +108,20 @@ node --experimental-strip-types test/workflow.test.ts
 
 - P1 派发闭环 ✅(db + import + dispatch + context/done/fail + verify + status/tree/step/events)
 - P2 监听与批次 ✅(monitor.ts:tab 存活轮询 5s + 消失→aborted + 崩溃恢复 + 就绪集派发 + wave 串行 merge)
-- P3-P5 见设计文档 §11
+- P3 期望核对 ✅(retry 上下文注入 + max_retries + steer + resolve-conflict + usage 自报 + 预算护栏 + 超时检查)
+- P4-P5 见设计文档 §11
+
+### P3 新增用法
+
+```text
+/wf retry <id> [--fresh]              # 重派 failed/aborted/needs-fix(自动注入上次失败原因)
+/wf steer <dotted> <文本>             # 向子任务 tab 注入指令
+/wf resolve-conflict <dotted>         # 冲突解决后确认,继续 /wf merge
+wf retry <id> [--fresh]               # CLI 同款
+```
+
+- 子 agent 可在 `/wf done` 里带 `usage: {input, output, costCents, turns}` 自报成本 → 预算护栏生效
+- 预算超限自动暂停;单步 `timeout_min` 超时自动 aborted;`max_retries` 防无限重试
 
 ### P2 新增用法
 

@@ -109,6 +109,10 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | `依赖未完成,先完成: …` | 派发顺序违反依赖 | 按 §2 顺序:先依赖,后并行,再后续 |
 | `/wf done` 提示步骤不存在 | 子 tab 身份没识别 | 检查 env `PI_WF_WORKFLOW/PI_WF_STEP`;或用完整 id(`/wf done <workflowId>-<dotted>`) |
 | 状态回退 | new-tab 失败时步骤自动 failed 可重派 | `/wf retry <id>` |
+| 步骤标 aborted「超时(Nmin 未完成)」 | 超过 steps.timeout_min(monitor 检测) | 调大 timeout_min 后 `/wf retry <id>` |
+| 派发被拒「预算已用尽」 | 累计 usage_cost_cents ≥ budget_cents | 调整预算或人工处理;`/wf resume` 恢复 |
+| 派发被拒「已重试 N/M 次,超过上限」 | retries_done ≥ max_retries | 人工介入;`/wf skip` 或调大 max_retries 后重派 |
+| 需要向运行中的子任务补充指令 | — | `/wf steer <dotted> <文本>`(进子 pi 输入框并回车) |
 | worktree 堆积 | 失败/中止的 worktree 保留现场 | `gittree list` 查看;`/wf clean` 或 `gittree clean <name> --branch --force` |
 
 ### 5.3 直接查库(SQLite,只读安全)
@@ -141,6 +145,8 @@ wf step <id>                                               # 单步详情
 wf events [workflowId] [N] [--follow]                      # 审计流(可跟随)
 wf dispatch <dotted...> [--workflow <id>] [--dry-run]      # 派发(自动化/无头)
 wf verify <id> approve|reject [原因]                       # 核对
+wf merge [--wave N]                                         # 合并 wave 回主分支
+wf retry <id> [--fresh]                                     # 重派失败/中止/待修步骤
 wf done <id> '<JSON>' | wf fail <id> <原因>                # 回报(子任务侧)
 wf clean                                                   # 清理 worktree
 wf doctor                                                  # 环境自检
@@ -152,4 +158,4 @@ wf debug                                                   # 诊断信息
 - 子任务 tab 是可见交互会话,执行前用户可干预;
 - 项目级 agent(`.pi/agents/`)默认禁用,`trustProjectAgents` + 确认后才用;
 - 合并前必须 worktree 内已 commit;`/wf done` 只写状态,合并权在编排者(合并动作见 P2);
-- 预算护栏:`budget_cents` 累计超限自动 pause;`max_steps` 防拆解失控;单步 `timeout_min` 超时标 aborted。
+- 预算护栏:`budget_cents` 累计超限自动 pause(子 agent 经 `/wf done` 的 usage 字段自报成本);`max_steps` 防拆解失控;单步 `timeout_min` 超时标 aborted;`max_retries` 防无限重试。

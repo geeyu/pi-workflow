@@ -21,7 +21,11 @@ const EXT_DIR =
 		: path.dirname(fileURLToPath(import.meta.url));
 import {
 	ATTEMPT_STATUS,
+	EVT,
+	STEP_STATUS,
+	WORKFLOW_STATUS,
 	type StepRow,
+	addEvent,
 	getAttemptsByStep,
 	getEvents,
 	getLatestAttempt,
@@ -34,16 +38,19 @@ import {
 	listWorkflows,
 	getDb,
 	stepStatusCounts,
+	updateStepStatus,
+	updateWorkflowStatus,
 	workflowCost,
 } from "./db.ts";
 import {
 	importPlan,
+	checkBudget,
 	reportDone,
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
 import type { PlanInput } from "./validate.ts";
-import { dispatchStep, parseExpectations } from "./dispatch.ts";
+import { dispatchStep, parseExpectations, resolveBin, run } from "./dispatch.ts";
 import {
 	getReadySteps,
 	mergeWave,
@@ -217,7 +224,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const [sub, ...rest] = args.trim().split(/\s+/);
-					try {
+			try {
 				switch (sub) {
 					case "import":
 						await cmdImport(ctx, rest);
@@ -236,6 +243,15 @@ export default function workflowExtension(pi: ExtensionAPI) {
 						break;
 					case "verify":
 						cmdVerify(ctx, rest);
+						break;
+					case "retry":
+						await cmdRetry(ctx, rest);
+						break;
+					case "steer":
+						await cmdSteer(ctx, rest);
+						break;
+					case "resolve-conflict":
+						cmdResolveConflict(ctx, rest);
 						break;
 					case "merge":
 						await cmdMerge(ctx, rest);
@@ -338,13 +354,31 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			return;
 		}
 
+		// 预算护栏(设计 §10):累计成本超限 → 拒绝派发并暂停
+		if (!dryRun) {
+			const budget = checkBudget(db, workflow);
+			if (!budget.ok) {
+				updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.paused);
+				addEvent(db, {
+					workflowId: wfId,
+					type: EVT.workflowPaused,
+					payload: { reason: budget.reason },
+				});
+				notify(ctx, `${budget.reason};workflow 已暂停(/wf resume 恢复)`, "warning");
+				return;
+			}
+		}
+
 		// 无参数 = 派发当前 wave 的全部就绪步骤(依赖全 done 的 pending)
 		const readyTokens =
 			tokens.length === 0
 				? getReadySteps(db, wfId).map((s) => s.id.slice(wfId.length + 1))
 				: tokens;
 		if (readyTokens.length === 0) {
-			notify(ctx, `wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`);
+			notify(
+				ctx,
+				`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`,
+			);
 			return;
 		}
 
@@ -653,7 +687,11 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			args.find((a) => !a.startsWith("--") && !/^\d+$/.test(a)),
 		);
 		if (!wfId) {
-			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			notify(
+				ctx,
+				"无法确定 workflow(在仓库根目录运行,或显式传 workflow id)",
+				"warning",
+			);
 			return;
 		}
 		const workflow = getWorkflow(db, wfId);
@@ -671,6 +709,104 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		} else {
 			notify(ctx, `wave ${waveSeq} 合并未完成: ${res.error}`, "warning");
 		}
+	}
+
+	// ── /wf retry <dotted|fullId> [--fresh] ───────────────
+	async function cmdRetry(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): Promise<void> {
+		const fresh = args.includes("--fresh");
+		const token = args.find((a) => a !== "--fresh");
+		if (!token) {
+			notify(ctx, "用法: /wf retry <dotted> [--fresh]", "warning");
+			return;
+		}
+		const step = findStep(ctx, token);
+		if (!step) {
+			notify(ctx, `步骤不存在: ${token}`, "error");
+			return;
+		}
+		if (!["failed", "aborted", "needs-fix"].includes(step.status)) {
+			notify(
+				ctx,
+				`状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`,
+				"warning",
+			);
+			return;
+		}
+		const workflow = getWorkflow(db, step.workflow_id);
+		if (!workflow) {
+			notify(ctx, `workflow 不存在: ${step.workflow_id}`, "error");
+			return;
+		}
+		const res = await dispatchStep(db, workflow, step, { fresh });
+		if (res.ok) {
+			notify(
+				ctx,
+				`已重派 ${step.id}${fresh ? "(--fresh 重建 worktree)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
+			);
+		} else {
+			notify(ctx, `重派失败: ${res.error}`, "warning");
+		}
+	}
+
+	// ── /wf steer <dotted|fullId> <文本> ──────────────────
+	async function cmdSteer(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): Promise<void> {
+		const [token, ...text] = args;
+		if (!token || text.length === 0) {
+			notify(ctx, "用法: /wf steer <dotted> <文本>", "warning");
+			return;
+		}
+		const step = findStep(ctx, token);
+		if (!step) {
+			notify(ctx, `步骤不存在: ${token}`, "error");
+			return;
+		}
+		if (!step.tab_id) {
+			notify(ctx, `步骤 ${step.id} 无 tab(tab_id 为空),无法 steer`, "warning");
+			return;
+		}
+		const ghostctl = resolveBin("ghostctl");
+		const msg = text.join(" ");
+		const res = await run(ghostctl, ["input", msg, "--to", step.tab_id], ctx.cwd);
+		await run(ghostctl, ["key", "enter", "--to", step.tab_id], ctx.cwd);
+		if (res.code === 0) {
+			notify(ctx, `已向 ${step.id} 的 tab 发送指令`);
+		} else {
+			notify(ctx, `发送失败: ${res.stderr || res.stdout}`, "warning");
+		}
+	}
+
+	// ── /wf resolve-conflict <dotted|fullId> ──────────────
+	function cmdResolveConflict(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): void {
+		const token = args[0];
+		if (!token) {
+			notify(ctx, "用法: /wf resolve-conflict <dotted>", "warning");
+			return;
+		}
+		const step = findStep(ctx, token);
+		if (!step) {
+			notify(ctx, `步骤不存在: ${token}`, "error");
+			return;
+		}
+		if (step.status !== "conflict") {
+			notify(ctx, `状态 ${step.status} 不是 conflict,无需解决`, "warning");
+			return;
+		}
+		updateStepStatus(db, step.id, STEP_STATUS.done);
+		addEvent(db, {
+			workflowId: step.workflow_id,
+			stepId: step.id,
+			type: EVT.stepResolved,
+		});
+		notify(ctx, `已确认解决 ${step.id} → done,可 /wf merge 继续`);
 	}
 
 	// ── 注册本插件 skill(使用与排查手册)──────────────────
