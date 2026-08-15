@@ -267,7 +267,6 @@ sqlite3 ~/.pi/agent/workflows/workflow.db "DELETE FROM workflow"   # 清空全�
 | --- | --- |
 | `wf inject <target> <text...>` | 向步骤 tab/终端注入指令并自动回车(无头版 `/wf steer`);target 解析见 5.5.1 |
 | `wf poll [workflowId] [--until S] [--timeout T] [--interval I]` | 轮询直到达成或超时;退出码 0 达成 / 1 超时 / 2 不可达 / 3 用法错 |
-| `wf-wait <stepId...> [--workflow <id>] [--timeout N] [--interval N] [--until s1,s2] [--log <file>]` | 后台守望(不阻塞 agent):监听步骤状态迁移写日志;0 达成 / 1 超时 / 2 失败态 / 3 用法错。agent 每轮开头 `tail` 日志即可,唤醒由 monitor 通知负责 |
 | `wf session [workflowId\|--last] [-n N] [--json]` | 读主控 pi 会话最近 N 条消息文本(自动跳 thinking/toolCall) |
 | `wf open-tab <stepId>` | 手动为步骤补开子任务 tab 并恢复 running(复用绑定窗口与 worktree) |
 | `wf fix-tab <stepId> <tid\|auto>` | 修复 DB 中步骤 tab 状态(排查用;只改状态不验证进程) |

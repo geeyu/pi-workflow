@@ -169,30 +169,83 @@ function statusCountsLine(
 	return `进度 ${done}/${total}  ✓${done} 运行${running} 待核对${verify} 异常${abnormal}`;
 }
 
-function renderWidget(
+function renderWorkflowStatus(
 	ctx: ExtensionCommandContext,
 	db: ReturnType<typeof getDb>,
 ): void {
-	const active = listActiveWorkflows(db).slice(0, 3);
+	// 紧凑状态走 ctx.ui.setStatus:pi 原生 footer 与 pi-powerline-footer 的
+	// extension_statuses 段都会渲染;monitor 每 5s tick + 每次 /wf 命令后刷新。
+	// 注意:不能以 "[" 开头(powerline 会把 "[...]" 当通知而非状态条内容)。
+	const active = listActiveWorkflows(db);
 	if (active.length === 0) {
-		ctx.ui.setWidget("workflow", undefined);
+		ctx.ui.setStatus("wf", undefined);
 		return;
 	}
-	const lines: string[] = [];
-	for (const w of active) {
+	const segments = active.map((w) => {
 		const counts = stepStatusCounts(db, w.id);
 		const steps = getStepsByWorkflow(db, w.id);
 		const cost = workflowCost(db, w.id);
-		const costText =
-			cost && cost.cost_cents > 0
-				? ` $${(cost.cost_cents / 100).toFixed(2)}`
-				: "";
-		lines.push(
-			`[wf] ${w.id} ${w.status} wave${w.current_wave} | ${statusCountsLine(counts, steps.length)}${costText}`,
-		);
-	}
-	ctx.ui.setWidget("workflow", lines);
+		return workflowStatusSegment(w, counts, steps, cost);
+	});
+	ctx.ui.setStatus(
+		"wf",
+		segments.join(` ${WF_ANSI.dim}·${WF_ANSI.reset} `),
+	);
 }
+
+/** 单个 workflow 的紧凑状态段:⛭ wf-demo 3/4 ▶1.2 ◐1 ✗1 $0.42 */
+function workflowStatusSegment(
+	w: WorkflowRow,
+	counts: Record<string, number>,
+	steps: StepRow[],
+	cost: { cost_cents: number } | null,
+): string {
+	const total = steps.length;
+	const done = (counts.done ?? 0) + (counts.skipped ?? 0);
+	const verify = (counts.reported ?? 0) + (counts["waiting-verify"] ?? 0);
+	const abnormal =
+		(counts.failed ?? 0) +
+		(counts.aborted ?? 0) +
+		(counts.conflict ?? 0) +
+		(counts["needs-fix"] ?? 0);
+	// 执行中的步骤(▶ + 点号 id,最多 3 个)
+	const runningIds = steps
+		.filter((s) => s.status === "running" || s.status === "dispatched")
+		.map((s) => s.id.slice(w.id.length + 1));
+	const runningText =
+		runningIds.length > 0
+			? `${WF_ANSI.yellow}▶${runningIds.slice(0, 3).join(",")}${runningIds.length > 3 ? `+${runningIds.length - 3}` : ""}${WF_ANSI.reset} `
+			: "";
+	const costText =
+		cost && cost.cost_cents > 0
+			? ` ${WF_ANSI.dim}$${(cost.cost_cents / 100).toFixed(2)}${WF_ANSI.reset}`
+			: "";
+	const parts = [
+		`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}${w.id}${WF_ANSI.reset}`,
+		`${WF_ANSI.dim}${done}/${total}${WF_ANSI.reset}`,
+	];
+	if (runningText) parts.push(runningText);
+	if (verify > 0) parts.push(`${WF_ANSI.cyan}◐${verify}${WF_ANSI.reset}`);
+	if (abnormal > 0) parts.push(`${WF_ANSI.red}✗${abnormal}${WF_ANSI.reset}`);
+	return parts.join(" ") + costText;
+}
+
+const WF_ANSI = {
+	reset: "\x1b[0m",
+	dim: "\x1b[2m",
+	yellow: "\x1b[33;1m",
+	cyan: "\x1b[36m",
+	red: "\x1b[31;1m",
+} as const;
+
+const WF_STATUS_COLOR: Record<string, string> = {
+	idle: WF_ANSI.dim,
+	running: WF_ANSI.yellow,
+	paused: WF_ANSI.dim,
+	verifying: WF_ANSI.cyan,
+	failed: WF_ANSI.red,
+	aborted: WF_ANSI.red,
+};
 
 function notify(
 	ctx: ExtensionCommandContext,
@@ -377,7 +430,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			} catch (e) {
 				notify(ctx, `wf 命令失败: ${(e as Error).message}`, "error");
 			} finally {
-				renderWidget(ctx, db);
+				renderWorkflowStatus(ctx, db);
 			}
 		},
 	});
@@ -1277,10 +1330,10 @@ export default function workflowExtension(pi: ExtensionAPI) {
 						{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
 						items,
 					),
-				onTick: () => renderWidget(ctx, db),
+				onTick: () => renderWorkflowStatus(ctx, db),
 			});
 		}
-		renderWidget(ctx, db);
+		renderWorkflowStatus(ctx, db);
 	});
 
 	pi.on("session_shutdown", async () => {
