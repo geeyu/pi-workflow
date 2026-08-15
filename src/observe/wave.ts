@@ -122,9 +122,13 @@ export async function mergeWave(
 			});
 		} else {
 			// 冲突:保留 worktree 现场,步骤标 conflict
-			updateStepStatus(db, s.id, STEP_STATUS.conflict, {
-				error: `merge 冲突: ${res.stderr || res.stdout}`.trim(),
-			});
+			updateStepStatus(
+				db,
+				s.id,
+				STEP_STATUS.conflict,
+				{ error: `merge 冲突: ${res.stderr || res.stdout}`.trim() },
+				{ strict: true },
+			);
 			addEvent(db, {
 				workflowId: workflow.id,
 				stepId: s.id,

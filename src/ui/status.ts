@@ -16,6 +16,7 @@ import {
 } from "../db.ts";
 import { STATUS_ICON } from "../core/state.ts";
 import { sanitizeTerminalText } from "../sanitize.ts";
+import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "../config.ts";
 export function statusCountsLine(
 	counts: Record<string, number>,
 	total: number,
@@ -58,8 +59,60 @@ export function renderWorkflowStatus(
 	);
 	// factory 形式:每帧拿 theme(主题语义色,跟随用户主题)与 width(截断)
 	ctx.ui.setWidget("workflow-plan", (_tui, theme) => ({
-		render: (width: number) => buildPlanLines(db, active, theme, width),
+		render: (width: number) =>
+			buildPlanLines(db, active, theme, width, {
+				collapsed: planCollapsed,
+			}),
 	}));
+}
+
+// ────────────────────────────────────────────────────────────
+// 面板折叠状态 + 完成行收起策略(参考 rpiv-todo completedTaskIdsPendingHide)
+// ────────────────────────────────────────────────────────────
+
+/** 面板折叠态(进程内;registerShortcut 切换,renderWorkflowStatus 读取) */
+let planCollapsed = false;
+
+/** 本 turn 完成、下 turn 收起的步骤 id(本 turn 显示) */
+const completedPendingHide = new Set<string>();
+/** 已收起的完成步骤 id(渲染时隐藏) */
+const hiddenCompleted = new Set<string>();
+
+/** 切换面板折叠态,返回新状态 */
+export function togglePlanCollapsed(): boolean {
+	planCollapsed = !planCollapsed;
+	return planCollapsed;
+}
+
+/** 面板当前折叠态 */
+export function isPlanCollapsed(): boolean {
+	return planCollapsed;
+}
+
+/** 完成行收起跟踪的当前状态(测试/诊断用) */
+export function completedDisplayState(): {
+	pendingHide: string[];
+	hidden: string[];
+} {
+	return {
+		pendingHide: [...completedPendingHide],
+		hidden: [...hiddenCompleted],
+	};
+}
+
+/** 重置完成行跟踪(session_start 等全新上下文时调用) */
+export function resetCompletedDisplayState(): void {
+	completedPendingHide.clear();
+	hiddenCompleted.clear();
+}
+
+/**
+ * 收起上一 turn 完成的行(agent_start 时调用):pendingHide → hidden。
+ * 本 turn 新完成的行保持显示,下个 turn 才收起(参考 rpiv completedTaskIdsPendingHide)。
+ */
+export function hideCompletedFromPreviousTurn(): void {
+	for (const id of completedPendingHide) hiddenCompleted.add(id);
+	completedPendingHide.clear();
 }
 
 /**
@@ -112,9 +165,6 @@ export const PLAN_ICON = {
 	conflict: "⚠",
 	needsFix: "↻",
 } as const;
-
-/** 每个 workflow 面板最大行数(超出折叠已完成行) */
-export const PLAN_MAX_ROWS = 10;
 
 function visibleWidth(s: string): number {
 	let n = 0;
@@ -252,6 +302,10 @@ function walkPlan(
  * 计划概览面板(rpiv-todo 风格,纯函数可测):每个活动 workflow 一段。
  * 标题 `● <id> (done/total) 🔄N` → 树形连接线逐条任务(完成行删除线置顶,
  * running 显示已运行时长,完成行显示耗时)。
+ * 折叠态(collapsed):仅标题 + `└─ <key> 展开` 提示行,不渲染任务行。(P0-2)
+ * 完成行收起:本 turn 完成的行正常显示并记入 pendingHide;hideCompletedFromPreviousTurn
+ * (agent_start)后收起——计数仍在标题,收起行计入「+N 步未显示」。(P1-3)
+ * 行预算:getMaxWidgetLines()(含标题),超预算先收完成行再截断未完成尾部。(P0-2)
  * 示例:
  *   ● wf-control-center (5/8) 🔄1
  *   ├─ ✓ 1  sources.lua 只读协议扫描器 (12m)
@@ -264,9 +318,13 @@ export function buildPlanLines(
 	workflows: WorkflowRow[],
 	theme: Theme,
 	width = 120,
+	opts: { collapsed?: boolean } = {},
 ): string[] {
 	const lines: string[] = [];
 	const fit = (line: string): string => truncWidth(line, width);
+	// 完成行(终态)判定:done/skipped
+	const isTerminal = (s: StepRow): boolean =>
+		s.status === "done" || s.status === "skipped";
 	for (const w of workflows.slice(0, 2)) {
 		const steps = getStepsByWorkflow(db, w.id);
 		if (steps.length === 0) continue;
@@ -289,15 +347,40 @@ export function buildPlanLines(
 			(verify > 0 ? ` ${theme.fg("warning", `${PLAN_ICON.verify}${verify}`)}` : "") +
 			(abnormal > 0 ? ` ${theme.fg("error", `${PLAN_ICON.abnormal}${abnormal}`)}` : "");
 		lines.push(fit(head));
+
+		// 折叠态:标题 + 展开提示行(参考 rpiv-todo 折叠渲染;折叠时不渲染任务行
+		// 也不做完成行跟踪——没有展示就无需跟踪)
+		if (opts.collapsed) {
+			const key = resolveCollapseKey();
+			const hint = key === COLLAPSE_KEY_OFF ? "已折叠" : `${key} 展开`;
+			lines.push(fit(`${theme.fg("dim", "└─")} ${theme.fg("dim", hint)}`));
+			continue;
+		}
+
+		// 完成行收起策略:先清理失效跟踪(重派后不再是终态 → 恢复显示),
+		// 已收起的从可见集剔除;本 turn 新终态行记入 pendingHide(本 turn 显示)
+		const terminalIds = new Set<string>();
+		for (const s of steps) if (isTerminal(s)) terminalIds.add(s.id);
+		for (const id of [...completedPendingHide]) {
+			if (!terminalIds.has(id)) completedPendingHide.delete(id);
+		}
+		for (const id of [...hiddenCompleted]) {
+			if (!terminalIds.has(id)) hiddenCompleted.delete(id);
+		}
+		const visible = steps.filter((s) => !hiddenCompleted.has(s.id));
+		for (const s of visible) {
+			if (isTerminal(s) && !completedPendingHide.has(s.id)) {
+				completedPendingHide.add(s.id);
+			}
+		}
+
 		// 完成行置顶(删除线),未完成在后;组内保持树序(sort_order 前缀序)
-		const isFinished = (s: StepRow): boolean =>
-			s.status === "done" || s.status === "skipped";
 		const sorted = [
-			...steps.filter(isFinished),
-			...steps.filter((s) => !isFinished(s)),
+			...visible.filter(isTerminal),
+			...visible.filter((s) => !isTerminal(s)),
 		];
 		const roots = buildPlanTree(sorted, w.id);
-		const budget = lines.length + 1 + PLAN_MAX_ROWS;
+		const budget = lines.length + 1 + getMaxWidgetLines() - 1;
 		walkPlan(roots, "", db, w.id, theme, lines, budget);
 		const hidden = steps.length - (lines.length - 1);
 		if (hidden > 0) {

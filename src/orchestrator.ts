@@ -31,6 +31,7 @@ import {
 	updateWorkflowStatus,
 	workflowCost,
 } from "./db.ts";
+import { canTransition, legalTargets } from "./core/state.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { validatePlan, type PlanInput } from "./validate.ts";
 import { sanitizeTerminalText } from "./sanitize.ts";
@@ -239,9 +240,16 @@ export function validateReportPayload(payload: unknown): {
 	return { ok: true, report: p };
 }
 
+/** 迁移校验错误文案(非法迁移给出明确错误 + 合法目标列表,P0-4) */
+function transitionError(stepId: string, from: string, to: string): string {
+	return `状态迁移非法: ${stepId} ${from} → ${to};允许: ${legalTargets(from).join(", ")}`;
+}
+
 /**
  * 子任务回报(/wf done):写 attempt + step(report/summary/files/issues/tests)
  * gate=1 → waiting-verify,否则 reported。
+ * 状态机校验:任意非终态非冲突状态可回报(手动纠正/失败后确认/驳回后重报/
+ * monitor 误判后存活回报);终态(done/skipped)与 conflict 给明确错误与合法目标。
  */
 export function reportDone(
 	db: DatabaseSync,
@@ -255,6 +263,14 @@ export function reportDone(
 	const step = getStep(db, stepId);
 	if (!step) {
 		return { ok: false, error: `步骤不存在: ${stepId}` };
+	}
+	const nextStatus =
+		step.gate === 1 ? STEP_STATUS.waitingVerify : STEP_STATUS.reported;
+	if (!canTransition(step.status, nextStatus)) {
+		return {
+			ok: false,
+			error: transitionError(step.id, step.status, nextStatus),
+		};
 	}
 	const report = checked.report!;
 	// 模型可控文本落库前净化(P0-1):summary/issues/filesChanged 过 sanitize,
@@ -284,9 +300,7 @@ export function reportDone(
 	updateStepReport(db, stepId, clean);
 	// 可选 usage 自报(设计 P3 预算护栏数据源):{input, output, costCents, turns}
 	applyUsage(db, stepId, attempt, report.usage);
-	const nextStatus =
-		step.gate === 1 ? STEP_STATUS.waitingVerify : STEP_STATUS.reported;
-	updateStepStatus(db, stepId, nextStatus);
+	updateStepStatus(db, stepId, nextStatus, undefined, { strict: true });
 	addEvent(db, {
 		workflowId: step.workflow_id,
 		stepId: step.id,
@@ -374,7 +388,7 @@ export function checkBudget(
 	return { ok: true };
 }
 
-/** 子任务主动报失败(/wf fail):reason 落库前净化(P0-1) */
+/** 子任务主动报失败(/wf fail):非终态非冲突可报(同 reportDone 口径),reason 落库前净化(P0-1) */
 export function reportFail(
 	db: DatabaseSync,
 	stepId: string,
@@ -383,6 +397,13 @@ export function reportFail(
 	const step = getStep(db, stepId);
 	if (!step) {
 		return { ok: false, error: `步骤不存在: ${stepId}` };
+	}
+	// 校验(P0-4):非终态非冲突可报(同 reportDone 口径);reason 落库前净化(P0-1)
+	if (!canTransition(step.status, STEP_STATUS.failed)) {
+		return {
+			ok: false,
+			error: transitionError(step.id, step.status, STEP_STATUS.failed),
+		};
 	}
 	reason = sanitizeTerminalText(reason);
 	const attempt = getLatestAttempt(db, stepId);
@@ -394,7 +415,7 @@ export function reportFail(
 			{ id: attempt.id },
 		);
 	}
-	updateStepStatus(db, stepId, STEP_STATUS.failed, { error: reason });
+	updateStepStatus(db, stepId, STEP_STATUS.failed, { error: reason }, { strict: true });
 	addEvent(db, {
 		workflowId: step.workflow_id,
 		stepId: step.id,
@@ -407,7 +428,8 @@ export function reportFail(
 
 /**
  * 期望核对(/wf verify,gate 执行后更新):approve → done;reject → needs-fix。
- * 仅 reported / waiting-verify 可核对。
+ * 状态机校验:仅 reported / waiting-verify 可核对(迁移表约束,非法迁移
+ * 给出明确错误与合法目标列表)。
  */
 export function verifyStep(
 	db: DatabaseSync,
@@ -419,18 +441,20 @@ export function verifyStep(
 	if (!step) {
 		return { ok: false, error: `步骤不存在: ${stepId}` };
 	}
+	const target = action === "reject" ? STEP_STATUS.needsFix : STEP_STATUS.done;
+	// 核对是「执行后」动作:仅 reported/waiting-verify 可核对(同态重复核对也拒绝)
 	if (
 		step.status !== STEP_STATUS.reported &&
 		step.status !== STEP_STATUS.waitingVerify
 	) {
 		return {
 			ok: false,
-			error: `步骤 ${step.id} 状态为 ${step.status},仅 reported/waiting-verify 可核对`,
+			error: `状态迁移非法: ${step.id} ${step.status} → ${target};允许: ${STEP_STATUS.reported}, ${STEP_STATUS.waitingVerify}`,
 		};
 	}
 	if (action === "reject") {
 		const why = reason?.trim() || "(未说明)";
-		updateStepStatus(db, stepId, STEP_STATUS.needsFix, { error: why });
+		updateStepStatus(db, stepId, STEP_STATUS.needsFix, { error: why }, { strict: true });
 		addEvent(db, {
 			workflowId: step.workflow_id,
 			stepId: step.id,
@@ -439,7 +463,7 @@ export function verifyStep(
 		});
 		return { ok: true, status: STEP_STATUS.needsFix };
 	}
-	updateStepStatus(db, stepId, STEP_STATUS.done);
+	updateStepStatus(db, stepId, STEP_STATUS.done, undefined, { strict: true });
 	addEvent(db, {
 		workflowId: step.workflow_id,
 		stepId: step.id,

@@ -30,8 +30,17 @@ import {
 	resolveIdentity,
 	type CmdEnv,
 } from "./command.ts";
-import { renderWorkflowStatus, workflowStatusSegment } from "./ui/status.ts";
-import { getDb } from "./db.ts";
+import {
+	renderWorkflowStatus,
+	workflowStatusSegment,
+	togglePlanCollapsed,
+	hideCompletedFromPreviousTurn,
+	resetCompletedDisplayState,
+} from "./ui/status.ts";
+import {
+	getDb,
+	StepTransitionError,
+} from "./db.ts";
 import {
 	recoverStaleSteps,
 	startMonitor,
@@ -61,6 +70,10 @@ import {
 	sendWorkflowNotifications,
 	NOTIFY_MAX_LINES,
 } from "./ui/notify.ts";
+import {
+	COLLAPSE_KEY_OFF,
+	resolveCollapseKey,
+} from "./config.ts";
 export {
 	sendWorkflowNotifications,
 	NOTIFY_MAX_LINES,
@@ -119,6 +132,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			} catch (e) {
 				if (e instanceof UsageError) {
 					notify(ctx, `用法: ${def.usage}`, "warning");
+				} else if (e instanceof StepTransitionError) {
+					// 状态机迁移校验错误(updateStepStatus strict):消息已含合法目标列表
+					notify(ctx, e.message, "error");
 				} else {
 					notify(ctx, `wf 命令失败: ${(e as Error).message}`, "error");
 				}
@@ -137,42 +153,69 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	// ── 存活轮询句柄(编排者侧)────────────────────────────
 	let monitorStop: (() => void) | null = null;
 
+	// ── 面板折叠快捷键(P0-2):默认 ctrl+shift+t,配置 collapseKey="off" 禁用。
+	// 键位在扩展加载时解析一次(改配置需 /reload 重绑,同 rpiv-todo);
+	// handler 折叠/展开并立即重绘面板。无 UI(headless)时 no-op。
+	const collapseKey = resolveCollapseKey();
+	if (collapseKey !== COLLAPSE_KEY_OFF) {
+		pi.registerShortcut(collapseKey, {
+			description: "折叠/展开计划概览面板",
+			handler: (ctx) => {
+				// 会话隔离:子任务会话不渲染编排者面板(与 session_start 一致)
+				if (resolveIdentity(ctx.cwd)?.stepId) return;
+				togglePlanCollapsed();
+				renderWorkflowStatus(ctx, db);
+			},
+		});
+	}
+
 	// ── session_start:子 pi 设标题;编排者崩溃恢复 + 启动轮询 ─
 	pi.on("session_start", async (_event, ctx) => {
 		const ident = resolveIdentity(ctx.cwd);
 		if (ident?.stepId) {
+			// 子任务会话(worker):只设标题,不渲染编排者面板/状态条、不启动 monitor
+			// (会话隔离强化:面板/通知/轮询只属于发起编排的会话,谁发起谁看)
 			ctx.ui.setTitle(`wf ${ident.workflowId}/${ident.dotted}`);
-		} else {
-			// 崩溃恢复:running/dispatched 但 tab 已消失 → aborted(设计 §4.5)
-			try {
-				const { closed } = await recoverStaleSteps(db);
-				if (closed.length > 0) {
-					ctx.ui.notify(
-						`[wf] 崩溃恢复:tab 已消失的步骤标 aborted: ${closed.join(", ")}`,
-						"warning",
-					);
-				}
-			} catch {
-				/* 恢复失败不阻塞启动 */
-			}
-			// 存活轮询(5s,设计决策 12)+ 状态事件通知(设计增强①)
-			// 会话隔离:monitor 只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看)
-			monitorStop = startMonitor(db, {
-				cwd: ctx.cwd,
-				onClosed: (closed) =>
-					ctx.ui.notify(
-						`[wf] tab 关闭未回报 → aborted: ${closed.join(", ")}`,
-						"warning",
-					),
-				onState: (items) =>
-					sendWorkflowNotifications(
-						db,
-						{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
-						items,
-					),
-				onTick: () => renderWorkflowStatus(ctx, db),
-			});
+			return;
 		}
+		// 编排者侧:崩溃恢复 + 面板完成行跟踪重置(全新上下文)
+		try {
+			const { closed } = await recoverStaleSteps(db);
+			if (closed.length > 0) {
+				ctx.ui.notify(
+					`[wf] 崩溃恢复:tab 已消失的步骤标 aborted: ${closed.join(", ")}`,
+					"warning",
+				);
+			}
+		} catch {
+			/* 恢复失败不阻塞启动 */
+		}
+		resetCompletedDisplayState();
+		// 存活轮询(5s,设计决策 12)+ 状态事件通知(设计增强①)
+		// 会话隔离:monitor 只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看)
+		monitorStop = startMonitor(db, {
+			cwd: ctx.cwd,
+			onClosed: (closed) =>
+				ctx.ui.notify(
+					`[wf] tab 关闭未回报 → aborted: ${closed.join(", ")}`,
+					"warning",
+				),
+			onState: (items) =>
+				sendWorkflowNotifications(
+					db,
+					{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
+					items,
+				),
+			onTick: () => renderWorkflowStatus(ctx, db),
+		});
+		renderWorkflowStatus(ctx, db);
+	});
+
+	// ── agent_start:收起上一 turn 完成的面板行(P1-3,参考 rpiv completedTaskIdsPendingHide)
+	// 子会话已在上面的 session_start 提前 return,不会走到这里渲染
+	pi.on("agent_start", async (_event, ctx) => {
+		if (resolveIdentity(ctx.cwd)?.stepId) return;
+		hideCompletedFromPreviousTurn();
 		renderWorkflowStatus(ctx, db);
 	});
 

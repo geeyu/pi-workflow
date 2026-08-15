@@ -1,0 +1,42 @@
+{
+	"name": "wf-ux",
+	"title": "体验调研与优化:参考 rpiv-todo 优秀实践(工具反馈/进度/创建任务/面板)",
+	"goal": "详细调研 @juicesharp/rpiv-todo(及 pi 扩展生态)的实现与体验设计,对照优化 pi-workflow 插件的使用体验:① 工具/命令在对话流中的渲染反馈(todo → #3 / ● completed 这类);② 任务创建与进度追踪的引导;③ 面板(overlay)的折叠/配置/会话隔离;④ 状态机与依赖校验(blockedBy 悬空/循环/自锁)。输出调研报告与可落地优化清单,并实施关键优化,测试全绿。",
+	"repoPath": "/Users/geeyu/.pi/agent/extensions/workflow",
+	"wave": 1,
+	"waveNote": "体验调研与优化",
+	"steps": [
+		{
+			"id": "1",
+			"title": "调研 rpiv-todo 与 pi 生态,输出体验优化方案",
+			"agent": "planner",
+			"task": "完整阅读 @juicesharp/rpiv-todo 源码(~/.pi/agent/npm/node_modules/@juicesharp/rpiv-todo/):todo.ts(tool 注册:name/label/description/promptSnippet/promptGuidelines/parameters/execute/renderCall/renderResult)、tool/types.ts(参数 schema/错误码)、tool/response-envelope.ts(结果封装)、state/**(store/reducer/selectors,按 session sid(ctx) keyed 的状态、blockedBy 校验:悬空 id/删除依赖/自锁/循环)、view/format.ts(状态字形/语义色表)、todo-overlay.ts(factory setWidget、折叠、行预算、completed 隐藏)、config.ts(配置 maxWidgetLines/collapseKey)、locales/(i18n 9 语言)。同时读 pi 扩展 API 的类型声明(~/.pi/agent/extensions/workflow/src/pi-types.d.ts 与 pi 包 dist/core/extensions/types.d.ts),确认:pi.registerTool 的 renderCall/renderResult 机制、registerCommand 是否也有对话流渲染钩子、ExtensionUI 的全部能力。再对照 {{root}}/src/ 现有实现,输出体验优化方案到 {{root}}/docs/ux-research.md:① 差距清单(对话流反馈/创建任务引导/进度可见性/面板配置/状态机校验/会话隔离/i18n/错误提示);② 可落地优化项分级(P0 高价值低风险 / P1 中 / P2 低),每项给出:目标、实现位置(文件/函数)、风险、工作量估计;③ 明确哪些依赖 pi API 能力(如 command 无渲染钩子则说明替代方案)。git commit。",
+			"expectations": ["rpiv-todo 全模块已读透(工具注册/状态/渲染/面板/配置/i18n)", "pi API 能力确认(registerTool 渲染钩子 vs registerCommand 的差异)", "差距清单完整,优化项 P0/P1/P2 分级且可落地", "每项含实现位置与风险评估", "已 git commit"]
+		},
+		{
+			"id": "1.1",
+			"title": "实现对话流反馈与创建引导优化",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 与 {{root}}/docs/ux-research.md 的 P0 项实现,聚焦「对话流反馈 + 创建任务引导」:① 若 pi 支持命令/工具渲染钩子,为 /wf 关键命令(done/fail/dispatch/verify)加对话流状态反馈(参考 renderCall/renderResult 风格:状态字形+文本);② 若无渲染钩子,优化 notify 与 widget 反馈文案与时机(结果状态字形、进度变化);③ 优化 /wf plan 与 plan-init 的创建引导(promptSnippet 式引导、plan.json 模板注释、校验错误提示可读性);④ 参考 rpiv-todo 的 execute→state→response 链路,检查我们 dispatch/reportDone/verifyStep 的状态机一致性(状态迁移非法时给出明确错误)。实现后 node --experimental-strip-types test/workflow.test.ts 全绿(需 PATH 含 ~/.local/bin)并补充对应测试。git commit。",
+			"expectations": ["对话流/notify 反馈含状态字形与进度信息", "创建引导(plan/plan-init/校验错误)可读性提升", "状态机非法迁移有明确错误", "测试全绿含新用例", "已 git commit"]
+		},
+		{
+			"id": "1.2",
+			"title": "实现面板与配置体验优化",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 与 {{root}}/docs/ux-research.md 的 P0/P1 项实现,聚焦「面板 + 配置 + 状态机校验」:① 计划概览面板支持折叠(参考 rpiv-todo collapseKey,如 alt+t;折叠后仅标题+提示行)与行数配置(如 config 文件或 metadata,参考 maxWidgetLines);② 完成行隐藏策略(本 turn 显示、下 turn 收起,参考 rpiv-todo completedTaskIdsPendingHide)或至少支持折叠;③ 会话隔离强化检查(面板/通知按会话,已实现 repo 隔离——检查子 tab 会话是否正确隔离);④ 状态机迁移校验接入(core/state.ts 的 STEP_TRANSITIONS 建表已久未接线:在 reportDone/verifyStep/updateStepStatus 等关键入口校验 canTransition,非法迁移给出明确错误与合法目标列表);⑤ 依赖(deps)校验提示优化(参考 blockedBy 校验错误:悬空/循环/自锁的明确文案)。实现后 node --experimental-strip-types test/workflow.test.ts 全绿(需 PATH 含 ~/.local/bin)并补充对应测试。git commit。",
+			"expectations": ["面板折叠(快捷键或命令)与行数配置可用", "完成行收起策略实现", "状态机迁移校验接线(canTransition),非法迁移明确报错", "deps 校验错误文案明确(悬空/循环/自锁)", "测试全绿含新用例", "已 git commit"]
+		},
+		{
+			"id": "2",
+			"title": "整体评审",
+			"agent": "reviewer",
+			"deps": ["1.1", "1.2"],
+			"gate": true,
+			"task": "评审 {{steps.1.1.summary}} 与 {{steps.1.2.summary}} 的实现:① 对照 {{root}}/docs/ux-research.md 的 P0/P1 清单逐项核对(哪些已落地、哪些未做及原因);② 对话流/notify 反馈是否包含状态字形与进度;③ 面板折叠/配置/完成行收起是否符合设计;④ 状态机 canTransition 接线是否覆盖关键入口、是否破坏现有合法流程(回归重点:dispatch/retry/reportDone/verifyStep/goal-check 全链路);⑤ 会话隔离无回退(子 tab/多仓库场景);⑥ 测试全绿。输出评审记录到 {{root}}/docs/review-ux.md 并 git commit。",
+			"expectations": ["P0/P1 清单逐项核对结果明确", "状态机接线无回归(全链路冒烟)", "会话隔离无回退", "测试全绿", "评审记录已提交"]
+		}
+	]
+}

@@ -14,13 +14,13 @@
  *  T8 聚合查询(状态分布/running/成本/事件/看板视图)
  *  T9 resolveIdentity(env + cwd 解析)
  */
+import type { WorkflowNotifyDetails } from "../src/ui/notify.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { StepRow } from "../src/db.ts";
-import type { WorkflowNotifyDetails } from "../src/ui/notify.ts";
 
 // 必须在 import db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -289,15 +289,13 @@ async function main(): Promise<void> {
 	if (savedPiBin === undefined) delete process.env.PI_BIN;
 	else process.env.PI_BIN = savedPiBin;
 	process.argv[1] = savedArgv;
-	// 先让步骤 1 完成(供 1.1 注入;走合法迁移链 pending→dispatched→running→done)
+	// 先让步骤 1 完成(供 1.1 注入)
 	dbMod.updateStepReport(db2, "demo-wf-1", {
 		summary: "方案已确认:Redis 直连",
 		filesChanged: ["docs/plan.md"],
 		issues: [],
 		tests: "none",
 	});
-	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.done);
 	const step11 = dbMod.getStep(db2, "demo-wf-1.1")!;
 	const md = dispatchMod.renderTaskMd(db2, wf!, step11, 1);
@@ -615,7 +613,13 @@ async function main(): Promise<void> {
 	const v1 = orchMod.verifyStep(db2, "demo-wf-2", "approve");
 	assert(v1.ok && v1.status === "done", "verify approve → done");
 	const v2 = orchMod.verifyStep(db2, "demo-wf-2", "approve");
-	assert(!v2.ok && v2.error!.includes("仅 reported"), "已 done 不可重复核对");
+	assert(
+		!v2.ok &&
+			v2.error!.includes("状态迁移非法") &&
+			v2.error!.includes("允许") &&
+			v2.error!.includes("reported"),
+		`已 done 不可重复核对(非法迁移含合法目标: ${v2.error})`,
+	);
 	// verify reject → needs-fix
 	const r3 = orchMod.reportDone(db2, "demo-wf-1.2", {
 		summary: "存储改造完成",
@@ -930,8 +934,6 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		ready1.length === 1 && ready1[0].id === "ready-wf-1",
 		`就绪集初始仅顶层(${ready1.map((s) => s.id).join(",")})`,
 	);
-	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.done);
 	const ready2 = monitorMod.getReadySteps(db2, "ready-wf");
 	assert(
@@ -939,11 +941,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			ready2.every((s) => s.id === "ready-wf-1.1" || s.id === "ready-wf-1.2"),
 		`1 done 后就绪集为 1.1/1.2(${ready2.map((s) => s.id).join(",")})`,
 	);
-	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.done);
-	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.done);
 	const ready3 = monitorMod.getReadySteps(db2, "ready-wf");
 	assert(
@@ -987,14 +985,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		execFileSync("git", ["-C", wt, "commit", "-q", "-m", `feat ${dotted}`]);
 		dbMod.updateStepStatus(db2, `merge-wf-${dotted}`, dbMod.STEP_STATUS.done);
 	}
-	// 未全部完成时拒绝合并(回退 fixture:done 步骤不可能自然回到 running,
-	// 状态机接线后此处直写 buildUpdate 模拟)
-	dbMod.buildUpdate(
-		db2,
-		"workflow_steps",
-		{ status: "running", updated_at: Date.now() },
-		{ id: "merge-wf-2" },
-	);
+	// 未全部完成时拒绝合并
+	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.running);
 	const blockedMerge = await monitorMod.mergeWave(db2, mWf, 1);
 	assert(
 		!blockedMerge.ok && blockedMerge.error!.includes("未全部完成"),
@@ -1071,9 +1063,6 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(!over.ok && over.error!.includes("上限"), "超过 max_retries 拒绝");
 
 	console.log("== T14 usage 落库 + budget 护栏 ==");
-	// T14 前把 failed 的 ready-wf-2 走合法链回 running(人工处理后再回报)
-	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.running);
 	const r14 = orchMod.reportDone(db2, "ready-wf-2", {
 		summary: "完成",
 		filesChanged: [],
@@ -1099,14 +1088,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
-	// 构造 running 但 started_at 在 timeout_min 之前的步骤(done 步骤回退是
-	// 非自然状态,状态机接线后直写 buildUpdate 模拟 fixture)
-	dbMod.buildUpdate(
-		db2,
-		"workflow_steps",
-		{ status: "running", updated_at: Date.now() },
-		{ id: "ready-wf-1" },
-	);
+	// 构造 running 但 started_at 在 timeout_min 之前的步骤
+	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
 	db2
 		.prepare(
 			"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
@@ -1324,14 +1307,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	dbMod.updateStepStatus(db2, "notify-wf-1.3", dbMod.STEP_STATUS.aborted, {
 		error: "x",
 	});
-	// conflict/needs-fix 只能从 running 进入(状态机接线后走合法链)
-	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.conflict, {
 		error: "x",
 	});
-	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.needsFix, {
 		error: "x",
 	});
@@ -1406,12 +1384,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			AGENTS,
 	);
 	assert(doneWf.ok, "notify-done-wf 导入");
-	// done 只能从 running 进入(状态机接线后走合法链)
-	for (const d of ["notify-done-wf-1", "notify-done-wf-2"]) {
-		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.dispatched);
-		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.running);
-		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.done);
-	}
+	dbMod.updateStepStatus(db2, "notify-done-wf-1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "notify-done-wf-2", dbMod.STEP_STATUS.done);
 	const doneFilter = (arr: monitorMod.NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-done-wf");
 	const wd = doneFilter(monitorMod.detectStateChanges(db2));
@@ -2321,9 +2295,6 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → failed"),
 		`wf fail(注册表派发): ${pr.stdout.trim()}`,
 	);
-	// failed 后人工处理完再回报:走合法链 failed→dispatched→running(状态机接线后)
-	dbMod.updateStepStatus(db2, "reg-wf-1", dbMod.STEP_STATUS.dispatched);
-	dbMod.updateStepStatus(db2, "reg-wf-1", dbMod.STEP_STATUS.running);
 	pr = runCli(
 		["done", "reg-wf-1", '{"summary":"s","tests":"none"}'],
 		{ cwd: tmpDir },
@@ -2348,6 +2319,274 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		pr.code === 3 && pr.stderr.includes("workflow 不存在"),
 		"poll 不存在 workflow → 退出 3(UsageError detail)",
 	);
+
+	console.log("== T26 状态机迁移校验接线(canTransition/strict/关键入口)= ");
+	const stateMod = await import("../src/core/state.ts");
+	assert(stateMod.canTransition("running", "reported"), "running → reported 合法");
+	assert(stateMod.canTransition("running", "running"), "同态幂等合法");
+	assert(!stateMod.canTransition("done", "running"), "done → running 非法");
+	assert(!stateMod.canTransition("skipped", "reported"), "skipped 终态不可回退");
+	assert(stateMod.canTransition("done", "conflict"), "done → conflict(merge 冲突)合法");
+	assert(stateMod.canTransition("conflict", "skipped"), "conflict → skipped(人工终态)合法");
+	assert(
+		stateMod.legalTargets("done").join(",") === "done,conflict",
+		"legalTargets(done) = [done, conflict]",
+	);
+	// updateStepStatus strict:非法迁移抛 StepTransitionError 且带合法目标列表
+	let transErr = "";
+	try {
+		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.reported, undefined, {
+			strict: true,
+		});
+	} catch (e) {
+		transErr = (e as Error).message;
+	}
+	assert(
+		transErr.includes("非法状态迁移") && transErr.includes("允许: done, conflict"),
+		`strict 非法迁移明确报错+合法目标(${transErr})`,
+	);
+	// 同态幂等 strict 不抛
+	let idemOk = true;
+	try {
+		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.done, undefined, {
+			strict: true,
+		});
+	} catch {
+		idemOk = false;
+	}
+	assert(idemOk, "strict 同态幂等不抛");
+	// 关键入口:reportDone/reportFail/verifyStep 非法迁移 → 明确错误 + 合法目标
+	const re1 = orchMod.reportDone(db2, "demo-wf-2", { summary: "重报" });
+	assert(
+		!re1.ok && re1.error!.includes("状态迁移非法") && re1.error!.includes("允许"),
+		`reportDone 终态拒绝(${re1.error})`,
+	);
+	const rf1 = orchMod.reportFail(db2, "demo-wf-2", "x");
+	assert(!rf1.ok && rf1.error!.includes("允许"), `reportFail 终态拒绝(${rf1.error})`);
+	const vp = orchMod.verifyStep(db2, "skip-wf-1", "approve");
+	assert(
+		!vp.ok && vp.error!.includes("允许") && vp.error!.includes("reported"),
+		`verifyStep 非核对态拒绝(${vp.error})`,
+	);
+	// conflict 步骤不可回报;但可 skip(人工终态,strict 路径)
+	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.conflict);
+	const rc = orchMod.reportDone(db2, "demo-wf-1", { summary: "冲突中回报" });
+	assert(!rc.ok && rc.error!.includes("允许"), "reportDone conflict 拒绝");
+	const t26Warns: string[] = [];
+	const t26Env = {
+		kind: "cli",
+		cwd: tmpDir,
+		db: db2,
+		show: () => {},
+		info: () => {},
+		warn: (l: string) => t26Warns.push(l),
+		fail: () => {},
+		notifyPi: () => {},
+		setExitCode: () => {},
+	};
+	cmdMod.getCommand("skip")!.run(["demo-wf-1", "人工放弃"], t26Env as never);
+	assert(
+		dbMod.getStep(db2, "demo-wf-1")?.status === "skipped" &&
+			t26Warns.length === 0,
+		"conflict → skipped(skip 命令,strict 路径)",
+	);
+	// fix-tab 终态拒绝(状态机校验先于 ghostctl 查询)
+	const ft = runCli(["fix-tab", "demo-wf-2", "auto"], { cwd: tmpDir });
+	assert(
+		ft.code === 1 && ft.stderr.includes("状态迁移非法"),
+		`fix-tab done 拒绝(${ft.stderr.trim().slice(0, 60)})`,
+	);
+
+	console.log("== T27 会话隔离强化:子任务会话不渲染编排者面板 = ");
+	const indexMod2 = await import("../src/index.ts");
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+	const extCalls: string[] = [];
+	const mockPi = {
+		on: (ev: string, h: (event: unknown, ctx: unknown) => unknown) =>
+			handlers.set(ev, h),
+		registerCommand: () => extCalls.push("registerCommand"),
+		registerShortcut: () => extCalls.push("registerShortcut"),
+		registerMessageRenderer: () => extCalls.push("registerMessageRenderer"),
+		sendMessage: async () => {},
+	};
+	const mockUi = {
+		setTitle: (t: string) => extCalls.push(`setTitle:${t}`),
+		setWidget: () => extCalls.push("setWidget"),
+		setStatus: () => extCalls.push("setStatus"),
+		notify: () => extCalls.push("notify"),
+		select: async () => undefined,
+		confirm: async () => false,
+		input: async () => undefined,
+		setEditorText: () => {},
+	};
+	indexMod2.default(mockPi as never);
+	assert(
+		handlers.has("session_start") &&
+			handlers.has("agent_start") &&
+			handlers.has("session_shutdown"),
+		"扩展生命周期注册(session_start/agent_start/shutdown)",
+	);
+	assert(extCalls.includes("registerShortcut"), "折叠快捷键已注册");
+	// 子任务会话:cwd 位于 .worktrees 内 → 只设标题,不渲染面板/状态条、不发通知
+	extCalls.length = 0;
+	await handlers.get("session_start")!("", {
+		cwd: "/repo/.worktrees/gittree-wf-demo-wf-1.1",
+		ui: mockUi,
+	});
+	assert(
+		extCalls.includes("setTitle:wf demo-wf/1.1"),
+		`子会话设标题(${extCalls.join(", ")})`,
+	);
+	assert(
+		!extCalls.includes("setWidget") &&
+			!extCalls.includes("setStatus") &&
+			!extCalls.includes("notify"),
+		`子会话不渲染编排者面板/状态条(${extCalls.join(", ")})`,
+	);
+
+	console.log("== T28 面板配置(config.ts:maxWidgetLines/collapseKey)= ");
+	const configMod = await import("../src/config.ts");
+	const savedXdg = process.env.XDG_CONFIG_HOME;
+	const cfgDir = path.join(tmpDir, "cfg");
+	fs.mkdirSync(path.join(cfgDir, "pi-workflow"), { recursive: true });
+	const writeCfg = (obj: unknown): void =>
+		fs.writeFileSync(
+			path.join(cfgDir, "pi-workflow", "config.json"),
+			JSON.stringify(obj),
+		);
+	process.env.XDG_CONFIG_HOME = cfgDir;
+	writeCfg({ maxWidgetLines: 8, collapseKey: "alt+t" });
+	assert(configMod.getMaxWidgetLines() === 8, "maxWidgetLines 8 生效");
+	assert(configMod.resolveCollapseKey() === "alt+t", "collapseKey alt+t 生效");
+	writeCfg({ maxWidgetLines: 2 });
+	assert(
+		configMod.getMaxWidgetLines() === configMod.DEFAULT_MAX_WIDGET_LINES,
+		"maxWidgetLines <3 回退默认",
+	);
+	writeCfg({ maxWidgetLines: "many" });
+	assert(
+		configMod.getMaxWidgetLines() === configMod.DEFAULT_MAX_WIDGET_LINES,
+		"maxWidgetLines 非数字回退默认",
+	);
+	writeCfg({ collapseKey: "off" });
+	assert(
+		configMod.resolveCollapseKey() === configMod.COLLAPSE_KEY_OFF,
+		"collapseKey off 禁用",
+	);
+	writeCfg({ collapseKey: "ctr+]" });
+	assert(
+		configMod.resolveCollapseKey() === configMod.DEFAULT_COLLAPSE_KEY,
+		"collapseKey 非法键位回退默认(ctr+] 会误捕所有裸 ])",
+	);
+	writeCfg({});
+	assert(
+		configMod.getMaxWidgetLines() === 10 &&
+			configMod.resolveCollapseKey() === "ctrl+shift+t",
+		"空配置默认值(maxWidgetLines=10, collapseKey=ctrl+shift+t)",
+	);
+
+	console.log("== T29 面板折叠 + 完成行收起 = ");
+	const hw = dbMod.getWorkflow(db2, "demo-wf")!;
+	// 折叠态:仅标题 + 展开提示行,无任务行
+	writeCfg({ collapseKey: "alt+t" });
+	const colLines = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120, {
+		collapsed: true,
+	});
+	assert(
+		colLines.length === 2 && colLines.join("\n").includes("alt+t 展开"),
+		`折叠态=标题+提示行(${colLines.join(" | ")})`,
+	);
+	// collapseKey off → 静态「已折叠」(不拼键位)
+	writeCfg({ collapseKey: "off" });
+	const colOff = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120, {
+		collapsed: true,
+	});
+	assert(colOff.join("\n").includes("已折叠"), "collapseKey off → 已折叠提示");
+	if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+	else process.env.XDG_CONFIG_HOME = savedXdg;
+	// toggle 切换(恢复原态)
+	const wasCollapsed = statusUiMod.isPlanCollapsed();
+	statusUiMod.togglePlanCollapsed();
+	assert(statusUiMod.isPlanCollapsed() === !wasCollapsed, "togglePlanCollapsed 切换");
+	statusUiMod.togglePlanCollapsed();
+	// 完成行收起:本 turn 显示 → 下 turn(agent_start)收起
+	statusUiMod.resetCompletedDisplayState();
+	// demo-wf 现状:1=skipped(T26 人工终态)、2=done、1.1=reported、1.2=needs-fix
+	const h1 = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120).join("\n");
+	assert(h1.includes("– 1") && h1.includes("✓ 2"), "本 turn 完成行显示");
+	statusUiMod.hideCompletedFromPreviousTurn();
+	const h2 = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120).join("\n");
+	assert(
+		!h2.includes("– 1") && !h2.includes("✓ 2"),
+		"下 turn 完成行收起",
+	);
+	assert(
+		h2.includes("(2/4)") && h2.includes("+2 步未显示"),
+		`计数保留在标题,收起行计入未显示(${h2.split("\n").slice(0, 3).join(" | ")})`,
+	);
+	statusUiMod.resetCompletedDisplayState();
+	const h3 = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120).join("\n");
+	assert(h3.includes("– 1"), "reset 后恢复显示");
+	// 重派后不再是终态 → 自动恢复显示(清理失效跟踪)
+	statusUiMod.hideCompletedFromPreviousTurn();
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ status: "running" },
+		{ id: "demo-wf-1" },
+	);
+	const h4 = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120).join("\n");
+	assert(h4.includes("🔄 1"), "重派后不再终态 → 恢复显示");
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ status: "done" },
+		{ id: "demo-wf-1" },
+	);
+	statusUiMod.resetCompletedDisplayState();
+
+	console.log("== T30 deps 校验文案(悬空/自锁/环路径)= ");
+	const vSelf = validateMod.validatePlan(
+		{
+			...DEMO_PLAN,
+			steps: [{ id: "1", title: "a", agent: "worker", deps: ["1"] }],
+		},
+		AGENTS,
+	);
+	assert(
+		vSelf.errors.some((e) => e.includes("自锁")),
+		`自锁文案(${vSelf.errors.join("; ")})`,
+	);
+	const vHang = validateMod.validatePlan(
+		{
+			...DEMO_PLAN,
+			steps: [{ id: "1", title: "a", agent: "worker", deps: ["9"] }],
+		},
+		AGENTS,
+	);
+	assert(
+		vHang.errors.some(
+			(e) => e.includes("悬空") && e.includes("依赖不存在"),
+		),
+		`悬空文案(${vHang.errors.join("; ")})`,
+	);
+	const vCycle = validateMod.validatePlan(
+		{
+			...DEMO_PLAN,
+			steps: [
+				{ id: "1", title: "a", agent: "worker", deps: ["1.1"] },
+				{ id: "1.1", title: "b", agent: "worker", deps: ["1"] },
+			],
+		},
+		AGENTS,
+	);
+	assert(
+		vCycle.errors.some(
+			(e) => e.includes("循环依赖") && e.includes("1 → 1.1 → 1"),
+		),
+		`环路径文案(${vCycle.errors.join("; ")})`,
+	);
+
 
 	console.log("== T26 P0-1 终端净化:sanitize 纯函数 + 落库/渲染接线 ==");
 	const sanMod = await import("../src/sanitize.ts");
@@ -2633,15 +2872,16 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	// 非法迁移:明确错误 + 允许列表;同状态重复写入幂等
 	try {
-		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.dispatched);
+		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.dispatched, undefined, {
+			strict: true,
+		});
 		assert(false, "conflict → dispatched 应被拒绝");
 	} catch (e) {
 		const msg = (e as Error).message;
 		assert(
 			msg.includes("非法状态迁移: san-wf-1 conflict → dispatched") &&
-				msg.includes("允许: done / failed / aborted / needs-fix / skipped") &&
-				msg.includes("人工处理"),
-			`非法迁移报错含状态/允许集/指引(${msg.slice(0, 60)}…)`,
+				msg.includes("允许: conflict, done, failed, aborted, needs-fix, skipped"),
+			`非法迁移报错含状态/允许集(${msg.slice(0, 60)}…)`,
 		);
 	}
 	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.done);
@@ -2651,17 +2891,21 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		"done → done 幂等(重复写入不报错)",
 	);
 	try {
-		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.running);
+		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.running, undefined, {
+			strict: true,
+		});
 		assert(false, "done → running 应被拒绝");
 	} catch (e) {
 		assert(
 			(e as Error).message.includes("非法状态迁移: san-wf-1 done → running") &&
-				(e as Error).message.includes("允许: conflict"),
+				(e as Error).message.includes("允许: done, conflict"),
 			`done → running 拒绝且列出仅存出口(${(e as Error).message.slice(0, 50)}…)`,
 		);
 	}
 	try {
-		dbMod.updateStepStatus(db2, "no-such-step", dbMod.STEP_STATUS.done);
+		dbMod.updateStepStatus(db2, "no-such-step", dbMod.STEP_STATUS.done, undefined, {
+			strict: true,
+		});
 		assert(false, "不存在步骤应报错");
 	} catch (e) {
 		assert(
@@ -2694,6 +2938,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			dbMod.getStep(db2, "sm-wf-1")!.status === "skipped",
 		`needs-fix → skipped 人工终态合法(${pr.code} ${pr.stdout.trim().slice(0, 40)})`,
 	);
+
 
 	// 清理
 	try {
