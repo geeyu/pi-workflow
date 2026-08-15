@@ -151,7 +151,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 				/* 恢复失败不阻塞启动 */
 			}
 			// 存活轮询(5s,设计决策 12)+ 状态事件通知(设计增强①)
+			// 会话隔离:monitor 只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看)
 			monitorStop = startMonitor(db, {
+				cwd: ctx.cwd,
 				onClosed: (closed) =>
 					ctx.ui.notify(
 						`[wf] tab 关闭未回报 → aborted: ${closed.join(", ")}`,

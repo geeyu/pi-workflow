@@ -38,7 +38,8 @@ export function renderWorkflowStatus(
 	// extension_statuses 段都会渲染;monitor 每 5s tick + 每次 /wf 命令后刷新。
 	// 注意:不能以 "[" 开头(powerline 会把 "[...]" 当通知而非状态条内容)。
 	// 面板(计划概览表格)走 setWidget,编辑区上方实时展示。
-	const active = listActiveWorkflows(db);
+	// 会话隔离:状态条/面板只显示 cwd 所在仓库的 workflow(谁发起谁看)
+	const active = listActiveWorkflows(db, ctx.cwd);
 	if (active.length === 0) {
 		ctx.ui.setStatus("wf", undefined);
 		ctx.ui.setWidget("workflow-plan", undefined);

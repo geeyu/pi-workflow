@@ -549,12 +549,23 @@ export function listWorkflows(
 		.all() as unknown as WorkflowRow[];
 }
 
-export function listActiveWorkflows(db: DatabaseSync): WorkflowRow[] {
-	return db
+export function listActiveWorkflows(
+	db: DatabaseSync,
+	repoPath?: string,
+): WorkflowRow[] {
+	const all = db
 		.prepare(
 			"SELECT * FROM workflow WHERE status NOT IN ('completed', 'aborted') ORDER BY created_at DESC",
 		)
 		.all() as unknown as WorkflowRow[];
+	if (!repoPath) return all;
+	// 会话隔离:仅返回 cwd 位于 repo_path 内(或等于)的 workflow——
+	// 谁发起的任务谁看自己的 workflow,不串扰其他仓库的编排。
+	const cwd = path.resolve(repoPath);
+	return all.filter((w) => {
+		const repo = path.resolve(w.repo_path);
+		return cwd === repo || cwd.startsWith(repo + path.sep);
+	});
 }
 
 export function updateWorkflowStatus(

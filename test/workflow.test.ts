@@ -1491,6 +1491,62 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	await idxMod.sendWorkflowNotifications(db2, fakeSender, []);
 	assert(sent.length === 0, "无事件不发送");
 
+	console.log("== T20d 会话隔离:listActiveWorkflows/detectStateChanges 按 repo 过滤 ==");
+	// 两个不同仓库的 workflow
+	const isoA = orchMod.importPlan(
+		db2,
+		{
+			name: "iso-a",
+			title: "a",
+			goal: "g",
+			repoPath: "/repo/a",
+			steps: [{ id: "1", title: "a1", agent: "worker", task: "a1" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	const isoB = orchMod.importPlan(
+		db2,
+		{
+			name: "iso-b",
+			title: "b",
+			goal: "g",
+			repoPath: "/repo/b",
+			steps: [{ id: "1", title: "b1", agent: "worker", task: "b1" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(isoA.ok && isoB.ok, "iso-a/iso-b 导入");
+	// 全量 vs 按 repo 过滤
+	assert(
+		dbMod.listActiveWorkflows(db2).some((w) => w.id === "iso-a") &&
+			dbMod.listActiveWorkflows(db2).some((w) => w.id === "iso-b"),
+		"全量包含两个仓库",
+	);
+	const mineA = dbMod.listActiveWorkflows(db2, "/repo/a");
+	assert(
+		mineA.length === 1 && mineA[0].id === "iso-a",
+		`按 repo 过滤: /repo/a 只见 iso-a(${mineA.map((w) => w.id).join(",")})`,
+	);
+	const subA = dbMod.listActiveWorkflows(db2, "/repo/a/sub/dir");
+	assert(
+		subA.length === 1 && subA[0].id === "iso-a",
+		"cwd 在 repo 子目录内也算归属",
+	);
+	// detectStateChanges 隔离:iso-a-1 reported → 只有 repoPath=/repo/a 才产出事件
+	dbMod.updateStepStatus(db2, "iso-a-1", dbMod.STEP_STATUS.reported);
+	const evB = monitorMod.detectStateChanges(db2, { repoPath: "/repo/b" });
+	assert(
+		!evB.some((i) => i.stepId === "iso-a-1"),
+		`/repo/b 会话看不到 iso-a 的事件(${evB.map((i) => i.stepId).join(",") || "无"})`,
+	);
+	const evA = monitorMod.detectStateChanges(db2, { repoPath: "/repo/a" });
+	assert(
+		evA.some((i) => i.stepId === "iso-a-1"),
+		"/repo/a 会话收到 iso-a 的事件",
+	);
+
 	console.log("== T21 pollTargetReached 纯函数 + wf poll 退出码 ==");
 	const pollMod = await import("../src/monitor.ts");
 	const mkSteps = (...statuses: string[]): StepRow[] =>

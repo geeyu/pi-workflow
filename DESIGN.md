@@ -618,6 +618,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 - 子 tab 标题:`wf <workflowId>/<dotted>`(`ctx.ui.setTitle`,session_start 时设);
 - 编排者 footer 状态条:`ctx.ui.setStatus("wf", …)`(pi 原生 footer 与 pi-powerline-footer 的 extension_statuses 段都渲染;monitor 5s tick + 每次 /wf 命令后刷新;无活动 workflow 自动清空);
+- **会话隔离(谁发起谁看)**:monitor 轮询、状态事件通知、footer 状态条、计划面板均按会话 cwd 归属过滤(`workflow.repo_path` 与 cwd 相同或为前缀)——不同仓库的 workflow 互不串扰;CLI 显式命令不受限(主动查询);
 - 编排者 widget:status/tree/board/step/events/goal-check 按命令展示,监听事件实时刷新。
 
 ---

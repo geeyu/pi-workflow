@@ -116,9 +116,16 @@ export const TAB_MISS_KEY = "tab_miss_count";
  */
 export async function pollOnce(
 	db: DatabaseSync,
-	opts: { ghostctlBin?: string } = {},
+	opts: { ghostctlBin?: string; repoPath?: string } = {},
 ): Promise<PollResult> {
-	const running = getRunningSteps(db);
+	let running = getRunningSteps(db);
+	if (opts.repoPath) {
+		// 会话隔离:只轮询 cwd 所在仓库的步骤(谁发起谁看)
+		const mine = new Set(
+			listActiveWorkflows(db, opts.repoPath).map((w) => w.id),
+		);
+		running = running.filter((s) => mine.has(s.workflow_id));
+	}
 	if (running.length === 0) return { closed: [], timedOut: [] };
 
 	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
@@ -236,6 +243,8 @@ export interface MonitorOptions {
 	/** 轮询间隔,默认 5000ms(设计决策 12) */
 	intervalMs?: number;
 	ghostctlBin?: string;
+	/** 会话隔离:只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看);缺省 = 全量 */
+	cwd?: string;
 	/** 本轮检测到 tab 消失的步骤 */
 	onClosed?: (closed: string[]) => void;
 	/** 本轮检测到的关键状态事件(主控自主编排通知,已按 attempt 去重) */
@@ -261,10 +270,11 @@ export function startMonitor(
 		try {
 			const { closed } = await pollOnce(db, {
 				ghostctlBin: opts.ghostctlBin,
+				repoPath: opts.cwd,
 			});
 			if (closed.length > 0) opts.onClosed?.(closed);
 			// 状态事件检测(主控自主编排):扫描 DB 快照,产出未通知的关键事件
-			const items = detectStateChanges(db);
+			const items = detectStateChanges(db, { repoPath: opts.cwd });
 			if (items.length > 0) await opts.onState?.(items);
 			opts.onTick?.();
 		} catch {
@@ -308,6 +318,8 @@ export interface NotifyItem {
 export interface DetectOptions {
 	/** 测试用:标记时间戳 */
 	now?: number;
+	/** 会话隔离:只检测 cwd 所在仓库的 workflow(谁发起谁看) */
+	repoPath?: string;
 }
 
 /** 步骤状态 → 事件 kind(仅关键状态,其余不通知) */
@@ -357,10 +369,10 @@ function waveDoneKey(seq: number): string {
  */
 export function detectStateChanges(
 	db: DatabaseSync,
-	_opts: DetectOptions = {},
+	opts: DetectOptions = {},
 ): NotifyItem[] {
 	const items: NotifyItem[] = [];
-	for (const wf of listActiveWorkflows(db)) {
+	for (const wf of listActiveWorkflows(db, opts.repoPath)) {
 		// 1) 步骤级:关键状态且未通知(同 attempt)
 		for (const s of getStepsByWorkflow(db, wf.id)) {
 			const kind = KIND_BY_STATUS[s.status];
