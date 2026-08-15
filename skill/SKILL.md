@@ -153,6 +153,8 @@ monitor 每 5s 检测关键状态(步骤回报/gate 待核对/失败/中止/冲�
 
 去重:每种事件每步骤每 attempt 只通知一次(重试后 attempt 变化会重新通知,不丢提醒);手动 `/wf status` 不受影响。
 
+无头脚本/定时编排路径:`wf dispatch → wf poll --until done → wf verify → wf cleanup && wf merge → wf goal-check`,组合模板与退出码约定见 §5.5.3 / §5.5.1。
+
 ## 3. 子任务侧(子 pi tab 内)
 
 ```
@@ -220,12 +222,17 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | 步骤标 aborted「超时(Nmin 未完成)」 | 超过 steps.timeout_min(monitor 检测) | 调大 timeout_min 后 `/wf retry <id>` |
 | 派发被拒「预算已用尽」 | 累计 usage_cost_cents ≥ budget_cents | 调整预算或人工处理;`/wf resume` 恢复 |
 | 派发被拒「已重试 N/M 次,超过上限」 | retries_done ≥ max_retries | 人工介入;`/wf skip` 或调大 max_retries 后重派 |
-| 需要向运行中的子任务补充指令 | — | `/wf steer <dotted> <文本>`(进子 pi 输入框并回车) |
+| 需要向运行中的子任务补充指令 | — | `/wf steer <dotted> <文本>`(进子 pi 输入框并回车);脚本侧用 `wf inject <dotted> <text>`(CLI 无头版,自动回车) |
 | merge 冲突「untracked working tree files would be overwritten: .pi-glla/…」 | 子 pi 在 worktree 里运行生成的运行时状态被跟踪 | 先 `wf cleanup`(自动清 .pi-glla + 补 .gitignore);已误提交则 `git rm -r --cached .pi-glla` 后在各 worktree 提交 |
 | 终态步骤 tab 未关 | 子 pi 完成后未自行关闭 tab | `wf cleanup`(自动 close-terminal 并清 tab_id;运行中的步骤不会被动) |
 | 子任务 tab 开了一堆 / 想查 tab 是否还活着 | 多轮派发累积 | `wf tabs [workflowId]`(每步 tab + 存活状态,`--json` 供脚本);对已终态 tab 用 `wf cleanup` |
 | merge 报 conflict 但 worktree 已删/分支不存在 | 重复 merge 或评审类步骤无提交(已修复:自动跳过) | 重新 `/wf merge` 即可;或 `/wf resolve-conflict <id>` 后重试 |
 | worktree 堆积 | 失败/中止的 worktree 保留现场 | `gittree list` 查看;`/wf clean` 或 `gittree clean <name> --branch --force` |
+| 步骤无 tab / new-tab 失败但想补开 | 派发时开 tab 失败或 tab 被误关 | `wf open-tab <id>` 手动补开并恢复 running(§5.5.3 模板 E) |
+| DB 里 tab 状态与终端不一致 | 步骤卡在无 tab 的 running / tab_id 过期 | `wf fix-tab <id> auto` 对齐状态(显式 id 须过存活校验;只改 DB,人工确认进程) |
+| 想让编排脚本等待步骤完成 | — | `wf poll --until done`(退出码 0 达成 / 1 超时 / 2 不可达,§5.5.1) |
+
+> 快捷修复序列与组合模板见 **§5.5 AI 编排操作速查**(模板 A–E);仍无法解决时按 §5.1 跑 `wf doctor` 自检环境。
 
 ### 5.3 直接查库(SQLite,只读安全)
 
@@ -243,6 +250,88 @@ sqlite3 ~/.pi/agent/workflows/workflow.db "SELECT * FROM v_workflow_kanban WHERE
 wf clean                                        # 清理 gittree worktree(仅 gittree- 前缀,占用检测保护)
 sqlite3 ~/.pi/agent/workflows/workflow.db "DELETE FROM workflow"   # 清空全部测试数据(级联)
 ```
+
+## 5.5 AI 编排操作速查(无头脚本)
+
+面向**主控 AI 自主编排 / 定时脚本**:所有 wf 命令均可无头执行(不依赖交互 tab),配合统一退出码可直接写进脚本流程。本节是高频操作与组合模板,完整命令清单见 §6。
+
+### 5.5.1 定位与约定
+
+- **退出码统一**:`0` 成功/达成;`1` 运行失败(目标不可解析、超时等);`2` 状态不可达(仅 poll,需人工介入);`3` 用法/参数错误。
+- **输出约定**:进度/诊断打 stderr,结论/数据打 stdout;`--json` 输出纯 JSON 供脚本解析。
+- **target 解析**(inject):完整 step id(`wf-x-1.1`)→ 点号 id(`1.1`)→ terminal id 前缀(十六进制,如 `1CA675C0`),先步骤后终端。
+
+### 5.5.2 高频操作一览表
+
+| 命令 | 用途 |
+| --- | --- |
+| `wf inject <target> <text...>` | 向步骤 tab/终端注入指令并自动回车(无头版 `/wf steer`);target 解析见 5.5.1 |
+| `wf poll [workflowId] [--until S] [--timeout T] [--interval I]` | 轮询直到达成或超时;退出码 0 达成 / 1 超时 / 2 不可达 / 3 用法错 |
+| `wf session [workflowId\|--last] [-n N] [--json]` | 读主控 pi 会话最近 N 条消息文本(自动跳 thinking/toolCall) |
+| `wf open-tab <stepId>` | 手动为步骤补开子任务 tab 并恢复 running(复用绑定窗口与 worktree) |
+| `wf fix-tab <stepId> <tid\|auto>` | 修复 DB 中步骤 tab 状态(排查用;只改状态不验证进程) |
+| `wf cleanup [workflowId] [--dry-run]` | 关终态 tab + 清 .pi-glla + 修 .gitignore(merge 前置) |
+| `wf tabs [workflowId] [--json]` | 查各步骤 tab 及存活状态 |
+| `wf status [--json]` | 状态全景(进度/运行中/成本/最近事件) |
+| `wf tree [workflowId]` | 层级任务树 |
+| `wf events [workflowId] [N]` | 审计流(只增不改) |
+
+派发/核对/重试等其余命令见 §6 CLI 列表。
+
+### 5.5.3 组合模板
+
+**模板 A:下发并等待**(最常用)
+
+```bash
+wf dispatch 1 1.1 1.2 && wf poll --until done --timeout 1800
+# 退出码 0 → 全部达成,进入收尾链;1 → 看 stderr 未达成步骤;2 → wf step <id> 查原因 → wf retry <id>
+```
+
+**模板 B:完整编排链**(下发 → 引导 → 轮询 → 核对 → 合并 → 把关)
+
+```bash
+wf dispatch 1 1.1 1.2                # ① 下发任务(依赖就绪后并行)
+wf inject 1.1 "补充要求:…"            # ② 引导子 agent:向子 tab 注入英文指令,自动回车
+wf poll --until done --timeout 1800  # ③ 轮询完成;退出码 2 时先按模板 D 自愈
+wf verify 2 approve                  # ④ gate 步骤核对(期望 vs 回报)
+wf cleanup && wf merge               # ⑤ 收尾:关终态 tab + 合并 wave
+wf goal-check approve                # ⑥ 目标把关 → workflow completed
+```
+
+**模板 C:轮询中注入补充指令**
+
+poll 是只读轮询,与 inject 互不干扰;子 agent 卡住或需补充要求时,另起一条命令注入即可,轮询无需中断:
+
+```bash
+wf poll --until done --timeout 1800   # 终端 1:持续轮询
+wf inject 1.1 "补充要求:请先完成 X"    # 终端 2:随时注入,自动回车
+```
+
+**模板 D:失败自愈循环**(脚本内自动重试)
+
+```bash
+until wf poll --until done --timeout 600; do
+  wf step <failed>        # 看失败原因(stderr 会列出不可达步骤)
+  wf retry <failed>       # 重派(默认复用 worktree)
+done
+```
+
+**模板 E:故障快捷修复序列**
+
+```bash
+wf tabs              # ① 查各步骤 tab 存活(哪些步骤无有效 tab)
+wf fix-tab <id> auto # ② DB tab 状态与终端不一致 → 对齐状态(只改 DB,人工确认进程在跑)
+wf open-tab <id>     # ③ new-tab 失败/tab 被关 → 手动补开并恢复 running
+wf cleanup           # ④ 收尾清理:关终态 tab + 清 .pi-glla
+```
+
+### 5.5.4 常见陷阱
+
+- DB 里 `tab_id` 是 **terminal id**(`1CA675C0` 形式),不是 tab id(`tab-xxxx`);
+- `fix-tab` 只改 DB 状态、**不验证子 pi 进程**是否真在跑,修完须人工确认;
+- `poll` **不会自动派发**:pending/ready 步骤不计入达成,需先 `wf dispatch`;
+- `inject` 文本含空格须整体引号;给子 tab 注入建议用英文(中文经 AppleScript 可能乱码,任务详情走 `/wf context`);
+- `poll` 退出码 2(出现 failed/aborted/conflict/needs-fix)表示需人工介入,不是超时。
 
 ## 6. 辅助脚本(wf CLI)
 
@@ -266,6 +355,11 @@ wf cleanup [workflowId] [--dry-run] [--no-fix]              # 关终态 tab + �
 wf clean                                                   # 清理残留 worktree
 wf doctor                                                  # 环境自检
 wf debug                                                   # 诊断信息
+wf inject <target> <text...>                               # 向步骤 tab/终端注入指令+自动回车(无头 steer;target=完整id/点号id/terminal前缀)
+wf poll [workflowId] [--until S] [--timeout T] [--interval I]  # 轮询直到达成/超时/不可达(0 达成/1 超时/2 不可达/3 用法)
+wf session [workflowId|--last] [-n N] [--json]             # 读主控会话最近 N 条消息(跳 thinking/toolCall)
+wf open-tab <stepId>                                       # 手动补开子任务 tab 并恢复 running
+wf fix-tab <stepId> <tid|auto>                             # 修复 DB 步骤 tab 状态(排查用,只改状态)
 ```
 
 ## 7. 安全须知
