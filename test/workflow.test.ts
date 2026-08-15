@@ -733,15 +733,15 @@ const planLines = statusUiMod.buildPlanLines(db2, [segWf]);
 const planText = planLines.join("\n");
 const planVisible = planText.replace(/\x1b\[[0-9;]*m/g, "");
 assert(
-	planVisible.includes("⛭") &&
+	planVisible.includes("●") &&
 		planVisible.includes("/") &&
 		planVisible.includes("(") &&
 		!planVisible.includes("┌"),
-	`面板为列表式标题(进度计数,非表格:${planVisible.slice(0, 60)})`,
+	`面板为 rpiv-todo 式标题(● 进度计数:${planVisible.slice(0, 60)})`,
 );
 assert(
-	/^\s{2}[🔄◐○✗✓⚠↻–]/m.test(planVisible),
-	`面板逐条渲染(状态字形 + 内容:${planVisible.slice(0, 120)})`,
+	/^[├└]─ [🔄◐○✗✓⚠↻–]/m.test(planVisible),
+	`面板逐条渲染(树形连接线 + 状态字形:${planVisible.slice(0, 120)})`,
 );
 // 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
 delete process.env.PI_WF_WORKFLOW;

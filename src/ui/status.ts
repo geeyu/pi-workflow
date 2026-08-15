@@ -132,40 +132,59 @@ function truncWidth(s: string, n: number): string {
 	return out + "…";
 }
 
-/** 单条任务行:层级缩进 + 状态字形 + 点号 id + 内容(+ 状态标签/依赖标注);完成行删除线。 */
+/** 执行时长:运行中=已运行,终态=耗时。60s 内秒,其余分钟,超 1h 带小时。 */
+function durText(startedAt: number | null, finishedAt: number | null): string {
+	if (!startedAt) return "";
+	const end = finishedAt ?? Date.now();
+	const sec = Math.max(0, Math.round((end - startedAt) / 1000));
+	if (sec < 60) return `${sec}s`;
+	const min = Math.floor(sec / 60);
+	if (min < 60) return `${min}m`;
+	return `${Math.floor(min / 60)}h${min % 60}m`;
+}
+
+/**
+ * 单条任务行(rpiv-todo 风格):树形连接线 + 状态字形 + 点号 id + 内容 + 时长/依赖。
+ * 完成行删除线并置顶;running 显示已运行时长。
+ */
 function planStepLine(
 	s: StepRow,
 	dotted: string,
 	deps: string[],
-	depth: number,
+	conn: string,
 ): string {
-	const indent = "  ".repeat(depth);
 	const id = padEnd(dotted, 6);
-	const title = truncWidth(s.title, Math.max(20, 60 - depth * 2));
+	const title = truncWidth(s.title, Math.max(20, 60 - conn.length));
+	const dur = durText(s.started_at, s.finished_at);
+	const durText_ =
+		dur.length > 0 ? ` ${WF_ANSI.dim}(${dur})${WF_ANSI.reset}` : "";
 	const depText =
 		deps.length > 0
 			? ` ${WF_ANSI.dim}[依赖 ${deps.join(",")}]${WF_ANSI.reset}`
 			: "";
+	// 连接线后空一格(rpiv-todo 风格:├─ ✓ …)
+	const g = (glyph: string, color: string): string =>
+		`${conn} ${color}${glyph}${WF_ANSI.reset} ${id}`;
 	switch (s.status) {
 		case "running":
 		case "dispatched":
-			return `  ${indent}${WF_ANSI.yellow}${PLAN_ICON.running}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.dim}(running)${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.running, WF_ANSI.yellow)}${title}${durText_}`;
 		case "reported":
 		case "waiting-verify":
-			return `  ${indent}${WF_ANSI.cyan}${PLAN_ICON.verify}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.verify, WF_ANSI.cyan)}${title}${durText_} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
 		case "failed":
 		case "aborted":
-			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.abnormal}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.abnormal, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
 		case "conflict":
-			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.conflict}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.conflict, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
 		case "needs-fix":
-			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.needsFix}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.needsFix, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
 		case "done":
-			return `  ${indent}${WF_ANSI.dim}${PLAN_ICON.done}${WF_ANSI.reset} ${id}${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.done, WF_ANSI.dim)}${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}${durText_}`;
 		case "skipped":
-			return `  ${indent}${WF_ANSI.dim}${PLAN_ICON.skipped}${WF_ANSI.reset} ${id}${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
+			return `${g(PLAN_ICON.skipped, WF_ANSI.dim)}${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
 		default:
-			return `  ${indent}${PLAN_ICON.pending} ${id}${title}${depText}`;
+			return `${conn} ${PLAN_ICON.pending} ${id}${title}${depText}`;
 	}
 }
 
@@ -173,14 +192,68 @@ function padEnd(s: string, n: number): string {
 	return s + " ".repeat(Math.max(0, n - s.length));
 }
 
+interface PlanNode {
+	step: StepRow;
+	dotted: string;
+	children: PlanNode[];
+}
+
+/** 按点号 id 前缀构建层级树(父缺失时挂顶层;子按 sort_order 序) */
+function buildPlanTree(steps: StepRow[], wfId: string): PlanNode[] {
+	const roots: PlanNode[] = [];
+	const byDotted = new Map<string, PlanNode>();
+	for (const s of steps) {
+		const dotted = s.id.slice(wfId.length + 1);
+		const node: PlanNode = { step: s, dotted, children: [] };
+		byDotted.set(dotted, node);
+		const dotIdx = dotted.lastIndexOf(".");
+		const parentDotted = dotIdx === -1 ? null : dotted.slice(0, dotIdx);
+		const parent = parentDotted ? byDotted.get(parentDotted) : undefined;
+		if (parent) parent.children.push(node);
+		else roots.push(node);
+	}
+	return roots;
+}
+
+/** DFS 渲染:树形连接线(├─/└─/│),父前缀延续 */
+function walkPlan(
+	nodes: PlanNode[],
+	prefix: string,
+	db: ReturnType<typeof getDb>,
+	wfId: string,
+	lines: string[],
+	budget: number,
+): void {
+	for (let i = 0; i < nodes.length; i++) {
+		if (lines.length >= budget) return;
+		const node = nodes[i]!;
+		const isLast = i === nodes.length - 1;
+		const conn = `${prefix}${isLast ? "└─" : "├─"}`;
+		const deps = getStepDeps(db, node.step.id)
+			.map((d) => d.slice(wfId.length + 1))
+			.filter((d) => /^[0-9.]+$/.test(d));
+		lines.push(planStepLine(node.step, node.dotted, deps, conn));
+		walkPlan(
+			node.children,
+			`${prefix}${isLast ? "  " : "│ "}`,
+			db,
+			wfId,
+			lines,
+			budget,
+		);
+	}
+}
+
 /**
- * 计划概览面板行(rpiv-todo 式列表,纯函数可测):每个活动 workflow 一段。
- * 标题(进度 + 计数)→ 逐条任务行(进行中/待核对/待办/完成,完成行删除线)。
+ * 计划概览面板(rpiv-todo 风格,纯函数可测):每个活动 workflow 一段。
+ * 标题 `● <id> (done/total) 🔄N` → 树形连接线逐条任务(完成行删除线置顶,
+ * running 显示已运行时长,完成行显示耗时)。
  * 示例:
- *   ⛭ wf-control-center (2/8) · 🔄2
- *     🔄 api.lua:HTTP 路由(providers/open/close + 静态挂载) (running)
- *     ○ views:聚合配置页(webview 卡片网格) [依赖 3]
- *     ✓ sources.lua:只读协议扫描器(name/cards/pages + 单测)
+ *   ● wf-control-center (5/8) 🔄1
+ *   ├─ ✓ 1  sources.lua 只读协议扫描器 (12m)
+ *   ├─ ✓ 2  panel.lua 配置面板单例 (25m)
+ *   ├─ 🔄 6  init.lua 装配 + 根 init.lua 一行接入 (3m)
+ *   └─ ○ 8  集成验证与零侵入回归 [依赖 6,7]
  */
 export function buildPlanLines(
 	db: ReturnType<typeof getDb>,
@@ -199,39 +272,33 @@ export function buildPlanLines(
 			(counts.aborted ?? 0) +
 			(counts.conflict ?? 0) +
 			(counts["needs-fix"] ?? 0);
-		const title =
-			`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}⛭ ${w.id}${WF_ANSI.reset} ` +
-			`${WF_ANSI.dim}(${done}/${steps.length})${WF_ANSI.reset}` +
-			(running > 0
-				? ` ${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`
-				: "") +
-			(verify > 0 ? ` ${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}` : "") +
-			(abnormal > 0 ? ` ${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}` : "");
-		lines.push(title);
-		// 行预算:未完成行优先,完成行补足(折叠时先收完成行)
-		const unfinished = steps.filter(
-			(s) => s.status !== "done" && s.status !== "skipped",
+		lines.push(
+			`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}● ${w.id}${WF_ANSI.reset} ` +
+				`${WF_ANSI.dim}(${done}/${steps.length})${WF_ANSI.reset}` +
+				(running > 0
+					? ` ${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`
+					: "") +
+				(verify > 0
+					? ` ${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}`
+					: "") +
+				(abnormal > 0
+					? ` ${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}`
+					: ""),
 		);
-		const finished = steps.filter(
-			(s) => s.status === "done" || s.status === "skipped",
-		);
-		const shownUnfinished = unfinished.slice(0, PLAN_MAX_ROWS);
-		const shownFinished = finished.slice(
-			0,
-			Math.max(0, PLAN_MAX_ROWS - shownUnfinished.length),
-		);
-		const hidden = finished.length - shownFinished.length;
-		for (const s of [...shownUnfinished, ...shownFinished]) {
-			const dotted = s.id.slice(w.id.length + 1);
-			const depth = dotted.split(".").length - 1;
-			const deps = getStepDeps(db, s.id)
-				.map((d) => d.slice(w.id.length + 1))
-				.filter((d) => /^[0-9.]+$/.test(d));
-			lines.push(planStepLine(s, dotted, deps, depth));
-		}
+		// 完成行置顶(删除线),未完成在后;组内保持树序(sort_order 前缀序)
+		const isFinished = (s: StepRow): boolean =>
+			s.status === "done" || s.status === "skipped";
+		const sorted = [
+			...steps.filter(isFinished),
+			...steps.filter((s) => !isFinished(s)),
+		];
+		const roots = buildPlanTree(sorted, w.id);
+		const budget = lines.length + 1 + PLAN_MAX_ROWS;
+		walkPlan(roots, "", db, w.id, lines, budget);
+		const hidden = steps.length - (lines.length - 1);
 		if (hidden > 0) {
 			lines.push(
-				`  ${WF_ANSI.dim}+${hidden} 已完成(${PLAN_ICON.done} 折叠)${WF_ANSI.reset}`,
+				`  ${WF_ANSI.dim}+${hidden} 步未显示(${PLAN_ICON.done} 折叠)${WF_ANSI.reset}`,
 			);
 		}
 	}

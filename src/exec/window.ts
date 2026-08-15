@@ -140,7 +140,13 @@ export async function openStepTab(
 	buildUpdate(
 		db,
 		"workflow_steps",
-		{ tab_id: tabId, status: "running", updated_at: Date.now() },
+		{
+			tab_id: tabId,
+			status: "running",
+			// 派发即开始计时(面板时长/超时护栏均依赖 started_at)
+			started_at: Date.now(),
+			updated_at: Date.now(),
+		},
 		{ id: step.id },
 	);
 	addEvent(db, {
