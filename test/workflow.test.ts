@@ -18,6 +18,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import type { StepRow } from "../src/db.ts";
 
 // 必须在 import db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -1362,6 +1364,501 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	sent.length = 0;
 	await idxMod.sendWorkflowNotifications(db2, fakeSender, []);
 	assert(sent.length === 0, "无事件不发送");
+
+	console.log("== T21 pollTargetReached 纯函数 + wf poll 退出码 ==");
+	const pollMod = await import("../src/monitor.ts");
+	const mkSteps = (...statuses: string[]): StepRow[] =>
+		statuses.map(
+			(s, i) => ({ id: `t${i}`, status: s }) as unknown as StepRow,
+		);
+	{
+		const r = pollMod.pollTargetReached(
+			mkSteps("done", "done", "skipped"),
+			"done",
+		);
+		assert(
+			r.reached && r.unreachable.length === 0 && r.notStarted === 0,
+			"达成集:done+skipped 全终态 → reached",
+		);
+	}
+	{
+		const r = pollMod.pollTargetReached(mkSteps("done", "pending"), "done");
+		assert(
+			r.reached && r.notStarted === 1,
+			"pending 未派发不阻塞达成(只计 notStarted)",
+		);
+	}
+	{
+		const r = pollMod.pollTargetReached(
+			mkSteps("done", "running"),
+			"done",
+		);
+		assert(!r.reached && r.unreachable.length === 0, "running 未达成不 reached");
+	}
+	{
+		const r = pollMod.pollTargetReached(mkSteps("done", "failed"), "done");
+		assert(
+			!r.reached && r.unreachable.length === 1 && r.unreachable[0] === "t1",
+			"failed 且不在达成集 → unreachable",
+		);
+	}
+	{
+		const r = pollMod.pollTargetReached(
+			mkSteps("failed", "skipped"),
+			"failed",
+		);
+		assert(r.reached && r.unreachable.length === 0, "until=failed → failed ∈ 达成集");
+	}
+	{
+		const r = pollMod.pollTargetReached(mkSteps("pending", "ready"), "done");
+		assert(
+			!r.reached && r.notStarted === 2,
+			"全部未派发 → 不 reached(不能空轮询即达成)",
+		);
+	}
+	{
+		const r = pollMod.pollTargetReached(mkSteps("conflict"), "done");
+		assert(
+			!r.reached && r.unreachable.length === 1,
+			"conflict/aborted/needs-fix 同样不可达",
+		);
+	}
+
+	// 子进程跑真实 CLI(退出码契约)
+	const CLI_PATH = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+	const runCli = (
+		args: string[],
+		opts: { cwd?: string; env?: Record<string, string> } = {},
+	): { code: number; stdout: string; stderr: string } => {
+		try {
+			const stdout = execFileSync(
+				process.execPath,
+				["--experimental-strip-types", CLI_PATH, ...args],
+				{
+					cwd: opts.cwd ?? tmpDir,
+					env: { ...process.env, ...opts.env },
+					encoding: "utf-8",
+					timeout: 90_000,
+				},
+			);
+			return { code: 0, stdout, stderr: "" };
+		} catch (e) {
+			const err = e as { status?: number; stdout?: string; stderr?: string };
+			return {
+				code: err.status ?? 1,
+				stdout: String(err.stdout ?? ""),
+				stderr: String(err.stderr ?? ""),
+			};
+		}
+	};
+	const pollRepo = path.join(tmpDir, "pollrepo");
+	fs.mkdirSync(pollRepo, { recursive: true });
+	const pollImp = orchMod.importPlan(
+		db2,
+		{
+			name: "poll-wf",
+			title: "轮询",
+			goal: "轮询退出码",
+			repoPath: pollRepo,
+			steps: [
+				{ id: "1", title: "a", agent: "worker", task: "a" },
+				{
+					id: "1.1",
+					title: "b",
+					agent: "worker",
+					task: "b",
+					deps: ["1"],
+				},
+				{
+					id: "1.2",
+					title: "c",
+					agent: "worker",
+					task: "c",
+					deps: ["1"],
+				},
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(pollImp.ok, "poll-wf 导入");
+	const setSt = (id: string, status: string): void => {
+		dbMod.buildUpdate(
+			db2,
+			"workflow_steps",
+			{ status, updated_at: Date.now() },
+			{ id },
+		);
+	};
+	// 全部终态(done+skipped)→ 0
+	setSt("poll-wf-1", "done");
+	setSt("poll-wf-1.1", "done");
+	setSt("poll-wf-1.2", "skipped");
+	let pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "3", "--interval", "1"]);
+	assert(
+		pr.code === 0 && pr.stdout.includes("达成"),
+		`poll 全终态 → 退出 0(${pr.code} ${pr.stdout.trim()})`,
+	);
+	// 失败 → 2
+	setSt("poll-wf-1", "failed");
+	setSt("poll-wf-1.1", "done");
+	setSt("poll-wf-1.2", "done");
+	pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "3", "--interval", "1"]);
+	assert(
+		pr.code === 2 && pr.stderr.includes("wf retry"),
+		`poll 出现 failed → 退出 2(${pr.code} stderr=${pr.stderr.trim().slice(0, 80)})`,
+	);
+	// 全部未派发 → 超时 1
+	setSt("poll-wf-1", "pending");
+	setSt("poll-wf-1.1", "pending");
+	setSt("poll-wf-1.2", "pending");
+	pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "2", "--interval", "1"]);
+	assert(
+		pr.code === 1 && pr.stdout.includes("超时") && pr.stderr.includes("未派发 3"),
+		`poll 超时 → 退出 1(${pr.code} ${pr.stdout.trim().slice(0, 60)})`,
+	);
+	// 用法错误 → 3
+	pr = runCli(["poll", "poll-wf", "--until", "bogus", "--timeout", "2"]);
+	assert(pr.code === 3 && pr.stderr.includes("--until"), "poll 非法 --until → 退出 3");
+	pr = runCli(["poll", "poll-wf", "--timeout", "0"]);
+	assert(pr.code === 3, "poll timeout<=0 → 退出 3");
+	pr = runCli(["poll", "no-such-wf", "--timeout", "2"]);
+	assert(pr.code === 3 && pr.stderr.includes("workflow 不存在"), "poll 不存在 workflow → 退出 3");
+
+	console.log("== T22 session 目录选择 + 行解析 ==");
+	const sessMod = await import("../src/session.ts");
+	assert(
+		sessMod.encodeSessionDir(
+			"/Users/geeyu/.pi/agent/extensions/workflow",
+		) === "--Users-geeyu-.pi-agent-extensions-workflow--",
+		"cwd 编码规则(/ → -,包 --)",
+	);
+	const sLine1 = '{"type":"session","timestamp":"2026-01-01T00:00:00Z"}';
+	const sLine2 =
+		'{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"skip"},{"type":"text","text":"hello "},{"type":"text","text":"world"},{"type":"toolCall","name":"read"}]}}';
+	const sLine3 =
+		'{"type":"custom_message","customType":"workflow-notify","timestamp":"2026-01-01T00:00:02Z","content":"[wf] 有事件"}';
+	const sLine4 =
+		'{"type":"message","timestamp":"2026-01-01T00:00:03Z","message":{"role":"user","content":[{"type":"text","text":"继续"}]}}';
+	assert(sessMod.parseSessionLine(sLine1) === null, "session 行跳过");
+	const pm2 = sessMod.parseSessionLine(sLine2)!;
+	assert(
+		pm2.role === "assistant" && pm2.text === "hello world",
+		`message 提取 text(跳 thinking/toolCall): ${pm2.text}`,
+	);
+	const pm3 = sessMod.parseSessionLine(sLine3)!;
+	assert(
+		pm3.role === "notify" && pm3.text.includes("[wf]"),
+		"custom_message → notify",
+	);
+	const sessRepo = path.join(tmpDir, "sessrepo");
+	fs.mkdirSync(sessRepo, { recursive: true });
+	const sessRoot = path.join(tmpDir, "sessions");
+	const sessDir = path.join(sessRoot, sessMod.encodeSessionDir(sessRepo));
+	fs.mkdirSync(sessDir, { recursive: true });
+	// 两个文件:mtime 最新的被选中(旧文件先写,再 touch 新文件)
+	fs.writeFileSync(
+		path.join(sessDir, "2026-01-01T00-00-00Z_old.jsonl"),
+		[sLine1, sLine4].join("\n"),
+	);
+	const newFile = path.join(sessDir, "2026-01-01T01-00-00Z_new.jsonl");
+	fs.writeFileSync(
+		newFile,
+		[sLine1, sLine2, sLine3, sLine4].join("\n"),
+	);
+	const sessImp = orchMod.importPlan(
+		db2,
+		{
+			name: "sess-wf",
+			title: "会话",
+			goal: "读会话",
+			repoPath: sessRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(sessImp.ok, "sess-wf 导入");
+	assert(
+		sessMod.findLatestSessionFile(sessRoot, sessRepo) === newFile,
+		"取 mtime 最新 jsonl",
+	);
+	let sr = runCli(["session", "sess-wf", "-n", "2"], {
+		env: { WF_SESSIONS_DIR: sessRoot },
+	});
+	assert(
+		sr.code === 0 &&
+			sr.stdout.includes("[notify] [wf] 有事件") &&
+			sr.stdout.includes("user: 继续"),
+		`session -n 取最近 N 条(含 notify 前缀): ${sr.stdout.split("\n")[0] ?? ""}`,
+	);
+	sr = runCli(["session", "sess-wf", "-n", "10"], {
+		env: { WF_SESSIONS_DIR: sessRoot },
+	});
+	assert(
+		sr.code === 0 && sr.stdout.includes("assistant: hello world"),
+		`session 文本输出(跳 thinking/toolCall): ${sr.stdout.split("\n")[0] ?? ""}`,
+	);
+	sr = runCli(["session", "sess-wf", "--json"], {
+		env: { WF_SESSIONS_DIR: sessRoot },
+	});
+	const sessJson = JSON.parse(sr.stdout) as Array<{
+		ts: string;
+		role: string;
+		text: string;
+	}>;
+	assert(
+		sr.code === 0 &&
+			Array.isArray(sessJson) &&
+			sessJson.length === 3 &&
+			sessJson[0].role === "assistant" &&
+			sessJson[2].role === "user",
+		`session --json 结构(${sessJson.length} 条)`,
+	);
+	sr = runCli(["session", "sess-wf"], {
+		env: { WF_SESSIONS_DIR: path.join(tmpDir, "no-sessions") },
+	});
+	assert(sr.code === 1 && sr.stderr.includes("无会话文件"), "无会话目录 → 退出 1");
+	sr = runCli(["session", "no-such-wf"], {
+		env: { WF_SESSIONS_DIR: sessRoot },
+	});
+	assert(sr.code === 3 && sr.stderr.includes("workflow 不存在"), "session 不存在 workflow → 退出 3");
+
+	console.log("== T23 inject 注入(参数解析 + 三种 target + 退出码) ==");
+	const injRepo = path.join(tmpDir, "injrepo");
+	fs.mkdirSync(injRepo, { recursive: true });
+	const injImp = orchMod.importPlan(
+		db2,
+		{
+			name: "inj-wf",
+			title: "注入",
+			goal: "注入",
+			repoPath: injRepo,
+			steps: [
+				{ id: "1", title: "a", agent: "worker", task: "a" },
+				{ id: "2", title: "b", agent: "worker", task: "b" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(injImp.ok, "inj-wf 导入");
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ status: "running", tab_id: "abcdef0123456789", updated_at: Date.now() },
+		{ id: "inj-wf-1" },
+	);
+	const injBin = path.join(tmpDir, "inject-bin");
+	fs.mkdirSync(injBin, { recursive: true });
+	const injLog = path.join(tmpDir, "inject.log");
+	fs.writeFileSync(
+		path.join(injBin, "ghostctl"),
+		`#!/bin/bash\necho "$@" >> "${injLog}"\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(injLog, "");
+	const injEnv = { PATH: `${injBin}:${process.env.PATH ?? ""}` };
+	let ir = runCli(["inject", "inj-wf-1", "hello world"], {
+		cwd: injBin,
+		env: injEnv,
+	});
+	let injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
+	assert(
+		ir.code === 0 &&
+			injCalls.includes("input hello world --to abcdef0123456789") &&
+			injCalls.includes("key enter --to abcdef0123456789"),
+		`完整 step id → input+enter 序列(${injCalls.join(" | ")})`,
+	);
+	// 点号 id(身份 env 解析)
+	fs.writeFileSync(injLog, "");
+	ir = runCli(["inject", "1", "hi"], {
+		cwd: injBin,
+		env: { ...injEnv, PI_WF_WORKFLOW: "inj-wf", PI_WF_STEP: "1" },
+	});
+	injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
+	assert(
+		ir.code === 0 && injCalls.includes("input hi --to abcdef0123456789"),
+		"点号 id 按身份 env 解析",
+	);
+	// terminal 前缀(未命中任何步骤 → 直接注入)
+	fs.writeFileSync(injLog, "");
+	ir = runCli(["inject", "1CA675C0", "raw"], { cwd: injBin, env: injEnv });
+	injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
+	assert(
+		ir.code === 0 && injCalls.includes("input raw --to 1CA675C0"),
+		"terminal 前缀直接注入(不查 DB)",
+	);
+	// 步骤无 tab → 1
+	ir = runCli(["inject", "inj-wf-2", "x"], { cwd: injBin, env: injEnv });
+	assert(
+		ir.code === 1 && ir.stderr.includes("wf open-tab inj-wf-2"),
+		`步骤无 tab → 退出 1 并提示(${ir.stderr.trim().slice(0, 60)})`,
+	);
+	// 缺参数 → 3
+	ir = runCli(["inject"], { cwd: injBin, env: injEnv });
+	assert(ir.code === 3, "inject 无参数 → 退出 3");
+	// ghostctl 失败 → 1
+	const injFailBin = path.join(tmpDir, "inject-fail-bin");
+	fs.mkdirSync(injFailBin, { recursive: true });
+	fs.writeFileSync(
+		path.join(injFailBin, "ghostctl"),
+		`#!/bin/bash\necho "$@" >> "${injLog}"\nexit 1\n`,
+		{ mode: 0o755 },
+	);
+	ir = runCli(["inject", "inj-wf-1", "boom"], {
+		cwd: injFailBin,
+		env: { PATH: `${injFailBin}:${process.env.PATH ?? ""}` },
+	});
+	assert(ir.code === 1 && ir.stderr.includes("注入失败"), "ghostctl 失败 → 退出 1");
+
+	console.log("== T24 openStepTab 共享开 tab + open-tab/fix-tab CLI ==");
+	const openRepo = path.join(tmpDir, "openrepo");
+	fs.mkdirSync(openRepo, { recursive: true });
+	const openWt = path.join(openRepo, ".worktrees", "gittree-wf-open-wf-1");
+	fs.mkdirSync(openWt, { recursive: true });
+	const openImp = orchMod.importPlan(
+		db2,
+		{
+			name: "open-wf",
+			title: "补开",
+			goal: "补开 tab",
+			repoPath: openRepo,
+			steps: [
+				{ id: "1", title: "a", agent: "worker", task: "a" },
+				{ id: "2", title: "b", agent: "worker", task: "b" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(openImp.ok, "open-wf 导入");
+	dbMod.setWorkflowMeta(db2, "open-wf", "ghostty_window_id", "win-9");
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{
+			status: "failed",
+			worktree: "wf-open-wf-1",
+			error: "new-tab 失败(模拟)",
+			updated_at: Date.now(),
+		},
+		{ id: "open-wf-1" },
+	);
+	const openGhostctl = path.join(tmpDir, "open-ghostctl.sh");
+	const openLog = path.join(tmpDir, "open-ghostctl.log");
+	fs.writeFileSync(
+		openGhostctl,
+		`#!/bin/bash\necho "$@" >> "${openLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-9","front":true,"tabs":[{"terminals":[{"id":"feedface12345678","cwd":"${openWt}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-open)"\nfi\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(openLog, "");
+	// openStepTab 单测(共享序列:new-tab → 反查 → 落库 + manual 事件)
+	const openRes = await dispatchMod.openStepTab(
+		db2,
+		dbMod.getWorkflow(db2, "open-wf")!,
+		dbMod.getStep(db2, "open-wf-1")!,
+		{ ghostctlBin: openGhostctl, manual: true, enterDelayMs: 0 },
+	);
+	assert(
+		openRes.ok && openRes.tabId === "feedface12345678",
+		`openStepTab 成功(${openRes.error ?? ""})`,
+	);
+	const openStepAfter = dbMod.getStep(db2, "open-wf-1")!;
+	assert(
+		openStepAfter.status === "running" &&
+			openStepAfter.tab_id === "feedface12345678",
+		"openStepTab 写回 running + tab_id",
+	);
+	const openEvt = dbMod
+		.getEvents(db2, { stepId: "open-wf-1", limit: 10 })
+		.find((e) => e.type === "step_tab_opened");
+	assert(
+		openEvt !== undefined &&
+			(JSON.parse(openEvt.payload ?? "{}") as { manual?: boolean }).manual ===
+				true,
+		"step_tab_opened 事件带 manual 标记",
+	);
+	const openCalls = fs.readFileSync(openLog, "utf-8").trim().split("\n");
+	assert(
+		openCalls.some(
+			(l) => l.includes("new-tab") && l.includes("--window-id win-9"),
+		),
+		"openStepTab 复用绑定窗口(--window-id)",
+	);
+	// open-tab CLI:无参数 → 3;步骤不存在 → 1;tab 存活 → 1;无 worktree → 1
+	const openBin = path.join(tmpDir, "open-bin");
+	fs.mkdirSync(openBin, { recursive: true });
+	fs.copyFileSync(openGhostctl, path.join(openBin, "ghostctl"));
+	const openEnv = { PATH: `${openBin}:${process.env.PATH ?? ""}` };
+	let or = runCli(["open-tab"], { cwd: openBin, env: openEnv });
+	assert(or.code === 3, "open-tab 无参数 → 退出 3");
+	or = runCli(["open-tab", "open-wf-9"], { cwd: openBin, env: openEnv });
+	assert(or.code === 1 && or.stderr.includes("步骤不存在"), "open-tab 未知步骤 → 退出 1");
+	or = runCli(["open-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
+	assert(
+		or.code === 1 && or.stderr.includes("无需重开"),
+		`open-tab 已绑定且存活 → 退出 1(${or.stderr.trim().slice(0, 60)})`,
+	);
+	or = runCli(["open-tab", "open-wf-2"], { cwd: openBin, env: openEnv });
+	assert(
+		or.code === 1 && or.stderr.includes("无 worktree"),
+		`open-tab 无 worktree → 退出 1(${or.stderr.trim().slice(0, 60)})`,
+	);
+	// fix-tab:显式前缀 / auto / 非法前缀 / 缺参数
+	let fr = runCli(["fix-tab", "open-wf-1", "feed"], {
+		cwd: openBin,
+		env: openEnv,
+	});
+	let fixed = dbMod.getStep(db2, "open-wf-1")!;
+	assert(
+		fr.code === 0 &&
+			fr.stdout.includes("running/feedface12345678") &&
+			fixed.status === "running" &&
+			fixed.tab_id === "feedface12345678",
+		`fix-tab 显式前缀对齐(${fr.stdout.trim()})`,
+	);
+	let fixEvt = dbMod
+		.getEvents(db2, { stepId: "open-wf-1", limit: 10 })
+		.find((e) => e.type === "step_tab_fixed");
+	assert(
+		fixEvt !== undefined &&
+			(JSON.parse(fixEvt.payload ?? "{}") as { mode?: string }).mode ===
+				"explicit",
+		"step_tab_fixed 事件(mode=explicit)",
+	);
+	// auto:按 worktree cwd 反查
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ tab_id: null, status: "failed", updated_at: Date.now() },
+		{ id: "open-wf-1" },
+	);
+	fr = runCli(["fix-tab", "open-wf-1", "auto"], { cwd: openBin, env: openEnv });
+	fixed = dbMod.getStep(db2, "open-wf-1")!;
+	assert(
+		fr.code === 0 &&
+			fr.stdout.includes("mode=auto") &&
+			fixed.tab_id === "feedface12345678",
+		`fix-tab auto 反查(${fr.stdout.trim()})`,
+	);
+	fixEvt = dbMod
+		.getEvents(db2, { stepId: "open-wf-1", limit: 10 })
+		.filter((e) => e.type === "step_tab_fixed")[0];
+	assert(
+		fixEvt !== undefined &&
+			(JSON.parse(fixEvt.payload ?? "{}") as { mode?: string }).mode === "auto",
+		"step_tab_fixed 事件(mode=auto)",
+	);
+	fr = runCli(["fix-tab", "open-wf-1", "zzzz"], { cwd: openBin, env: openEnv });
+	assert(
+		fr.code === 1 && fr.stderr.includes("无 terminal 前缀"),
+		"fix-tab 非法前缀 → 退出 1",
+	);
+	fr = runCli(["fix-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
+	assert(fr.code === 3, "fix-tab 缺 terminal → 退出 3");
+	fr = runCli(["fix-tab", "no-such", "auto"], { cwd: openBin, env: openEnv });
+	assert(fr.code === 1 && fr.stderr.includes("步骤不存在"), "fix-tab 未知步骤 → 退出 1");
 
 	// 清理
 	try {

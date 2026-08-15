@@ -36,6 +36,46 @@ import { depsDone, resolveBin, run, worktreeName, worktreePath } from "./dispatc
 // ────────────────────────────────────────────────────────────
 // tab 存活检测
 // ────────────────────────────────────────────────────────────
+
+/**
+ * poll 达成判定纯函数(wf poll 与编排脚本共用,可单测):
+ * - 达成集 = {until} ∪ {skipped}(skipped 是人工终态,任何目标都视为已达成);
+ * - pending/ready 视为「未启动」,不参与达成判定(只计数 notStarted);
+ * - 参与判定的步骤 ∈ 达成集 → reached;
+ * - 任一参与判定步骤 ∈ {failed, aborted, conflict, needs-fix} 且 ∉ 达成集 → unreachable
+ *   (until=failed 时 failed ∈ 达成集,正常达成,不触发不可达)。
+ */
+export function pollTargetReached(
+	steps: StepRow[],
+	until: string,
+): { reached: boolean; unreachable: string[]; notStarted: number } {
+	const goal = new Set([until, "skipped"]);
+	const unreachable: string[] = [];
+	let notStarted = 0;
+	let participating = 0;
+	let allInGoal = true;
+	for (const s of steps) {
+		if (s.status === "pending" || s.status === "ready") {
+			notStarted++;
+			continue;
+		}
+		participating++;
+		if (goal.has(s.status)) continue;
+		if (["failed", "aborted", "conflict", "needs-fix"].includes(s.status)) {
+			unreachable.push(s.id);
+			continue;
+		}
+		// 仍在推进中(dispatched/running/reported/waiting-verify 等)
+		allInGoal = false;
+	}
+	// 至少一个参与判定的步骤,且全部 ∈ 达成集,且无不可达
+	return {
+		reached: participating > 0 && allInGoal && unreachable.length === 0,
+		unreachable,
+		notStarted,
+	};
+}
+
 /** 一次 layout 查询,返回所有存活 terminal id(按 tab_id 匹配) */
 export async function fetchLiveTabIds(
 	ghostctlBin: string,

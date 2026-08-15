@@ -43,6 +43,131 @@ export interface DispatchResult {
 	dryRun?: boolean;
 }
 
+/**
+ * 向终端注入文本并自动回车(与 /wf steer 同构的共享注入序列,设计 §0):
+ *   1. ghostctl input <text> --to <terminalId>
+ *   2. ghostctl key enter --to <terminalId>
+ * 返回 input 步骤的结果(inject/steer 均以它判定成败;enter 失败由调用方自行判断)。
+ */
+export async function sendTextToTerminal(
+	ghostctlBin: string,
+	terminalId: string,
+	text: string,
+	cwd: string,
+): Promise<RunResult> {
+	const res = await run(ghostctlBin, ["input", text, "--to", terminalId], cwd);
+	await run(ghostctlBin, ["key", "enter", "--to", terminalId], cwd);
+	return res;
+}
+
+export interface OpenStepTabResult {
+	ok: boolean;
+	tabId?: string | null;
+	/** 失败阶段:window = 绑定窗口不可用;tab = new-tab 失败 */
+	phase?: "window" | "tab";
+	error?: string;
+}
+
+export interface OpenStepTabOptions {
+	ghostctlBin?: string;
+	/** 已创建的 attempt id(dispatchStep 传入;成功后回写 tab_id/running) */
+	attemptId?: number;
+	/** 新 tab 就绪后到回车提交 pointer 的等待毫秒数(测试可传 0) */
+	enterDelayMs?: number;
+	/** 事件 payload 标 manual=true(open-tab 命令传,自动派发不传) */
+	manual?: boolean;
+}
+
+/**
+ * 开子任务 tab(dispatchStep §4 抽取的共享序列,dispatch 与 open-tab 共用):
+ *   1. 构造 env 命令 + pointer,new-tab 到 workflow 绑定窗口(锁定窗口 id,绝不裸开);
+ *   2. 反查 terminal id(findTerminalId),等就绪后 key enter 提交 pointer;
+ *   3. 写库:step → running + tab_id;事件 step_tab_opened(manual 标记区分人工补开);
+ *   4. 传入 attemptId 时成功后回写 attempt(tab_id/running)。
+ * 失败返回 {ok:false, phase, error},步骤状态不动(是否中止由调用方决定)。
+ */
+export async function openStepTab(
+	db: DatabaseSync,
+	workflow: WorkflowRow,
+	step: StepRow,
+	opts: OpenStepTabOptions = {},
+): Promise<OpenStepTabResult> {
+	const dotted = step.id.slice(workflow.id.length + 1);
+	const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
+	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
+	const pointer = buildPointer(
+		workflow.id,
+		dotted,
+		workflow.current_wave || 1,
+	);
+
+	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
+	const tabArgs = [
+		"new-tab",
+		"--cwd",
+		wtPath,
+		"--command",
+		cmd,
+		"--input",
+		pointer,
+	];
+	const win = await resolveWorkflowWindow(
+		db,
+		ghostctlBin,
+		workflow.repo_path,
+		workflow.id,
+	);
+	if (!win.ok) return { ok: false, phase: "window", error: win.error };
+	tabArgs.splice(1, 0, "--window-id", win.winId);
+
+	const tabRes = await run(ghostctlBin, tabArgs, workflow.repo_path);
+	if (tabRes.code !== 0) {
+		return {
+			ok: false,
+			phase: "tab",
+			error: tabRes.stderr || tabRes.stdout,
+		};
+	}
+
+	// new-tab 输出稳定 tab id;反查 terminal id 存库(P2 监听用)
+	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
+	const tabIdFromOutput = tabMatch ? tabMatch[1] : null;
+	const tabId = await findTerminalId(
+		ghostctlBin,
+		workflow.repo_path,
+		tabIdFromOutput,
+		wtPath,
+	);
+
+	// pointer 已注入子 pi 编辑器(--input 不带回车);等 pi 就绪后补回车提交为首条消息
+	if (tabId) {
+		await new Promise((r) => setTimeout(r, opts.enterDelayMs ?? 4000));
+		await run(ghostctlBin, ["key", "enter", "--to", tabId], workflow.repo_path);
+	}
+
+	if (opts.attemptId !== undefined) {
+		buildUpdate(
+			db,
+			"workflow_attempts",
+			{ tab_id: tabId, status: "running" },
+			{ id: opts.attemptId },
+		);
+	}
+	buildUpdate(
+		db,
+		"workflow_steps",
+		{ tab_id: tabId, status: "running", updated_at: Date.now() },
+		{ id: step.id },
+	);
+	addEvent(db, {
+		workflowId: workflow.id,
+		stepId: step.id,
+		type: EVT.stepTabOpened,
+		payload: { tabId, dotted, manual: opts.manual ? true : undefined },
+	});
+	return { ok: true, tabId };
+}
+
 /** 依赖步骤的可注入结果(模板/看板共用) */
 export interface DepSummary {
 	dotted: string; // 点号 id,如 1.1
@@ -290,7 +415,7 @@ async function resolveWorkflowWindow(
  * 优先按 new-tab 返回的 tab id;兜底按 cwd / 终端名(worktree 目录名)匹配。
  * 新开终端的 cwd 字段常为空(AppleScript 限制),故 name 匹配是主要兜底。
  */
-async function findTerminalId(
+export async function findTerminalId(
 	ghostctlBin: string,
 	cwd: string,
 	tabId: string | null,
@@ -627,92 +752,31 @@ export async function dispatchStep(
 	// 3. attempt 行(冻结 task_md + pointer)
 	const attempt = createAttempt(db, step.id, { taskMd, pointer });
 
-	// 4. ghostctl new-tab(事件 step_tab_opened,记录 tab_id)
+	// 4. 开子任务 tab(共享 openStepTab:new-tab → 反查 → 等就绪回车 → 落库)
 	// 子任务开 tab,固定开进 workflow 绑定窗口(不受用户切焦点影响)
-	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
-	const tabArgs = [
-		"new-tab",
-		"--cwd",
-		wtPath,
-		"--command",
-		cmd,
-		"--input",
-		pointer,
-	];
-	const win = await resolveWorkflowWindow(
-		db,
-		opts.ghostctlBin ?? resolveBin("ghostctl"),
-		workflow.repo_path,
-		workflow.id,
-	);
-	if (!win.ok) {
-		// 绑定窗口不可用(含已关闭)→ 中止派发,绝不无窗口参数裸开 tab
+	const tabRes = await openStepTab(db, workflow, step, {
+		ghostctlBin: opts.ghostctlBin,
+		attemptId: attempt.id,
+	});
+	if (!tabRes.ok) {
+		// 绑定窗口不可用(含已关闭)/ new-tab 失败 → 中止派发
+		const reason =
+			tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
 		abortDispatch(
 			db,
 			attempt.id,
 			step,
 			workflow.id,
-			"绑定窗口不可用",
-			win.error,
+			reason,
+			tabRes.error ?? "",
 		);
-		return { ok: false, stepId: step.id, worktree: wtName, error: win.error };
-	}
-	tabArgs.splice(1, 0, "--window-id", win.winId);
-	const tabRes = await run(
-		opts.ghostctlBin ?? resolveBin("ghostctl"),
-		tabArgs,
-		workflow.repo_path,
-	);
-	if (tabRes.code !== 0) {
-		const detail = tabRes.stderr || tabRes.stdout;
-		abortDispatch(db, attempt.id, step, workflow.id, "new-tab 失败", detail);
 		return {
 			ok: false,
 			stepId: step.id,
 			worktree: wtName,
-			error: `ghostctl new-tab 失败: ${detail}`,
+			error: tabRes.error,
 		};
 	}
-
-	// new-tab 输出稳定 tab id;反查 terminal id 存库(P2 监听用)
-	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
-	const tabIdFromOutput = tabMatch ? tabMatch[1] : null;
-	const tabId = await findTerminalId(
-		opts.ghostctlBin ?? resolveBin("ghostctl"),
-		workflow.repo_path,
-		tabIdFromOutput,
-		wtPath,
-	);
-
-	// pointer 已注入子 pi 编辑器(--input 不带回车);等 pi 就绪后补回车提交为首条消息
-	if (tabId) {
-		await new Promise((r) => setTimeout(r, 4000));
-		await run(
-			opts.ghostctlBin ?? resolveBin("ghostctl"),
-			["key", "enter", "--to", tabId],
-			workflow.repo_path,
-		);
-	}
-
-	buildUpdate(
-		db,
-		"workflow_attempts",
-		{ tab_id: tabId, status: "running" },
-		{ id: attempt.id },
-	);
-	buildUpdate(
-		db,
-		"workflow_steps",
-		{ tab_id: tabId, status: "running", updated_at: Date.now() },
-		{ id: step.id },
-	);
-	addEvent(db, {
-		workflowId: workflow.id,
-		stepId: step.id,
-		attemptId: attempt.id,
-		type: EVT.stepTabOpened,
-		payload: { tabId, dotted },
-	});
 
 	return {
 		ok: true,
@@ -720,7 +784,7 @@ export async function dispatchStep(
 		worktree: wtName,
 		worktreePath: wtPath,
 		attemptNo: attempt.attempt_no,
-		tabId,
+		tabId: tabRes.tabId,
 	};
 }
 
