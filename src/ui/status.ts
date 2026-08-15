@@ -3,7 +3,7 @@
  *
  * 依赖方向:ui → db / core(无反向 import,见 docs/arch-refactor.md §3.10)。
  */
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	listActiveWorkflows,
 	getStepsByWorkflow,
@@ -55,8 +55,10 @@ export function renderWorkflowStatus(
 		"wf",
 		segments.join(` ${WF_ANSI.dim}·${WF_ANSI.reset} `),
 	);
-	const plan = buildPlanLines(db, active);
-	ctx.ui.setWidget("workflow-plan", plan.length > 0 ? plan : undefined);
+	// factory 形式:每帧拿 theme(主题语义色,跟随用户主题)与 width(截断)
+	ctx.ui.setWidget("workflow-plan", (_tui, theme) => ({
+		render: (width: number) => buildPlanLines(db, active, theme, width),
+	}));
 }
 
 /**
@@ -152,39 +154,37 @@ function planStepLine(
 	dotted: string,
 	deps: string[],
 	conn: string,
+	theme: Theme,
 ): string {
-	const id = padEnd(dotted, 6);
-	const title = truncWidth(s.title, Math.max(20, 60 - conn.length));
+	const id = theme.fg("dim", padEnd(dotted, 6));
+	const title = truncWidth(s.title, Math.max(20, 56 - conn.length));
 	const dur = durText(s.started_at, s.finished_at);
-	const durText_ =
-		dur.length > 0 ? ` ${WF_ANSI.dim}(${dur})${WF_ANSI.reset}` : "";
+	const durText_ = dur ? ` ${theme.fg("muted", `(${dur})`)}` : "";
 	const depText =
-		deps.length > 0
-			? ` ${WF_ANSI.dim}[依赖 ${deps.join(",")}]${WF_ANSI.reset}`
-			: "";
-	// 连接线后空一格(rpiv-todo 风格:├─ ✓ …)
-	const g = (glyph: string, color: string): string =>
-		`${conn} ${color}${glyph}${WF_ANSI.reset} ${id}`;
+		deps.length > 0 ? ` ${theme.fg("muted", `⛓ ${deps.join(",")}`)}` : "";
+	// 连接线 dim + 空格 + 语义色字形(rpiv-todo 风格:├─ ✓ …)
+	const glyph = (g: string, c: string): string =>
+		`${theme.fg("dim", conn)} ${theme.fg(c, g)}`;
 	switch (s.status) {
 		case "running":
 		case "dispatched":
-			return `${g(PLAN_ICON.running, WF_ANSI.yellow)}${title}${durText_}`;
+			return `${glyph(PLAN_ICON.running, "warning")} ${id}${theme.fg("accent", title)}${durText_}`;
 		case "reported":
 		case "waiting-verify":
-			return `${g(PLAN_ICON.verify, WF_ANSI.cyan)}${title}${durText_} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
+			return `${glyph(PLAN_ICON.verify, "warning")} ${id}${theme.fg("accent", title)}${durText_} ${theme.fg("warning", "(待核对)")}`;
 		case "failed":
 		case "aborted":
-			return `${g(PLAN_ICON.abnormal, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
+			return `${glyph(PLAN_ICON.abnormal, "error")} ${id}${theme.fg("error", title)}${durText_} ${theme.fg("error", `(${s.status})`)}`;
 		case "conflict":
-			return `${g(PLAN_ICON.conflict, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
+			return `${glyph(PLAN_ICON.conflict, "error")} ${id}${theme.fg("error", title)}${durText_} ${theme.fg("error", "(冲突)")}`;
 		case "needs-fix":
-			return `${g(PLAN_ICON.needsFix, WF_ANSI.red)}${title}${durText_} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
+			return `${glyph(PLAN_ICON.needsFix, "error")} ${id}${theme.fg("error", title)}${durText_} ${theme.fg("error", "(待修复)")}`;
 		case "done":
-			return `${g(PLAN_ICON.done, WF_ANSI.dim)}${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}${durText_}`;
+			return `${glyph(PLAN_ICON.done, "success")} ${id}${theme.strikethrough(theme.fg("muted", title))}${durText_}`;
 		case "skipped":
-			return `${g(PLAN_ICON.skipped, WF_ANSI.dim)}${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
+			return `${glyph(PLAN_ICON.skipped, "dim")} ${id}${theme.fg("muted", `${title}(skipped)`)}`;
 		default:
-			return `${conn} ${PLAN_ICON.pending} ${id}${title}${depText}`;
+			return `${theme.fg("dim", conn)} ${theme.fg("dim", PLAN_ICON.pending)} ${id}${theme.fg("text", title)}${depText}`;
 	}
 }
 
@@ -221,6 +221,7 @@ function walkPlan(
 	prefix: string,
 	db: ReturnType<typeof getDb>,
 	wfId: string,
+	theme: Theme,
 	lines: string[],
 	budget: number,
 ): void {
@@ -232,12 +233,13 @@ function walkPlan(
 		const deps = getStepDeps(db, node.step.id)
 			.map((d) => d.slice(wfId.length + 1))
 			.filter((d) => /^[0-9.]+$/.test(d));
-		lines.push(planStepLine(node.step, node.dotted, deps, conn));
+		lines.push(planStepLine(node.step, node.dotted, deps, conn, theme));
 		walkPlan(
 			node.children,
 			`${prefix}${isLast ? "  " : "│ "}`,
 			db,
 			wfId,
+			theme,
 			lines,
 			budget,
 		);
@@ -258,8 +260,11 @@ function walkPlan(
 export function buildPlanLines(
 	db: ReturnType<typeof getDb>,
 	workflows: WorkflowRow[],
+	theme: Theme,
+	width = 120,
 ): string[] {
 	const lines: string[] = [];
+	const fit = (line: string): string => truncWidth(line, width);
 	for (const w of workflows.slice(0, 2)) {
 		const steps = getStepsByWorkflow(db, w.id);
 		if (steps.length === 0) continue;
@@ -272,19 +277,16 @@ export function buildPlanLines(
 			(counts.aborted ?? 0) +
 			(counts.conflict ?? 0) +
 			(counts["needs-fix"] ?? 0);
-		lines.push(
-			`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}● ${w.id}${WF_ANSI.reset} ` +
-				`${WF_ANSI.dim}(${done}/${steps.length})${WF_ANSI.reset}` +
-				(running > 0
-					? ` ${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`
-					: "") +
-				(verify > 0
-					? ` ${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}`
-					: "") +
-				(abnormal > 0
-					? ` ${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}`
-					: ""),
-		);
+		// 标题:有活动(运行/待核对/异常) → accent 高亮 + ●;无活动 → dim + ○
+		const hasActive = running + verify + abnormal > 0;
+		const hc = hasActive ? "accent" : "dim";
+		const head =
+			`${theme.fg(hc, hasActive ? "●" : "○")} ` +
+			`${theme.fg(hc, `${w.id} (${done}/${steps.length})`)}` +
+			(running > 0 ? ` ${theme.fg("warning", `${PLAN_ICON.running}${running}`)}` : "") +
+			(verify > 0 ? ` ${theme.fg("warning", `${PLAN_ICON.verify}${verify}`)}` : "") +
+			(abnormal > 0 ? ` ${theme.fg("error", `${PLAN_ICON.abnormal}${abnormal}`)}` : "");
+		lines.push(fit(head));
 		// 完成行置顶(删除线),未完成在后;组内保持树序(sort_order 前缀序)
 		const isFinished = (s: StepRow): boolean =>
 			s.status === "done" || s.status === "skipped";
@@ -294,11 +296,11 @@ export function buildPlanLines(
 		];
 		const roots = buildPlanTree(sorted, w.id);
 		const budget = lines.length + 1 + PLAN_MAX_ROWS;
-		walkPlan(roots, "", db, w.id, lines, budget);
+		walkPlan(roots, "", db, w.id, theme, lines, budget);
 		const hidden = steps.length - (lines.length - 1);
 		if (hidden > 0) {
 			lines.push(
-				`  ${WF_ANSI.dim}+${hidden} 步未显示(${PLAN_ICON.done} 折叠)${WF_ANSI.reset}`,
+				fit(`${theme.fg("dim", `+${hidden} 步未显示(${PLAN_ICON.done} 折叠)`)}`),
 			);
 		}
 	}

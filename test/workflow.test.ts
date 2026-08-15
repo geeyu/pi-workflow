@@ -727,9 +727,14 @@ assert(
 	!segRunVisible.includes("▶"),
 	"不再用 ▶+点号 id 列表(footer 语义化)",
 );
-// 计划概览面板:rpiv-todo 式列表(标题 + 逐条状态字形行,完成行删除线)
+// 计划概览面板:rpiv-todo 式列表(● 标题 + 树形连接线逐条,完成行删除线)
 const statusUiMod = await import("../src/ui/status.ts");
-const planLines = statusUiMod.buildPlanLines(db2, [segWf]);
+const mockTheme = {
+	fg: (_c: string, s: string) => s,
+	strikethrough: (s: string) => s,
+	bold: (s: string) => s,
+};
+const planLines = statusUiMod.buildPlanLines(db2, [segWf], mockTheme, 120);
 const planText = planLines.join("\n");
 const planVisible = planText.replace(/\x1b\[[0-9;]*m/g, "");
 assert(

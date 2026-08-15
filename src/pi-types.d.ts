@@ -5,6 +5,29 @@
  * 不影响运行)。若需完整类型,可自行 npm i -D @earendil-works/pi-coding-agent。
  */
 declare module "@earendil-works/pi-coding-agent" {
+	/** 主题语义色(跟随用户主题) */
+	export type ThemeColor =
+		| "accent"
+		| "success"
+		| "error"
+		| "warning"
+		| "muted"
+		| "dim"
+		| "text"
+		| "toolTitle";
+
+	export interface Theme {
+		fg(color: ThemeColor, text: string): string;
+		strikethrough(text: string): string;
+		bold(text: string): string;
+	}
+
+	export interface WidgetComponent {
+		render(width: number): string[];
+		invalidate?(): void;
+		dispose?(): void;
+	}
+
 	export interface ExtensionUI {
 		select(
 			title: string,
@@ -18,6 +41,14 @@ declare module "@earendil-works/pi-coding-agent" {
 		setWidget(
 			key: string,
 			content: string[] | undefined,
+			options?: { placement?: "aboveEditor" | "belowEditor" },
+		): void;
+		/** factory 形式:每帧渲染拿 theme(语义色)与 width(截断),主题切换自动重绘 */
+		setWidget(
+			key: string,
+			content:
+				| ((tui: unknown, theme: Theme) => WidgetComponent)
+				| undefined,
 			options?: { placement?: "aboveEditor" | "belowEditor" },
 		): void;
 		setTitle(title: string): void;
