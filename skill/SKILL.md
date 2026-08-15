@@ -11,7 +11,7 @@ description: >
 
 > 主 pi 为调度者,把大计划拆成并行/串行批次;每个子任务 = 一个 gittree worktree + 一个 Ghostty tab(可见、可干预);全生命周期事件落 SQLite(`~/.pi/agent/workflows/workflow.db`,唯一事实源)。
 >
-> 权威层级:本手册 → `DESIGN.md`(设计)→ 代码(src/ 命令注册表,以代码为准)。
+> 权威层级:本手册 → `docs/DESIGN.md`(设计)→ 代码(src/ 命令注册表,以代码为准)。
 
 ## 命令入口(随 skill 分发,不依赖全局安装)
 

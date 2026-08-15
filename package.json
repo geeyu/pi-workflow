@@ -19,7 +19,7 @@
 	"files": [
 		"src/",
 		"README.md",
-		"DESIGN.md",
+		"docs/DESIGN.md",
 		"LICENSE"
 	],
 	"pi": {

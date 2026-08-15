@@ -8,7 +8,7 @@
  * 生命周期(session_start/shutdown、monitor、resources_discover)保留在本文件。
  * resolveIdentity / workflowStatusSegment 保留再导出(兼容既有调用面/测试)。
  *
- * 设计文档:../DESIGN.md;实现契约:docs/arch-refactor.md
+ * 设计文档:../docs/DESIGN.md;实现契约:docs/arch-refactor.md
  */
 import type {
 	ExtensionAPI,

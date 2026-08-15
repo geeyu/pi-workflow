@@ -2,7 +2,7 @@
 
 pi 编排插件:**主 pi 为调度者**,把大计划迭代式拆成并行/串行批次;每个子任务 = 一个 gittree worktree + 一个 Ghostty tab(可见、可干预),全生命周期事件落 SQLite(`~/.pi/agent/workflows/workflow.db`)。
 
-设计文档:[`DESIGN.md`](./DESIGN.md)(含完整 schema 与决策记录)
+设计文档:[`docs/DESIGN.md`](./docs/DESIGN.md)(含完整 schema 与决策记录)
 
 ## 安装
 
