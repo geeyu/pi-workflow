@@ -33,6 +33,7 @@ import {
 } from "./db.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { validatePlan, type PlanInput } from "./validate.ts";
+import { sanitizeTerminalText } from "./sanitize.ts";
 
 export interface ImportResult {
 	ok: boolean;
@@ -65,10 +66,10 @@ export function importPlan(
 	try {
 		createWorkflow(db, {
 			id: result.workflowId,
-			title: plan.title,
-			goal: plan.goal,
+			title: sanitizeTerminalText(plan.title ?? ""),
+			goal: sanitizeTerminalText(plan.goal ?? ""),
 			repoPath: plan.repoPath ?? cwd,
-			description: plan.description,
+			description: plan.description ? sanitizeTerminalText(plan.description) : undefined,
 			concurrency: plan.concurrency,
 			budgetCents: plan.budgetCents,
 			maxSteps: plan.maxSteps,
@@ -77,7 +78,7 @@ export function importPlan(
 			db,
 			result.workflowId,
 			result.wave,
-			result.waveNote ?? undefined,
+			result.waveNote ? sanitizeTerminalText(result.waveNote) : undefined,
 		);
 		for (const s of result.steps) {
 			const step = createStep(db, {
@@ -85,10 +86,12 @@ export function importPlan(
 				dotted: s.dotted,
 				parentId: s.parentId,
 				waveId: wave.id,
-				title: s.title,
+				title: sanitizeTerminalText(s.title),
 				agent: s.agent,
-				task: s.task,
-				expectations: s.expectations ?? undefined,
+				task: s.task ? sanitizeTerminalText(s.task) : s.task,
+				expectations: s.expectations
+					? s.expectations.map(sanitizeTerminalText)
+					: undefined,
 				gate: s.gate,
 				maxRetries: s.maxRetries,
 				timeoutMin: s.timeoutMin,
@@ -170,10 +173,12 @@ export function appendSteps(
 				dotted: s.dotted,
 				parentId: s.parentId,
 				waveId: wave.id,
-				title: s.title,
+				title: sanitizeTerminalText(s.title),
 				agent: s.agent,
-				task: s.task,
-				expectations: s.expectations ?? undefined,
+				task: s.task ? sanitizeTerminalText(s.task) : s.task,
+				expectations: s.expectations
+					? s.expectations.map(sanitizeTerminalText)
+					: undefined,
 				gate: s.gate,
 				maxRetries: s.maxRetries,
 				timeoutMin: s.timeoutMin,
@@ -252,6 +257,17 @@ export function reportDone(
 		return { ok: false, error: `步骤不存在: ${stepId}` };
 	}
 	const report = checked.report!;
+	// 模型可控文本落库前净化(P0-1):summary/issues/filesChanged 过 sanitize,
+	// 防转义序列在后续 widget/notify/对话流渲染时污染终端布局。
+	const clean: Record<string, unknown> = {
+		...report,
+		summary: sanitizeTerminalText(String(report.summary)),
+	};
+	for (const key of REPORT_PAYLOAD_KEYS) {
+		if (Array.isArray(clean[key])) {
+			clean[key] = (clean[key] as string[]).map(sanitizeTerminalText);
+		}
+	}
 	const attempt = getLatestAttempt(db, stepId);
 	if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 		buildUpdate(
@@ -259,13 +275,13 @@ export function reportDone(
 			"workflow_attempts",
 			{
 				status: "reported",
-				report: JSON.stringify(report),
+				report: JSON.stringify(clean),
 				finished_at: Date.now(),
 			},
 			{ id: attempt.id },
 		);
 	}
-	updateStepReport(db, stepId, report);
+	updateStepReport(db, stepId, clean);
 	// 可选 usage 自报(设计 P3 预算护栏数据源):{input, output, costCents, turns}
 	applyUsage(db, stepId, attempt, report.usage);
 	const nextStatus =
@@ -276,7 +292,7 @@ export function reportDone(
 		stepId: step.id,
 		attemptId: attempt?.id,
 		type: EVT.stepReported,
-		payload: { report, gate: step.gate === 1 },
+		payload: { report: clean, gate: step.gate === 1 },
 	});
 	return { ok: true, status: nextStatus };
 }
@@ -358,7 +374,7 @@ export function checkBudget(
 	return { ok: true };
 }
 
-/** 子任务主动报失败(/wf fail) */
+/** 子任务主动报失败(/wf fail):reason 落库前净化(P0-1) */
 export function reportFail(
 	db: DatabaseSync,
 	stepId: string,
@@ -368,6 +384,7 @@ export function reportFail(
 	if (!step) {
 		return { ok: false, error: `步骤不存在: ${stepId}` };
 	}
+	reason = sanitizeTerminalText(reason);
 	const attempt = getLatestAttempt(db, stepId);
 	if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 		buildUpdate(

@@ -15,6 +15,7 @@ import {
 	type StepRow,
 } from "../db.ts";
 import { STATUS_ICON } from "../core/state.ts";
+import { sanitizeTerminalText } from "../sanitize.ts";
 export function statusCountsLine(
 	counts: Record<string, number>,
 	total: number,
@@ -157,7 +158,8 @@ function planStepLine(
 	theme: Theme,
 ): string {
 	const id = theme.fg("dim", padEnd(dotted, 6));
-	const title = truncWidth(s.title, Math.max(20, 56 - conn.length));
+	// 模型可控标题渲染前净化(P0-1):防 CSI/OSC/双向符污染面板布局(truncWidth 不防转义)
+	const title = truncWidth(sanitizeTerminalText(s.title), Math.max(20, 56 - conn.length));
 	const dur = durText(s.started_at, s.finished_at);
 	const durText_ = dur ? ` ${theme.fg("muted", `(${dur})`)}` : "";
 	const depText =

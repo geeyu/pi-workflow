@@ -84,6 +84,53 @@ import {
 import type { PlanInput } from "./validate.ts";
 import { stepIcon } from "./core/state.ts";
 import { statusCountsLine } from "./ui/status.ts";
+import { sanitizeTerminalText, sanitizeTerminalLines } from "./sanitize.ts";
+
+// ────────────────────────────────────────────────────────────
+// 空态引导(plan/import 无参时的 plan.json 模板,P0-5)
+// JSON 本身不支持注释,故模板用纯 JSON + 字段说明表;模板同时服务于
+// plan-init 缺参、import 缺文件、plan 缺目标的空态提示。
+// ────────────────────────────────────────────────────────────
+const PLAN_TEMPLATE_JSON = `{
+  "name": "demo-wf",
+  "title": "演示工作流",
+  "goal": "要达成的目标",
+  "repoPath": "/path/to/repo",
+  "waveNote": "本 wave 说明",
+  "concurrency": 1,
+  "steps": [
+    {
+      "id": "1",
+      "title": "输出方案",
+      "agent": "planner",
+      "task": "分析现状,输出方案,写入 {{root}}/docs/plan.md"
+    },
+    {
+      "id": "1.1",
+      "title": "实现第一步",
+      "agent": "worker",
+      "task": "按 {{steps.1.summary}} 实现",
+      "deps": ["1"],
+      "expectations": ["验收点 1", "测试通过"],
+      "gate": false
+    }
+  ]
+}`;
+
+const PLAN_TEMPLATE_FIELDS = `字段说明:
+- name: workflow 唯一 id(必填)
+- title / goal: 标题与需求目标(必填)
+- repoPath: 目标仓库路径(缺省=当前目录)
+- waveNote: 本 wave 说明(可选);concurrency: 并发数(可选)
+- steps[].id: 点号 id,支持层级(1 / 1.1 / 1.2 …)
+- steps[].agent: planner|worker|reviewer(必填)
+- steps[].task: 任务描述,支持 {{root}} 与 {{steps.<id>.summary}} 占位
+- steps[].deps: 依赖步骤 id 列表(可选,须已存在且无环)
+- steps[].expectations: 期望/验收标准数组(可选)
+- steps[].gate: true = gate 步骤,回报后需 /wf verify 才能合并(可选)`;
+
+/** 空态提示正文:plan.json 模板 + 字段说明(plan/import/plan-init 共用) */
+export const PLAN_TEMPLATE_HINT = `plan.json 模板(保存为 plan.json 后 /wf import plan.json):\n${PLAN_TEMPLATE_JSON}\n\n${PLAN_TEMPLATE_FIELDS}`;
 
 // ────────────────────────────────────────────────────────────
 // 类型与注册表
@@ -346,14 +393,14 @@ function printStatusText(env: CmdEnv, wfId?: string): void {
 				? ` $${(cost.cost_cents / 100).toFixed(2)}`
 				: "";
 		env.info(
-			`[${w.id}] ${w.title} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
+			`[${w.id}] ${sanitizeTerminalText(w.title)} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
 		);
 		env.info(
 			`  repo: ${w.repo_path} | base: ${w.base_sha ?? "-"} | 绑定窗口: ${winId ?? "-"}`,
 		);
 		for (const s of getRunningSteps(env.db, w.id)) {
 			env.info(
-				`  ▶ ${s.id} ${s.title} tab=${s.tab_id ? s.tab_id.slice(0, 8) : "?"}`,
+				`  ▶ ${s.id} ${sanitizeTerminalText(s.title)} tab=${s.tab_id ? s.tab_id.slice(0, 8) : "?"}`,
 			);
 		}
 	}
@@ -370,7 +417,7 @@ function printTree(env: CmdEnv, wfIdArg?: string): void {
 		const depth = s.id.slice(wf.length + 1).split(".").length;
 		const icon = stepIcon(s.status);
 		env.info(
-			`${"  ".repeat(depth - 1)}${icon} ${s.id.slice(wf.length + 1)} ${s.title} [${s.agent}${s.gate ? "/gate" : ""}]${s.error ? ` ✗ ${s.error}` : ""}`,
+			`${"  ".repeat(depth - 1)}${icon} ${s.id.slice(wf.length + 1)} ${sanitizeTerminalText(s.title)} [${s.agent}${s.gate ? "/gate" : ""}]${s.error ? ` ✗ ${sanitizeTerminalText(s.error)}` : ""}`,
 		);
 	}
 }
@@ -393,7 +440,10 @@ register({
 		const [name, goal] = parsed.positionals;
 		const repo = parsed.value("--repo") ?? env.cwd;
 		const n = Number(parsed.value("--steps", "4"));
-		if (!name || !goal) throw new UsageError();
+		if (!name || !goal) {
+			// 空态引导(P0-5):缺参时展示 plan.json 模板,而非只报用法
+			throw new UsageError(PLAN_TEMPLATE_HINT);
+		}
 		const steps = Array.from({ length: n }, (_, i) => ({
 			id: String(i + 1),
 			title: `步骤 ${i + 1}`,
@@ -414,7 +464,12 @@ register({
 	usage: "wf import <plan.json>",
 	run: (args, env) => {
 		const file = args[0];
-		if (!file) throw new UsageError();
+		if (!file) {
+			// 空态引导(P0-5):缺文件时给出 plan.json 模板,而非只报用法
+			if (env.kind === "cli") throw new UsageError(PLAN_TEMPLATE_HINT);
+			env.warn(`用法: /wf import <plan.json>\n\n${PLAN_TEMPLATE_HINT}`);
+			return;
+		}
 		const abs = path.resolve(env.cwd, file);
 		if (env.kind === "pi" && !fs.existsSync(abs)) {
 			env.fail(`文件不存在: ${abs}`);
@@ -434,8 +489,8 @@ register({
 		if (!parsed.ok) {
 			env.fail(
 				env.kind === "cli"
-					? `✗ 计划文件不是合法 JSON: ${parsed.error}`
-					: parsed.error!,
+					? `✗ 计划文件不是合法 JSON: ${sanitizeTerminalText(parsed.error ?? "")}`
+					: sanitizeTerminalText(parsed.error ?? ""),
 			);
 			return;
 		}
@@ -640,16 +695,16 @@ register({
 			return;
 		}
 		if (env.kind === "cli") {
-			env.info(`[${step.id}] ${step.title}`);
+			env.info(`[${step.id}] ${sanitizeTerminalText(step.title)}`);
 			env.info(
 				`  状态: ${step.status} | agent: ${step.agent} | gate: ${step.gate} | worktree: ${step.worktree ?? "-"} | tab: ${step.tab_id ?? "-"}`,
 			);
-			env.info(`  期望: ${step.expectations ?? "-"}`);
-			env.info(`  回报: ${step.report ?? "-"}`);
-			env.info(`  错误: ${step.error ?? "-"}`);
+			env.info(`  期望: ${sanitizeTerminalText(step.expectations ?? "-")}`);
+			env.info(`  回报: ${sanitizeTerminalText(step.report ?? "-")}`);
+			env.info(`  错误: ${sanitizeTerminalText(step.error ?? "-")}`);
 			for (const a of getAttemptsByStep(env.db, step.id)) {
 				env.info(
-					`  attempt#${a.attempt_no} ${a.status} tab=${a.tab_id ? a.tab_id.slice(0, 8) : "-"}${a.error ? ` 错误: ${a.error}` : ""}`,
+					`  attempt#${a.attempt_no} ${a.status} tab=${a.tab_id ? a.tab_id.slice(0, 8) : "-"}${a.error ? ` 错误: ${sanitizeTerminalText(a.error)}` : ""}`,
 				);
 			}
 			const events = getEvents(env.db, { stepId: step.id, limit: 10 });
@@ -658,23 +713,25 @@ register({
 			}
 			return;
 		}
-		// pi:widget 渲染(行内容与重构前一致)
+		// pi:widget 渲染(行内容与重构前一致;模型可控字段过 sanitize)
 		const attempts = getAttemptsByStep(env.db, step.id);
 		const events = getEvents(env.db, { stepId: step.id, limit: 20 });
-		const expectations = parseExpectations(step.expectations);
+		const expectations = parseExpectations(step.expectations).map(
+			sanitizeTerminalText,
+		);
 		const lines = [
-			`${stepIcon(step.status)} ${step.id} ${step.title}`,
+			`${stepIcon(step.status)} ${step.id} ${sanitizeTerminalText(step.title)}`,
 			`  状态: ${step.status} | agent: ${step.agent} | wave: ${step.wave_id ?? "-"} | gate: ${step.gate}`,
 			`  worktree: ${step.worktree ?? "-"} | tab: ${step.tab_id ?? "-"} | 重试: ${step.retries_done}/${step.max_retries}`,
 			`  期望: ${expectations.length > 0 ? expectations.join(" | ") : "(未设定)"}`,
-			`  回报: ${step.report ?? "(无)"}`,
-			`  错误: ${step.error ?? "(无)"}`,
+			`  回报: ${sanitizeTerminalText(step.report ?? "(无)")}`,
+			`  错误: ${sanitizeTerminalText(step.error ?? "(无)")}`,
 		];
 		if (attempts.length > 0) {
 			lines.push(`  尝试(${attempts.length}):`);
 			for (const a of attempts) {
 				lines.push(
-					`    #${a.attempt_no} ${a.status} tab=${a.tab_id ?? "-"} ${a.finished_at ? `完成于 ${new Date(a.finished_at).toLocaleString()}` : ""}${a.error ? ` 错误: ${a.error}` : ""}`,
+					`    #${a.attempt_no} ${a.status} tab=${a.tab_id ?? "-"} ${a.finished_at ? `完成于 ${new Date(a.finished_at).toLocaleString()}` : ""}${a.error ? ` 错误: ${sanitizeTerminalText(a.error)}` : ""}`,
 				);
 			}
 		}
@@ -686,7 +743,8 @@ register({
 		if (step.task_md) {
 			lines.push(
 				`  ── 任务正文 ──`,
-				...step.task_md.split("\n").map((l) => `  ${l}`),
+				// 逐行净化:task_md 是多行 markdown,整段净化会把换行也吞掉
+				...step.task_md.split("\n").map((l) => `  ${sanitizeTerminalText(l)}`),
 			);
 		}
 		env.show(lines);
@@ -1115,9 +1173,10 @@ register({
 		const explicitWf = parsed.value("--workflow");
 		const request = parsed.positionals.join(" ");
 		if (!request.trim()) {
-			if (env.kind === "cli") throw new UsageError();
+			// 空态引导(P0-5):无目标时给出用法 + plan.json 模板
+			if (env.kind === "cli") throw new UsageError(PLAN_TEMPLATE_HINT);
 			env.warn(
-				'用法: /wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]',
+				`用法: /wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]\n\n${PLAN_TEMPLATE_HINT}`,
 			);
 			return;
 		}
@@ -1135,7 +1194,7 @@ register({
 		}
 		const planText = JSON.stringify(result.plan, null, 2);
 		if (dryRun) {
-			env.show(planText.split("\n"));
+			env.show(sanitizeTerminalLines(planText.split("\n")));
 			if (env.kind === "pi") {
 				env.notifyPi("[wf] planner 输出已显示(--dry-run,未落库)");
 			}
@@ -2308,13 +2367,13 @@ register({
 			}
 			stepLabel = step.id;
 		}
-		// 优先最新 attempt 的冻结任务正文
+		// 优先最新 attempt 的冻结任务正文(逐行净化:多行 markdown 保留换行)
 		const attempt = getLatestAttempt(env.db, step.id);
 		const taskMd =
 			(attempt?.task_md && attempt.status === ATTEMPT_STATUS.running
 				? attempt.task_md
 				: null) ?? step.task_md;
-		env.show(taskMd.split("\n"));
+		env.show(sanitizeTerminalLines(taskMd.split("\n")));
 		env.notifyPi(
 			`[wf] 任务详情已显示: ${stepLabel}(worktree: ${step.worktree ?? "-"})`,
 		);

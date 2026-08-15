@@ -28,6 +28,36 @@ declare module "@earendil-works/pi-coding-agent" {
 		dispose?(): void;
 	}
 
+	/** TUI 组件最小面(render 返回含 ANSI 的行;message renderer / widget factory 共用) */
+	export interface Component {
+		render(width: number): string[];
+		invalidate(): void;
+		dispose?(): void;
+	}
+
+	/** 自定义消息(registerMessageRenderer 的渲染入参;sendMessage 的投递形状) */
+	export interface CustomMessage<T = unknown> {
+		role: "custom";
+		customType: string;
+		content: string | Array<{ type: string; text?: string; source?: unknown }>;
+		display: boolean;
+		details?: T;
+		timestamp: number;
+	}
+
+	export interface MessageRenderOptions {
+		expanded: boolean;
+		/** 输出水平内边距(outputPad 设置) */
+		outputPad: number;
+	}
+
+	/** 自定义消息渲染器:返回 undefined/抛错 → 降级默认 markdown 渲染 */
+	export type MessageRenderer<T = unknown> = (
+		message: CustomMessage<T>,
+		options: MessageRenderOptions,
+		theme: Theme,
+	) => Component | undefined;
+
 	export interface ExtensionUI {
 		select(
 			title: string,
@@ -92,6 +122,11 @@ declare module "@earendil-works/pi-coding-agent" {
 				deliverAs?: "steer" | "followUp" | "nextTurn";
 			},
 		): Promise<void>;
+		/** 注册自定义消息渲染器(customType 消息在对话流中以此渲染;未注册/undefined → markdown 降级) */
+		registerMessageRenderer<T = unknown>(
+			customType: string,
+			renderer: MessageRenderer<T>,
+		): void;
 		/** 发送一条真实用户消息(总是触发一轮;流式中必须指定 deliverAs) */
 		sendUserMessage(
 			content: string | Array<{ type: string; text?: string; source?: unknown }>,

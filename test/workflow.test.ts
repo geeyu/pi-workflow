@@ -20,6 +20,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { StepRow } from "../src/db.ts";
+import type { WorkflowNotifyDetails } from "../src/ui/notify.ts";
 
 // 必须在 import db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -288,13 +289,15 @@ async function main(): Promise<void> {
 	if (savedPiBin === undefined) delete process.env.PI_BIN;
 	else process.env.PI_BIN = savedPiBin;
 	process.argv[1] = savedArgv;
-	// 先让步骤 1 完成(供 1.1 注入)
+	// 先让步骤 1 完成(供 1.1 注入;走合法迁移链 pending→dispatched→running→done)
 	dbMod.updateStepReport(db2, "demo-wf-1", {
 		summary: "方案已确认:Redis 直连",
 		filesChanged: ["docs/plan.md"],
 		issues: [],
 		tests: "none",
 	});
+	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "demo-wf-1", dbMod.STEP_STATUS.done);
 	const step11 = dbMod.getStep(db2, "demo-wf-1.1")!;
 	const md = dispatchMod.renderTaskMd(db2, wf!, step11, 1);
@@ -927,6 +930,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		ready1.length === 1 && ready1[0].id === "ready-wf-1",
 		`就绪集初始仅顶层(${ready1.map((s) => s.id).join(",")})`,
 	);
+	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.done);
 	const ready2 = monitorMod.getReadySteps(db2, "ready-wf");
 	assert(
@@ -934,7 +939,11 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			ready2.every((s) => s.id === "ready-wf-1.1" || s.id === "ready-wf-1.2"),
 		`1 done 后就绪集为 1.1/1.2(${ready2.map((s) => s.id).join(",")})`,
 	);
+	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1.1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "ready-wf-1.2", dbMod.STEP_STATUS.done);
 	const ready3 = monitorMod.getReadySteps(db2, "ready-wf");
 	assert(
@@ -978,8 +987,14 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		execFileSync("git", ["-C", wt, "commit", "-q", "-m", `feat ${dotted}`]);
 		dbMod.updateStepStatus(db2, `merge-wf-${dotted}`, dbMod.STEP_STATUS.done);
 	}
-	// 未全部完成时拒绝合并
-	dbMod.updateStepStatus(db2, "merge-wf-2", dbMod.STEP_STATUS.running);
+	// 未全部完成时拒绝合并(回退 fixture:done 步骤不可能自然回到 running,
+	// 状态机接线后此处直写 buildUpdate 模拟)
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ status: "running", updated_at: Date.now() },
+		{ id: "merge-wf-2" },
+	);
 	const blockedMerge = await monitorMod.mergeWave(db2, mWf, 1);
 	assert(
 		!blockedMerge.ok && blockedMerge.error!.includes("未全部完成"),
@@ -1056,6 +1071,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(!over.ok && over.error!.includes("上限"), "超过 max_retries 拒绝");
 
 	console.log("== T14 usage 落库 + budget 护栏 ==");
+	// T14 前把 failed 的 ready-wf-2 走合法链回 running(人工处理后再回报)
+	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.running);
 	const r14 = orchMod.reportDone(db2, "ready-wf-2", {
 		summary: "完成",
 		filesChanged: [],
@@ -1081,8 +1099,14 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
-	// 构造 running 但 started_at 在 timeout_min 之前的步骤
-	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
+	// 构造 running 但 started_at 在 timeout_min 之前的步骤(done 步骤回退是
+	// 非自然状态,状态机接线后直写 buildUpdate 模拟 fixture)
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ status: "running", updated_at: Date.now() },
+		{ id: "ready-wf-1" },
+	);
 	db2
 		.prepare(
 			"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
@@ -1300,9 +1324,14 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	dbMod.updateStepStatus(db2, "notify-wf-1.3", dbMod.STEP_STATUS.aborted, {
 		error: "x",
 	});
+	// conflict/needs-fix 只能从 running 进入(状态机接线后走合法链)
+	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.conflict, {
 		error: "x",
 	});
+	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.running);
 	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.needsFix, {
 		error: "x",
 	});
@@ -1377,8 +1406,12 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			AGENTS,
 	);
 	assert(doneWf.ok, "notify-done-wf 导入");
-	dbMod.updateStepStatus(db2, "notify-done-wf-1", dbMod.STEP_STATUS.done);
-	dbMod.updateStepStatus(db2, "notify-done-wf-2", dbMod.STEP_STATUS.done);
+	// done 只能从 running 进入(状态机接线后走合法链)
+	for (const d of ["notify-done-wf-1", "notify-done-wf-2"]) {
+		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.dispatched);
+		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.running);
+		dbMod.updateStepStatus(db2, d, dbMod.STEP_STATUS.done);
+	}
 	const doneFilter = (arr: monitorMod.NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-done-wf");
 	const wd = doneFilter(monitorMod.detectStateChanges(db2));
@@ -2288,6 +2321,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → failed"),
 		`wf fail(注册表派发): ${pr.stdout.trim()}`,
 	);
+	// failed 后人工处理完再回报:走合法链 failed→dispatched→running(状态机接线后)
+	dbMod.updateStepStatus(db2, "reg-wf-1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "reg-wf-1", dbMod.STEP_STATUS.running);
 	pr = runCli(
 		["done", "reg-wf-1", '{"summary":"s","tests":"none"}'],
 		{ cwd: tmpDir },
@@ -2311,6 +2347,352 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(
 		pr.code === 3 && pr.stderr.includes("workflow 不存在"),
 		"poll 不存在 workflow → 退出 3(UsageError detail)",
+	);
+
+	console.log("== T26 P0-1 终端净化:sanitize 纯函数 + 落库/渲染接线 ==");
+	const sanMod = await import("../src/sanitize.ts");
+	assert(
+		sanMod.sanitizeTerminalText("a\x1b[31mb") === "ab",
+		"CSI 整段剥离不残留 [31m",
+	);
+	assert(
+		sanMod.sanitizeTerminalText("a\x1b]0;改标题\x07b") === "ab",
+		"OSC 负载整段剥离",
+	);
+	assert(
+		sanMod.sanitizeTerminalText("a\u202eb\u200f") === "ab",
+		"双向控制符删除",
+	);
+	assert(
+		sanMod.sanitizeTerminalText("a\nb\tc") === "a b c",
+		"换行/制表符变空格(不能改布局)",
+	);
+	assert(
+		sanMod.sanitizeTerminalText("\x1b[1;31m红\x1b[0m") === "红",
+		"ANSI 着色序列剥净",
+	);
+	assert(
+		sanMod.sanitizeTerminalText("普通文本 123") === "普通文本 123",
+		"普通文本原样保留",
+	);
+	assert(
+		sanMod.sanitizeTerminalLines(["a\x1b[m", "b"]).join("|") === "a|b",
+		"数组逐行净化",
+	);
+	// 落库接线:title/task/expectations 导入即净化
+	const sanRepo = path.join(tmpDir, "sanrepo");
+	fs.mkdirSync(sanRepo, { recursive: true });
+	const sanImp = orchMod.importPlan(
+		db2,
+		{
+			name: "san-wf",
+			title: "净化\x1b[31m工作流",
+			goal: "净化目标",
+			repoPath: sanRepo,
+			steps: [
+				{
+					id: "1",
+					title: "任务\x1b]0;x\x07一",
+					agent: "worker",
+					task: "正文\n\x1b[33m第二行",
+					expectations: ["期望\x1b[35mA"],
+				},
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(sanImp.ok, "san-wf 导入");
+	const sanStep = dbMod.getStep(db2, "san-wf-1")!;
+	assert(
+		sanStep.title === "任务一",
+		`title 落库已净化(实际: ${JSON.stringify(sanStep.title)})`,
+	);
+	assert(
+		sanStep.task_md === "正文 第二行",
+		`task 落库已净化(换行变空格: ${JSON.stringify(sanStep.task_md)})`,
+	);
+	assert(
+		sanStep.expectations === '["期望A"]',
+		`expectations 落库已净化(${sanStep.expectations})`,
+	);
+	// 回报落库净化:summary / issues
+	const sanDone = orchMod.reportDone(db2, "san-wf-1", {
+		summary: "完成\x1b[32m了",
+		issues: ["转义\x1b]0;x\x07问题"],
+		filesChanged: ["a.ts"],
+		tests: "passed",
+	});
+	assert(sanDone.ok, "san-wf-1 回报成功");
+	const sanStep2 = dbMod.getStep(db2, "san-wf-1")!;
+	assert(
+		sanStep2.summary === "完成了",
+		`summary 落库已净化(${sanStep2.summary})`,
+	);
+	assert(
+		sanStep2.issues === '["转义问题"]',
+		`issues 落库已净化(${sanStep2.issues})`,
+	);
+	// fail reason 落库净化
+	const sanFail = orchMod.reportFail(db2, "san-wf-1", "失败了\x1b[41m");
+	assert(
+		sanFail.ok && dbMod.getStep(db2, "san-wf-1")!.error === "失败了",
+		"fail reason 落库已净化",
+	);
+	// 面板渲染防护:历史脏数据(绕过净化直接写库)渲染前仍被净化
+	dbMod.buildUpdate(
+		db2,
+		"workflow_steps",
+		{ title: "脏\x1b[36m标题" },
+		{ id: "san-wf-1" },
+	);
+	const statusMod = await import("../src/ui/status.ts");
+	const fakeTheme = {
+		fg: (_c: string, t: string) => t,
+		strikethrough: (t: string) => t,
+		bold: (t: string) => t,
+	};
+	const sanPlanLines = statusMod.buildPlanLines(
+		db2,
+		dbMod.listActiveWorkflows(db2, sanRepo),
+		fakeTheme as never,
+		80,
+	);
+	assert(
+		sanPlanLines.some((l) => l.includes("脏标题")) &&
+			!sanPlanLines.some((l) => l.includes("\x1b[36m")),
+		`面板对历史脏标题渲染前净化(${sanPlanLines.find((l) => l.includes("脏")) ?? "无脏行"})`,
+	);
+
+	console.log("== T26b P0-3 workflow-notify 结构化渲染(字形 + 进度 + details + renderer) ==");
+	const notifyMod = await import("../src/ui/notify.ts");
+	const renderMod = await import("../src/ui/renderers.ts");
+	const sent2: Array<{ content: string; details?: unknown }> = [];
+	const fakeSender2 = {
+		sendMessage: async (m: { content: string; details?: unknown }) => {
+			sent2.push({ content: m.content, details: m.details });
+		},
+		ui: { notify: () => {} },
+	};
+	// san-wf-1 已 failed(fail 事件尚未通知)→ 检测出 1 条 failed 事件
+	const sanItems = monitorMod
+		.detectStateChanges(db2)
+		.filter((i) => i.workflowId === "san-wf");
+	assert(sanItems.length === 1 && sanItems[0]!.kind === "failed", "san-wf failed 事件待通知");
+	await notifyMod.sendWorkflowNotifications(db2, fakeSender2, sanItems);
+	assert(sent2.length === 1, "发送一条聚合消息");
+	const nContent = sent2[0]!.content;
+	assert(
+		nContent.includes("● san-wf") && nContent.includes("0/1") && nContent.includes("✗1"),
+		`内容含进度摘要+字形(${nContent.split("\n")[0]})`,
+	);
+	assert(
+		nContent.includes("- ✗ 步骤 san-wf-1 失败") && nContent.includes("/wf retry san-wf-1"),
+		"事件行字形前缀 + 可执行命令",
+	);
+	const details = sent2[0]!.details as WorkflowNotifyDetails;
+	assert(
+		details.items.length === 1 &&
+			details.items[0]!.kind === "failed" &&
+			details.items[0]!.glyph === "✗",
+		"details.items 结构化(kind/glyph/text)",
+	);
+	assert(
+		details.progress.length === 1 && details.progress[0]!.text.includes("✗1"),
+		"details.progress 结构化",
+	);
+	// 渲染器:字形按 kind 着色 + /wf 命令 accent 高亮 + 宽度截断
+	const cmdTheme = {
+		fg: (c: string, t: string) => `<${c}>${t}</${c}>`,
+		strikethrough: (t: string) => t,
+		bold: (t: string) => t,
+	};
+	const msg = {
+		role: "custom" as const,
+		customType: "workflow-notify",
+		content: nContent,
+		display: true,
+		details,
+		timestamp: Date.now(),
+	};
+	const component = renderMod.renderWorkflowNotify(
+		msg,
+		{ expanded: false, outputPad: 1 },
+		cmdTheme as never,
+	)!;
+	const rendered = component.render(200);
+	assert(
+		rendered[0]!.includes("<dim>[wf]") && rendered[0]!.includes("● san-wf"),
+		`进度行 dim 渲染(${rendered[0]})`,
+	);
+	assert(
+		rendered[1]!.includes("<error>✗</error>") &&
+			rendered[1]!.includes("<accent>/wf step san-wf-1</accent>") &&
+			rendered[1]!.includes("<accent>/wf retry san-wf-1</accent>"),
+		`事件行字形着色 + 命令高亮(${rendered[1]})`,
+	);
+	const narrow = component.render(30);
+	assert(
+		narrow.every((l) => l.length <= 31) && narrow.some((l) => l.includes("…")),
+		`超宽截断(窄宽 ${narrow.map((l) => l.length).join(",")})`,
+	);
+	// 降级:无 details 的旧消息按 content 行渲染(首行 dim,命令仍高亮)
+	const legacy = renderMod.renderWorkflowNotify(
+		{ ...msg, details: undefined },
+		{ expanded: false, outputPad: 1 },
+		cmdTheme as never,
+	)!;
+	const legacyLines = legacy.render(120);
+	assert(
+		legacyLines[0]!.includes("<dim>") &&
+			legacyLines.some((l) => l.includes("<accent>/wf retry san-wf-1</accent>")),
+		"无 details 降级渲染(首行 dim + 命令高亮)",
+	);
+
+	console.log("== T26c P0-5 空态引导:plan/import/plan-init 模板提示 ==");
+	pr = runCli(["import"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 &&
+			pr.stderr.includes("用法: wf import <plan.json>") &&
+			pr.stderr.includes('"name": "demo-wf"'),
+		`import 缺文件 → 退出 3 + plan.json 模板(${pr.stderr.slice(0, 60).replace(/\n/g, " ")})`,
+	);
+	pr = runCli(["plan"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 &&
+			pr.stderr.includes("用法: wf plan") &&
+			pr.stderr.includes('"steps"'),
+		`plan 缺目标 → 退出 3 + 模板(${pr.stderr.slice(0, 60).replace(/\n/g, " ")})`,
+	);
+	pr = runCli(["plan-init"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 &&
+			pr.stderr.includes("用法: wf plan-init") &&
+			pr.stderr.includes('"name": "demo-wf"'),
+		`plan-init 缺参 → 退出 3 + 模板(${pr.stderr.slice(0, 60).replace(/\n/g, " ")})`,
+	);
+	// pi 模式:plan/import 空态 → warn 含用法 + 模板
+	const guideWarns: string[] = [];
+	const guideEnv = {
+		kind: "pi",
+		cwd: tmpDir,
+		db: db2,
+		show: () => {},
+		info: () => {},
+		warn: (l: string) => guideWarns.push(l),
+		fail: () => {},
+		notifyPi: () => {},
+		setExitCode: () => {},
+	};
+	void cmdMod.getCommand("plan")!.run([], guideEnv as never);
+	assert(
+		guideWarns.some(
+			(w) => w.includes("用法: /wf plan") && w.includes('"name": "demo-wf"'),
+		),
+		`pi plan 空态 → warn 含用法+模板(${guideWarns.length} 条 warn)`,
+	);
+	guideWarns.length = 0;
+	cmdMod.getCommand("import")!.run([], guideEnv as never);
+	assert(
+		guideWarns.some(
+			(w) => w.includes("用法: /wf import") && w.includes("plan.json 模板"),
+		),
+		`pi import 空态 → warn 含用法+模板(${guideWarns.length} 条 warn)`,
+	);
+	// 校验错误可读性:非法 plan 逐条列出
+	fs.writeFileSync(
+		path.join(tmpDir, "bad-plan.json"),
+		JSON.stringify({
+			name: "bad-wf",
+			title: "t",
+			goal: "g",
+			steps: [{ id: "x", title: "t", agent: "worker" }],
+		}),
+	);
+	pr = runCli(["import", "bad-plan.json"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 &&
+			pr.stderr.includes("导入失败") &&
+			pr.stderr.includes("点号"),
+		`非法 plan 校验错误逐条可读(${pr.stderr.slice(0, 80).replace(/\n/g, " ")})`,
+	);
+
+	console.log("== T26d P0-4 状态机迁移校验接线 ==");
+	// 合法链:running → done / running → needs-fix / done → conflict(merge 冲突重开)
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.running);
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.done);
+	assert(
+		dbMod.getStep(db2, "san-wf-1")!.status === "done",
+		"合法链 pending→dispatched→running→done 通过",
+	);
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.conflict);
+	assert(
+		dbMod.getStep(db2, "san-wf-1")!.status === "conflict",
+		"done → conflict(merge 冲突重开)合法",
+	);
+	// 非法迁移:明确错误 + 允许列表;同状态重复写入幂等
+	try {
+		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.dispatched);
+		assert(false, "conflict → dispatched 应被拒绝");
+	} catch (e) {
+		const msg = (e as Error).message;
+		assert(
+			msg.includes("非法状态迁移: san-wf-1 conflict → dispatched") &&
+				msg.includes("允许: done / failed / aborted / needs-fix / skipped") &&
+				msg.includes("人工处理"),
+			`非法迁移报错含状态/允许集/指引(${msg.slice(0, 60)}…)`,
+		);
+	}
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.done);
+	assert(
+		dbMod.getStep(db2, "san-wf-1")!.status === "done",
+		"done → done 幂等(重复写入不报错)",
+	);
+	try {
+		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.running);
+		assert(false, "done → running 应被拒绝");
+	} catch (e) {
+		assert(
+			(e as Error).message.includes("非法状态迁移: san-wf-1 done → running") &&
+				(e as Error).message.includes("允许: conflict"),
+			`done → running 拒绝且列出仅存出口(${(e as Error).message.slice(0, 50)}…)`,
+		);
+	}
+	try {
+		dbMod.updateStepStatus(db2, "no-such-step", dbMod.STEP_STATUS.done);
+		assert(false, "不存在步骤应报错");
+	} catch (e) {
+		assert(
+			(e as Error).message.includes("步骤不存在"),
+			"不存在步骤 → 步骤不存在错误",
+		);
+	}
+	// 状态机接线不破坏真实 CLI 链路:skip 从 needs-fix 合法
+	const smWf = orchMod.importPlan(
+		db2,
+		{
+			name: "sm-wf",
+			title: "状态机",
+			goal: "接线",
+			repoPath: sanRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(smWf.ok, "sm-wf 导入");
+	dbMod.updateStepStatus(db2, "sm-wf-1", dbMod.STEP_STATUS.dispatched);
+	dbMod.updateStepStatus(db2, "sm-wf-1", dbMod.STEP_STATUS.running);
+	dbMod.updateStepStatus(db2, "sm-wf-1", dbMod.STEP_STATUS.needsFix, {
+		error: "驳回",
+	});
+	pr = runCli(["skip", "sm-wf-1", "人工终态"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 &&
+			dbMod.getStep(db2, "sm-wf-1")!.status === "skipped",
+		`needs-fix → skipped 人工终态合法(${pr.code} ${pr.stdout.trim().slice(0, 40)})`,
 	);
 
 	// 清理

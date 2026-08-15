@@ -2,8 +2,8 @@
  * core/state.ts — 步骤/工作流状态常量与状态机迁移表(单一来源)
  *
  * STATUS_ICON / stepIcon 自 index.ts / cli.ts / board.ts 收敛到此处;
- * STEP_TRANSITIONS / WORKFLOW_TRANSITIONS 为状态机迁移表(本期只建表不接线,
- * 接线列为后续 wave,见 docs/arch-refactor.md §5.3)。
+ * STEP_TRANSITIONS / WORKFLOW_TRANSITIONS 为状态机迁移表:步骤级已接线
+ * (db.ts updateStepStatus 强制校验非法迁移);workflow 级暂未接线。
  */
 export const STATUS_ICON: Record<string, string> = {
 	pending: "○",
@@ -25,11 +25,37 @@ export function stepIcon(status: string): string {
 	return STATUS_ICON[status] ?? "?";
 }
 
-/** 步骤状态合法迁移:key = 当前状态 → 允许的目标状态集(从现状调用点提炼,初稿) */
+/** 步骤状态合法迁移(updateStepStatus 强制校验;2026-08 接线补全审计缺项:)
+ * - dispatched → reported/waiting-verify:子 agent 快速回报的竞态护栏(正常路径先 running);
+ * - done → conflict:merge 冲突会把已 done 步骤重新打开待解决(wave.ts mergeWave);
+ * - failed/aborted/needs-fix/conflict → skipped:人工终态 /wf skip 允许从任何非终态进入;
+ * - 同状态重复写入视为幂等(不报非法)。 */
 export const STEP_TRANSITIONS: Record<string, readonly string[]> = {
-	pending: ["ready", "dispatched", "failed", "aborted", "skipped"],
-	ready: ["dispatched", "failed", "aborted", "skipped"],
-	dispatched: ["running", "failed", "aborted", "skipped"],
+	pending: [
+		"ready",
+		"dispatched",
+		"reported",
+		"waiting-verify",
+		"failed",
+		"aborted",
+		"skipped",
+	], // 人工回报/报失败不要求先派发(子 agent 或人工直接 /wf done|fail)
+	ready: [
+		"dispatched",
+		"reported",
+		"waiting-verify",
+		"failed",
+		"aborted",
+		"skipped",
+	],
+	dispatched: [
+		"running",
+		"reported",
+		"waiting-verify",
+		"failed",
+		"aborted",
+		"skipped",
+	],
 	running: [
 		"reported",
 		"waiting-verify",
@@ -42,12 +68,12 @@ export const STEP_TRANSITIONS: Record<string, readonly string[]> = {
 	],
 	reported: ["done", "needs-fix", "failed", "skipped"],
 	"waiting-verify": ["done", "needs-fix", "failed", "skipped"],
-	done: [],
+	done: ["conflict"], // 终态;唯一例外:merge 冲突重新打开
 	skipped: [],
-	failed: ["dispatched", "running", "failed", "aborted", "needs-fix"], // 可重派
-	aborted: ["dispatched", "running", "failed", "aborted", "needs-fix"],
-	"needs-fix": ["dispatched", "running", "failed", "aborted", "needs-fix"],
-	conflict: ["done", "failed", "aborted", "needs-fix"], // resolve-conflict → done
+	failed: ["dispatched", "running", "failed", "aborted", "needs-fix", "skipped"], // 可重派/人工终态
+	aborted: ["dispatched", "running", "failed", "aborted", "needs-fix", "skipped"],
+	"needs-fix": ["dispatched", "running", "failed", "aborted", "needs-fix", "skipped"],
+	conflict: ["done", "failed", "aborted", "needs-fix", "skipped"], // resolve-conflict → done
 };
 
 export function canTransition(from: string, to: string): boolean {
