@@ -598,7 +598,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 | `/wf step <id>` / `/wf events [N] [--follow]` | both | 单步详情(含 attempts)/ 审计流 |
 | `/wf context [stepId]` | both | 读任务详情:无参按身份解析(子 pi),显式传 stepId(CLI) |
 | `/wf done <id> '<JSON>'` / `/wf fail <id> <原因>` | both | 回报(子任务侧) |
-| `wf inject/poll/session/open-tab/fix-tab/tabs/cleanup/clean/doctor/debug` | cli | 排查/自动化专用(详见 skill/SKILL.md §1.3 命令矩阵) |
+| `wf inject/poll/session/open-tab/fix-tab/tabs/cleanup/clean/doctor/debug` | cli | 排查/自动化专用(详见 skill/SKILL.md → references/commands.md) |
 
 不再存在的设计命令(已被替代):`/wf start`(用 import/plan 直接建)、`/wf pause`(预算护栏自动 pause)、`/wf abort`、`/wf close-tab`(cleanup 统一关终态 tab)。
 
