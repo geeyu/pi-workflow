@@ -46,7 +46,7 @@ import {
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
-import { dispatchStep, resolveBin, worktreePath } from "./dispatch.ts";
+import { dispatchStep, resolveBin, run, worktreePath } from "./dispatch.ts";
 import { fetchLiveTabIds, mergeWave } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
 import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
