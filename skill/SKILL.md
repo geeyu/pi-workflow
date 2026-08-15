@@ -67,7 +67,7 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 /wf dispatch 2 --workflow <id>            # 1.1/1.2 全部完成后,发起 2
 ```
 
-派发动作:冻结 base_sha → `gittree create wf-<wf>-<dotted>` → 渲染 task_md 写库 → 新 tab 开子 pi(固定开进 workflow 绑定窗口,不受焦点影响)→ pointer 注入并自动回车提交。
+派发动作:冻结 base_sha → `gittree create wf-<wf>-<dotted>` → 渲染 task_md 写库 → 新 tab 开子 pi(固定开进 workflow 绑定窗口,按窗口 id 定位,不受焦点/窗口开合影响)→ pointer 注入并自动回车提交。
 
 - **依赖未完成会被拒绝**(提示"依赖未完成,先完成:…")
 - `--dry-run` 预览不落库不开窗
@@ -101,6 +101,7 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 /wf step <id>                             # 单步详情(attempts 历史/错误/任务正文)
 /wf events [workflowId] [N]               # 审计流(只增不改,全生命周期)
 /wf retry <id> [--fresh]                  # 重派(默认复用 worktree,--fresh 重建)
+/wf rebind-window [wfId]                  # 重新绑定窗口(绑定窗口已关闭时,把当前焦点窗口设为绑定窗口)
 /wf skip <id> <原因>                      # 人工终态
 /wf clean                                 # 清理残留 worktree / 归档
 ```
@@ -130,7 +131,8 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | `gittree: command not found` | 非交互 shell PATH 缺 `~/.local/bin` | 已内置兜底绝对路径;手动则 `export PATH="$HOME/.local/bin:$PATH"` |
 | ghostctl 报 `TypeError: ... | 'type' and 'NoneType'` | python3 < 3.10(系统 3.9 不支持 `str \| None`) | PATH 优先 brew python3;`wf doctor` 可查 |
 | 子 tab 中文乱码 | AppleScript input text 编码 | pointer 已改纯 ASCII;任务详情(中文)走 `/wf context` |
-| 子任务 tab 开错窗口 | 依赖焦点窗口 | 已改为 workflow 绑定窗口(`workflow_metadata.ghostty_window_id`);查看:`wf debug` |
+| 子任务 tab 开错窗口 | 依赖焦点窗口 | 已改为 workflow 绑定窗口(首次派发锁定焦点窗口 id 存 `workflow_metadata.ghostty_window_id`,之后按 id 定位);查看:`wf debug` |
+| 派发报错「绑定窗口 … 已关闭」 | 绑定窗口被关闭,按 id 定位失败(绝不回退焦点窗口) | `/wf rebind-window`(把当前焦点窗口设为绑定窗口)后 `/wf retry <id>`;或清除 `workflow_metadata.ghostty_window_id` |
 | 步骤卡在 dispatched/running 但无 tab | new-tab 失败或 pi 崩溃 | `wf step <id>` 看 error/tab_id;`/wf retry <id>` 重派 |
 | `依赖未完成,先完成: …` | 派发顺序违反依赖 | 按 §2 顺序:先依赖,后并行,再后续 |
 | `/wf done` 提示步骤不存在 | 子 tab 身份没识别 | 检查 env `PI_WF_WORKFLOW/PI_WF_STEP`;或用完整 id(`/wf done <workflowId>-<dotted>`) |
@@ -175,6 +177,7 @@ wf dispatch <dotted...> [--workflow <id>] [--dry-run]      # 派发(自动化/�
 wf verify <id> approve|reject [原因]                       # 核对
 wf merge [--wave N]                                         # 合并 wave 回主分支
 wf retry <id> [--fresh]                                     # 重派失败/中止/待修步骤
+wf rebind-window [wfId]                                    # 重新绑定窗口(绑定窗口已关闭时)
 wf done <id> '<JSON>' | wf fail <id> <原因>                # 回报(子任务侧)
 wf clean                                                   # 清理 worktree
 wf doctor                                                  # 环境自检

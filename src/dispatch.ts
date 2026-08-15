@@ -244,32 +244,45 @@ function parseLayout(raw: string): WfWindowInfo[] | null {
 
 /**
  * workflow 绑定窗口(设计:一次 workflow 一个完整窗口流程):
- * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata),之后所有子任务
- * tab 固定开进该窗口;绑定窗口已关闭则回退焦点窗口并重新绑定。
- * 返回窗口序号(1 起,供 ghostctl --window),拿不到返回 undefined。
+ * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata.ghostty_window_id),
+ * 之后所有子任务 tab 固定开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),
+ * 不依赖窗口序号/焦点,窗口开合不会漂移;
+ * 绑定窗口已关闭则返回错误,绝不静默回退焦点窗口。
  */
 async function resolveWorkflowWindow(
 	db: DatabaseSync,
 	ghostctlBin: string,
 	cwd: string,
 	workflowId: string,
-): Promise<number | undefined> {
+): Promise<{ ok: true; winId: string } | { ok: false; error: string }> {
 	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return undefined;
+	if (res.code !== 0) {
+		return {
+			ok: false,
+			error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
+		};
+	}
 	const windows = parseLayout(res.stdout);
-	if (!windows || windows.length === 0) return undefined;
+	if (!windows || windows.length === 0) {
+		return { ok: false, error: "ghostctl layout 无窗口信息" };
+	}
 
 	const bound = getWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY) as
 		| string
 		| undefined;
-	let idx = bound ? windows.findIndex((w) => w.id === bound) : -1;
-	if (idx === -1) {
-		// 未绑定或绑定窗口已关闭 → 取当前焦点窗口并重新绑定
-		const target = windows.find((w) => w.front) ?? windows[0];
-		idx = windows.findIndex((w) => w.id === target.id);
-		setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, target.id);
+	if (bound) {
+		// 已锁定 → 直接按 id 返回(不再查焦点);窗口已关闭 → 报错,绝不静默回退
+		if (windows.some((w) => w.id === bound)) return { ok: true, winId: bound };
+		return {
+			ok: false,
+			error: `绑定窗口 ${bound} 已关闭,无法定位;请 /wf rebind-window 重新绑定当前焦点窗口,或清除 workflow_metadata.ghostty_window_id 后重试(绝不回退焦点窗口)`,
+		};
 	}
-	return idx >= 0 ? idx + 1 : undefined;
+
+	// 未绑定 → 锁定当前焦点窗口(首次派发语义)
+	const target = windows.find((w) => w.front) ?? windows[0];
+	setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, target.id);
+	return { ok: true, winId: target.id };
 }
 
 /**
@@ -387,6 +400,40 @@ export function resolveBin(name: "gittree" | "ghostctl"): string {
 		}
 	}
 	return name; // 让 execFile 报错更直观
+}
+
+/**
+ * 派发中止公共路径:attempt → aborted,step → failed(可重派,避免卡在 dispatched),
+ * 事件 step_aborted。绑定窗口不可用 / new-tab 失败共用。
+ */
+function abortDispatch(
+	db: DatabaseSync,
+	attemptId: number,
+	step: StepRow,
+	workflowId: string,
+	reason: string,
+	detail: string,
+): void {
+	const errText = `${reason}: ${detail}`;
+	buildUpdate(
+		db,
+		"workflow_attempts",
+		{ status: "aborted", error: errText },
+		{ id: attemptId },
+	);
+	buildUpdate(
+		db,
+		"workflow_steps",
+		{ status: "failed", error: errText, updated_at: Date.now() },
+		{ id: step.id },
+	);
+	addEvent(db, {
+		workflowId,
+		stepId: step.id,
+		attemptId,
+		type: EVT.stepAborted,
+		payload: { reason, detail },
+	});
 }
 
 export interface DispatchOptions {
@@ -554,56 +601,31 @@ export async function dispatchStep(
 		"--input",
 		pointer,
 	];
-	const winIndex = await resolveWorkflowWindow(
+	const win = await resolveWorkflowWindow(
 		db,
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
 		workflow.repo_path,
 		workflow.id,
 	);
-	if (winIndex !== undefined) {
-		tabArgs.splice(1, 0, "--window", String(winIndex));
+	if (!win.ok) {
+		// 绑定窗口不可用(含已关闭)→ 中止派发,绝不无窗口参数裸开 tab
+		abortDispatch(db, attempt.id, step, workflow.id, "绑定窗口不可用", win.error);
+		return { ok: false, stepId: step.id, worktree: wtName, error: win.error };
 	}
+	tabArgs.splice(1, 0, "--window-id", win.winId);
 	const tabRes = await run(
 		opts.ghostctlBin ?? resolveBin("ghostctl"),
 		tabArgs,
 		workflow.repo_path,
 	);
 	if (tabRes.code !== 0) {
-		buildUpdate(
-			db,
-			"workflow_attempts",
-			{
-				status: "aborted",
-				error: `new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
-			},
-			{ id: attempt.id },
-		);
-		// 步骤回退为 failed(可重派),避免卡在 dispatched
-		buildUpdate(
-			db,
-			"workflow_steps",
-			{
-				status: "failed",
-				error: `new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
-				updated_at: Date.now(),
-			},
-			{ id: step.id },
-		);
-		addEvent(db, {
-			workflowId: workflow.id,
-			stepId: step.id,
-			attemptId: attempt.id,
-			type: EVT.stepAborted,
-			payload: {
-				reason: "new-tab 失败",
-				detail: tabRes.stderr || tabRes.stdout,
-			},
-		});
+		const detail = tabRes.stderr || tabRes.stdout;
+		abortDispatch(db, attempt.id, step, workflow.id, "new-tab 失败", detail);
 		return {
 			ok: false,
 			stepId: step.id,
 			worktree: wtName,
-			error: `ghostctl new-tab 失败: ${tabRes.stderr || tabRes.stdout}`,
+			error: `ghostctl new-tab 失败: ${detail}`,
 		};
 	}
 

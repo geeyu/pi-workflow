@@ -41,6 +41,8 @@ import {
 	updateStepStatus,
 	updateWorkflowStatus,
 	workflowCost,
+	getWorkflowMeta,
+	setWorkflowMeta,
 } from "./db.ts";
 import {
 	importPlan,
@@ -60,6 +62,7 @@ import {
 	parseExpectations,
 	resolveBin,
 	run,
+	WF_WINDOW_META_KEY,
 } from "./dispatch.ts";
 import {
 	getReadySteps,
@@ -225,6 +228,8 @@ export default function workflowExtension(pi: ExtensionAPI) {
 				"done",
 				"fail",
 				"verify",
+				"retry",
+				"rebind-window",
 				"status",
 				"tree",
 				"step",
@@ -258,6 +263,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 						break;
 					case "retry":
 						await cmdRetry(ctx, rest);
+						break;
+					case "rebind-window":
+						await cmdRebindWindow(ctx, rest);
 						break;
 					case "steer":
 						await cmdSteer(ctx, rest);
@@ -817,6 +825,64 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		} else {
 			notify(ctx, `重派失败: ${res.error}`, "warning");
 		}
+	}
+
+	// ── /wf rebind-window [workflow] ─────────────────────
+	// 把当前焦点窗口设为绑定窗口(解除「绑定窗口已关闭」死锁)
+	async function cmdRebindWindow(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): Promise<void> {
+		const wfId = resolveWorkflowId(ctx, args[0]);
+		if (!wfId) {
+			notify(
+				ctx,
+				"无法确定 workflow(不在仓库根目录?或显式 /wf rebind-window <workflow-id>)",
+				"warning",
+			);
+			return;
+		}
+		const workflow = getWorkflow(db, wfId);
+		if (!workflow) {
+			notify(ctx, `workflow 不存在: ${wfId}`, "error");
+			return;
+		}
+		// 取当前焦点窗口 id(ghostctl layout --json 的 front 标记)
+		const res = await run(
+			resolveBin("ghostctl"),
+			["layout", "--json"],
+			workflow.repo_path,
+		);
+		if (res.code !== 0) {
+			notify(ctx, `ghostctl layout 失败: ${res.stderr || res.stdout}`, "error");
+			return;
+		}
+		let windows: Array<{ id: string; front?: boolean }>;
+		try {
+			windows = (
+				JSON.parse(res.stdout) as {
+					windows: Array<{ id: string; front?: boolean }>;
+				}
+			).windows;
+		} catch {
+			notify(ctx, "ghostctl layout 输出无法解析", "error");
+			return;
+		}
+		const target = windows.find((w) => w.front) ?? windows[0];
+		if (!target) {
+			notify(ctx, "ghostctl layout 无窗口信息", "error");
+			return;
+		}
+		const old =
+			(getWorkflowMeta(db, wfId, WF_WINDOW_META_KEY) as string | undefined) ??
+			"(未绑定)";
+		setWorkflowMeta(db, wfId, WF_WINDOW_META_KEY, target.id);
+		addEvent(db, {
+			workflowId: wfId,
+			type: EVT.workflowWindowRebound,
+			payload: { key: WF_WINDOW_META_KEY, from: old, to: target.id },
+		});
+		notify(ctx, `✓ ${wfId} 绑定窗口: ${old} → ${target.id}(当前焦点窗口)`);
 	}
 
 	// ── /wf steer <dotted|fullId> <文本> ──────────────────

@@ -7,7 +7,7 @@
  *   wf import <plan.json>
  *   wf status [--json] | wf tree [wf] | wf step <id> | wf events [wf] [N] [--follow]
  *   wf dispatch <dotted...> [--workflow <id>] [--dry-run]
- *   wf verify <id> approve|reject [原因] | wf done <id> '<JSON>' | wf fail <id> <原因>
+ *   wf rebind-window [wfId] | wf verify <id> approve|reject [原因] | wf done <id> '<JSON>' | wf fail <id> <原因>
  *   wf clean | wf doctor | wf debug
  *
  * 运行:node --experimental-strip-types src/cli.ts(入口 bin/wf)
@@ -28,6 +28,7 @@ import {
 	getStepsByWorkflow,
 	getWorkflow,
 	getWorkflowMeta,
+	setWorkflowMeta,
 	listActiveWorkflows,
 	listWaves,
 	listWorkflows,
@@ -300,6 +301,55 @@ function cmdVerify(args: string[]): void {
 		process.exit(1);
 	}
 	console.log(`✓ ${id} → ${res.status}`);
+}
+
+async function cmdRebindWindow(args: string[]): Promise<void> {
+	const explicitWf = args.find((a) => !a.startsWith("--"));
+	const wfId = resolveWorkflowId(explicitWf);
+	if (!wfId) {
+		console.error("无法确定 workflow(传 <id> 或在仓库根目录运行)");
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, wfId);
+	if (!workflow) {
+		console.error(`workflow 不存在: ${wfId}`);
+		process.exit(1);
+	}
+	// 取当前焦点窗口 id(ghostctl layout --json 的 front 标记)
+	let raw: string;
+	try {
+		raw = execFileSync(resolveBin("ghostctl"), ["layout", "--json"], {
+			encoding: "utf-8",
+			cwd: workflow.repo_path,
+		});
+	} catch (e) {
+		console.error(`ghostctl layout 失败: ${(e as Error).message}`);
+		process.exit(1);
+	}
+	let windows: Array<{ id: string; front?: boolean }>;
+	try {
+		windows = (
+			JSON.parse(raw) as { windows: Array<{ id: string; front?: boolean }> }
+		).windows;
+	} catch {
+		console.error("ghostctl layout 输出无法解析");
+		process.exit(1);
+	}
+	const target = windows.find((w) => w.front) ?? windows[0];
+	if (!target) {
+		console.error("ghostctl layout 无窗口信息");
+		process.exit(1);
+	}
+	const old =
+		(getWorkflowMeta(db, wfId, WF_WINDOW_META_KEY) as string | undefined) ??
+		"(未绑定)";
+	setWorkflowMeta(db, wfId, WF_WINDOW_META_KEY, target.id);
+	addEvent(db, {
+		workflowId: wfId,
+		type: EVT.workflowWindowRebound,
+		payload: { key: WF_WINDOW_META_KEY, from: old, to: target.id },
+	});
+	console.log(`✓ ${wfId} 绑定窗口: ${old} → ${target.id}(当前焦点窗口)`);
 }
 
 async function cmdMerge(args: string[]): Promise<void> {
@@ -774,6 +824,9 @@ async function main(): Promise<void> {
 		case "retry":
 			await cmdRetry(args);
 			break;
+		case "rebind-window":
+			await cmdRebindWindow(args);
+			break;
 		case "plan":
 			await cmdPlan(args);
 			break;
@@ -815,6 +868,7 @@ async function main(): Promise<void> {
   wf verify <id> approve|reject [原因]                       期望核对
   wf merge [--wave N]                                        合并 wave 回主分支
   wf retry <id> [--fresh]                                     重派失败/中止/待修步骤(--fresh 重建 worktree)
+  wf rebind-window [wfId]                                    重新绑定窗口(绑定窗口已关闭时,把当前焦点窗口设为绑定窗口)
   wf goal-check [approve|reject <原因>]                        目标把关(verifying→completed/gap wave)
   wf next [--note <说明>]                                      滚动到下一 wave
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)

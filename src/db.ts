@@ -32,6 +32,7 @@ export const EVT = {
 	workflowGoalCheckStarted: "workflow_goal_check_started",
 	workflowGoalCheckPassed: "workflow_goal_check_passed",
 	workflowGoalCheckFailed: "workflow_goal_check_failed",
+	workflowWindowRebound: "workflow_window_rebound",
 	// wave
 	waveStarted: "wave_started",
 	waveCompleted: "wave_completed",

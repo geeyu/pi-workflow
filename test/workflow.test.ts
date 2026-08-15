@@ -348,6 +348,7 @@ async function main(): Promise<void> {
 	);
 	assert(scratchWf.ok, "scratch workflow 导入");
 	const fakeGhostctl = path.join(tmpDir, "fake-ghostctl.sh");
+	const ghostctlLog = path.join(tmpDir, "ghostctl-args.log");
 	const wt1Path = path.join(
 		scratchRepo,
 		".worktrees",
@@ -355,9 +356,10 @@ async function main(): Promise<void> {
 	);
 	fs.writeFileSync(
 		fakeGhostctl,
-		`#!/bin/bash\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-test-1","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
+		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-test-1","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
 		{ mode: 0o755 },
 	);
+	fs.writeFileSync(ghostctlLog, "");
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;
 	const sStep = dbMod.getStep(db2, "scratch-wf-1")!;
 	const real = await dispatchMod.dispatchStep(db2, sWf, sStep, {
@@ -371,6 +373,20 @@ async function main(): Promise<void> {
 		"ghostty_window_id",
 	);
 	assert(boundWin === "win-test-1", "workflow 绑定焦点窗口(meta)");
+	const ghostctlCalls = fs
+		.readFileSync(ghostctlLog, "utf-8")
+		.split("\n")
+		.filter(Boolean);
+	assert(
+		ghostctlCalls.some(
+			(l) => l.includes("new-tab") && l.includes("--window-id win-test-1"),
+		),
+		`new-tab 按窗口 id 定位(${ghostctlCalls.join(" | ")})`,
+	);
+	assert(
+		!ghostctlCalls.some((l) => l.includes("--window ")),
+		"new-tab 不再传 --window 序号",
+	);
 	assert(real.tabId === "abcdef0123456789", `tab id 解析(${real.tabId})`);
 	assert(
 		fs.existsSync(path.join(scratchRepo, ".worktrees/gittree-wf-scratch-wf-1")),
@@ -404,6 +420,122 @@ async function main(): Promise<void> {
 			evtSeq.includes("step_dispatched") &&
 			evtSeq.includes("step_tab_opened"),
 		`事件序列(${evtSeq.join(" → ")})`,
+	);
+
+	console.log("== T6b 窗口锁定:已锁定 id 优先,不依赖焦点窗口 =");
+	// 预绑定 win-b(非焦点),layout 中焦点为 win-f → 应仍按 win-b 定位
+	const lockWf = orchMod.importPlan(
+		db2,
+		{
+			name: "lock-wf",
+			title: "窗口锁定",
+			goal: "锁定窗口",
+			repoPath: scratchRepo,
+			steps: [{ id: "1", title: "改文件", agent: "worker", task: "改" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(lockWf.ok, "lock-wf 导入");
+	dbMod.setWorkflowMeta(db2, "lock-wf", "ghostty_window_id", "win-b");
+	const fakeLock = path.join(tmpDir, "fake-ghostctl-lock.sh");
+	const lockLog = path.join(tmpDir, "ghostctl-lock.log");
+	const lockWtPath = path.join(
+		scratchRepo,
+		".worktrees",
+		"gittree-wf-lock-wf-1",
+	);
+	fs.writeFileSync(
+		fakeLock,
+		`#!/bin/bash\necho "$@" >> "${lockLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-b","front":false,"tabs":[]},{"id":"win-f","front":true,"tabs":[{"terminals":[{"id":"feedcafe00000000","cwd":"${lockWtPath}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-lock)"\nfi\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(lockLog, "");
+	const lockRes = await dispatchMod.dispatchStep(
+		db2,
+		dbMod.getWorkflow(db2, "lock-wf")!,
+		dbMod.getStep(db2, "lock-wf-1")!,
+		{ gittreeBin: "gittree", ghostctlBin: fakeLock },
+	);
+	assert(lockRes.ok, `锁定窗口派发成功: ${lockRes.error ?? ""}`);
+	assert(
+		dbMod.getWorkflowMeta(db2, "lock-wf", "ghostty_window_id") === "win-b",
+		"已锁定 id 不被焦点窗口覆盖",
+	);
+	const lockCalls = fs
+		.readFileSync(lockLog, "utf-8")
+		.split("\n")
+		.filter(Boolean);
+	assert(
+		lockCalls.some(
+			(l) => l.includes("new-tab") && l.includes("--window-id win-b"),
+		),
+		`new-tab 携带 --window-id win-b(${lockCalls.join(" | ")})`,
+	);
+	assert(
+		!lockCalls.some((l) => l.includes("--window ")),
+		"锁定窗口不传 --window 序号",
+	);
+
+	console.log("== T6c 绑定窗口已关闭 → 报错,绝不静默回退焦点窗口 =");
+	const goneWf = orchMod.importPlan(
+		db2,
+		{
+			name: "gonewin-wf",
+			title: "窗口消失",
+			goal: "窗口消失报错",
+			repoPath: scratchRepo,
+			steps: [{ id: "1", title: "改文件", agent: "worker", task: "改" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(goneWf.ok, "gonewin-wf 导入");
+	// 预绑定一个 layout 中不存在的窗口 id(模拟绑定窗口已关闭)
+	dbMod.setWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id", "win-gone");
+	const fakeGoneWin = path.join(tmpDir, "fake-ghostctl-gonewin.sh");
+	const goneLog = path.join(tmpDir, "ghostctl-gonewin.log");
+	fs.writeFileSync(
+		fakeGoneWin,
+		`#!/bin/bash\necho "$@" >> "${goneLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-other","front":true,"tabs":[]}]}'\nelse\n  echo "已创建标签页 (id=tab-gone)"\nfi\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(goneLog, "");
+	const goneRes = await dispatchMod.dispatchStep(
+		db2,
+		dbMod.getWorkflow(db2, "gonewin-wf")!,
+		dbMod.getStep(db2, "gonewin-wf-1")!,
+		{ gittreeBin: "gittree", ghostctlBin: fakeGoneWin },
+	);
+	assert(!goneRes.ok, "派发失败(绑定窗口不可用)");
+	assert(
+		goneRes.error!.includes("绑定窗口") && goneRes.error!.includes("win-gone"),
+		`错误提及绑定窗口与 id(${goneRes.error})`,
+	);
+	assert(
+		goneRes.error!.includes("rebind-window"),
+		"错误提示 /wf rebind-window",
+	);
+	assert(
+		dbMod.getStep(db2, "gonewin-wf-1")?.status === "failed",
+		"步骤回退 failed(可重派,不卡 dispatched)",
+	);
+	assert(
+		dbMod.getLatestAttempt(db2, "gonewin-wf-1")?.status === "aborted",
+		"attempt 置 aborted",
+	);
+	assert(
+		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") ===
+			"win-gone",
+		"锁定不被焦点窗口覆盖",
+	);
+	const goneCalls = fs
+		.readFileSync(goneLog, "utf-8")
+		.split("\n")
+		.filter(Boolean);
+	assert(
+		!goneCalls.some((l) => l.includes("new-tab")),
+		"绝不无窗口参数裸开 tab",
 	);
 
 	console.log("== T7 reportDone / verifyStep / reportFail ==");
