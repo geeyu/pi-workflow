@@ -150,7 +150,7 @@ export async function pollOnce(
 			nowMs - s.started_at > s.timeout_min * 60_000
 		) {
 			const reason = `超时(${s.timeout_min}min 未完成)`;
-			updateStepStatus(db, s.id, STEP_STATUS.aborted, { error: reason });
+			updateStepStatus(db, s.id, STEP_STATUS.aborted, { error: reason }, { strict: true });
 			const attempt = getLatestAttempt(db, s.id);
 			if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 				buildUpdate(
@@ -193,9 +193,13 @@ export async function pollOnce(
 			}
 			setStepMeta(db, s.id, TAB_MISS_KEY, 0);
 			// tab 消失且未回报 → aborted
-			updateStepStatus(db, s.id, STEP_STATUS.aborted, {
-				error: "tab 已关闭(未回报)",
-			});
+			updateStepStatus(
+				db,
+				s.id,
+				STEP_STATUS.aborted,
+				{ error: "tab 已关闭(未回报)" },
+				{ strict: true },
+			);
 			const attempt = getLatestAttempt(db, s.id);
 			if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 				buildUpdate(

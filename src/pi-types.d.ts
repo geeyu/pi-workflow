@@ -55,6 +55,9 @@ declare module "@earendil-works/pi-coding-agent" {
 		setEditorText(text: string): void;
 	}
 
+	/** pi-tui 键位 id(如 ctrl+shift+t、alt+o;语法同 pi keybinding) */
+	export type KeyId = string;
+
 	export interface ExtensionCommandContext {
 		cwd: string;
 		ui: ExtensionUI;
@@ -73,6 +76,14 @@ declare module "@earendil-works/pi-coding-agent" {
 					| null
 					| Promise<Array<{ value: string; label: string }> | null>;
 				handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
+			},
+		): void;
+		/** 注册键盘快捷键(面板折叠等);handler 无 UI 时自行 no-op */
+		registerShortcut(
+			shortcut: KeyId,
+			options: {
+				description?: string;
+				handler: (ctx: ExtensionCommandContext) => Promise<void> | void;
 			},
 		): void;
 		/**

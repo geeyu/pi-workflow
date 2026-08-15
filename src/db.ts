@@ -12,6 +12,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { canTransition, legalTargets } from "./core/state.ts";
 
 export const DB_DIR = path.join(os.homedir(), ".pi", "agent", "workflows");
 export const DB_PATH =
@@ -725,12 +726,32 @@ export function addStepDeps(
 	for (const depId of depIds) stmt.run(stepId, depId, ts);
 }
 
+/**
+ * 非法状态迁移错误(updateStepStatus strict 模式抛出)。
+ * 消息含合法目标列表,供命令层/编排层直接展示(见 docs/ux-research.md P0-4)。
+ */
+export class StepTransitionError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "StepTransitionError";
+	}
+}
+
 export function updateStepStatus(
 	db: DatabaseSync,
 	stepId: string,
 	status: StepStatus,
 	extra?: { error?: string },
+	opts?: { strict?: boolean },
 ): void {
+	if (opts?.strict) {
+		const current = getStep(db, stepId);
+		if (current && !canTransition(current.status, status)) {
+			throw new StepTransitionError(
+				`非法状态迁移: ${stepId} ${current.status} → ${status};允许: ${legalTargets(current.status).join(", ")}`,
+			);
+		}
+	}
 	const patch: Record<string, unknown> = { status, updated_at: now() };
 	if (extra?.error !== undefined) patch.error = extra.error;
 	if (status === "running" || status === "dispatched") {

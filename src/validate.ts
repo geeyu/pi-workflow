@@ -34,6 +34,45 @@ export function deriveParentDotted(dotted: string): string | null {
 	return idx === -1 ? null : dotted.slice(0, idx);
 }
 
+/**
+ * 在环内节点中 DFS 找一条实际环路径(用于报错文案,如 `1 → 1.1 → 1`)。
+ * 只沿存在且仍在环内的边走;找不到时返回空数组(调用方回退到节点列表)。
+ */
+function findCyclePath(
+	cyclic: string[],
+	rawDeps: Map<string, string[]>,
+	dottedSet: Set<string>,
+): string[] {
+	const inCycle = new Set(cyclic);
+	const visiting = new Set<string>();
+	const visited = new Set<string>();
+	const stack: string[] = [];
+	const dfs = (n: string): string[] | null => {
+		if (visiting.has(n)) {
+			const idx = stack.indexOf(n);
+			return [...stack.slice(idx)];
+		}
+		if (visited.has(n)) return null;
+		visiting.add(n);
+		stack.push(n);
+		for (const dep of rawDeps.get(n) ?? []) {
+			if (dottedSet.has(dep) && inCycle.has(dep)) {
+				const cyc = dfs(dep);
+				if (cyc) return cyc;
+			}
+		}
+		stack.pop();
+		visiting.delete(n);
+		visited.add(n);
+		return null;
+	};
+	for (const n of cyclic) {
+		const cyc = dfs(n);
+		if (cyc) return cyc;
+	}
+	return [];
+}
+
 export interface PlanStepInput {
 	id: string; // 点号,如 1 / 1.1
 	title: string;
@@ -166,9 +205,13 @@ export function validatePlan(
 	// deps:存在性 + 自引用 + 无环(Kahn)
 	for (const [dotted, deps] of rawDeps) {
 		for (const dep of deps) {
-			if (dep === dotted) errors.push(`step ${dotted} 不能依赖自己`);
-			else if (!dottedSet.has(dep))
-				errors.push(`step ${dotted} 依赖不存在的步骤: ${dep}`);
+			if (dep === dotted) {
+				errors.push(`step ${dotted} deps 自锁:不能依赖自己`);
+			} else if (!dottedSet.has(dep)) {
+				errors.push(
+					`step ${dotted} deps 悬空:依赖不存在的步骤 ${dep}(检查 id 拼写或补充该步骤)`,
+				);
+			}
 		}
 	}
 	if (errors.length === 0) {
@@ -194,8 +237,12 @@ export function validatePlan(
 			}
 		}
 		if (visited !== dottedSet.size) {
+			// 报出实际环路径(参考 rpiv-todo blockedBy 循环校验的明确文案)
 			const cyclic = [...dottedSet].filter((d) => (indeg.get(d) ?? 0) > 0);
-			errors.push(`依赖存在环: ${cyclic.join(", ")}`);
+			const path = findCyclePath(cyclic, rawDeps, dottedSet);
+			const detail =
+				path.length > 0 ? `${path.join(" → ")} → ${path[0]}` : cyclic.join(", ");
+			errors.push(`deps 存在循环依赖(环): ${detail}`);
 		}
 	}
 

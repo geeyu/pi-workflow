@@ -82,7 +82,7 @@ import {
 	parseSessionLine,
 } from "./session.ts";
 import type { PlanInput } from "./validate.ts";
-import { stepIcon } from "./core/state.ts";
+import { stepIcon, canTransition, legalTargets } from "./core/state.ts";
 import { statusCountsLine } from "./ui/status.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -1886,6 +1886,13 @@ register({
 			env.fail(`✗ 步骤不存在: ${token}`);
 			return;
 		}
+		// 状态机校验:fix-tab 仅限可恢复为 running 的状态(终态拒绝)
+		if (!canTransition(step.status, "running")) {
+			env.fail(
+				`✗ 状态迁移非法: ${step.id} ${step.status} → running;允许: ${legalTargets(step.status).join(", ")}`,
+			);
+			return;
+		}
 		const workflow = getWorkflow(env.db, step.workflow_id);
 		if (!workflow) {
 			env.fail(`✗ workflow 不存在: ${step.workflow_id}`);
@@ -2373,7 +2380,9 @@ register({
 			env.warn(`状态 ${step.status} 不是 conflict,无需解决`);
 			return;
 		}
-		updateStepStatus(env.db, step.id, STEP_STATUS.done);
+		updateStepStatus(env.db, step.id, STEP_STATUS.done, undefined, {
+			strict: true,
+		});
 		addEvent(env.db, {
 			workflowId: step.workflow_id,
 			stepId: step.id,
@@ -2403,10 +2412,21 @@ register({
 			env.warn(`状态 ${step.status} 已是终态,无需 skip`);
 			return;
 		}
+		// 状态机校验:任意非终态 → skipped(迁移表约束,含 conflict)
+		if (!canTransition(step.status, STEP_STATUS.skipped)) {
+			env.warn(
+				`状态迁移非法: ${step.id} ${step.status} → ${STEP_STATUS.skipped};允许: ${legalTargets(step.status).join(", ")}`,
+			);
+			return;
+		}
 		const reason = rest.join(" ") || "(未说明)";
-		updateStepStatus(env.db, step.id, STEP_STATUS.skipped, {
-			error: reason,
-		});
+		updateStepStatus(
+			env.db,
+			step.id,
+			STEP_STATUS.skipped,
+			{ error: reason },
+			{ strict: true },
+		);
 		addEvent(env.db, {
 			workflowId: step.workflow_id,
 			stepId: step.id,
