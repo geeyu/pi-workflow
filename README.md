@@ -17,7 +17,7 @@ pi install git:github.com/geeyu/pi-workflow
 
 ## 技能与辅助脚本
 
-- **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 创建/执行/子任务/核对/**排查手册**(§5 常见问题对照表 + SQL 查询列名速查 + 重置)+ **§4.6 双入口命令矩阵**。
+- **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 创建/执行/子任务/核对/**排查手册**(§5 常见问题对照表 + SQL 查询列名速查 + 重置)+ **§1.3 双入口命令矩阵**。
 - **CLI**:`bin/wf`(已软链 `~/.local/bin/wf`)—— 不依赖 pi 交互的创建/执行/排查;node 自动兑底(WF_NODE→PATH→fnm→brew),裸 PATH 可用:
 
 ```bash
@@ -35,7 +35,7 @@ wf inject <target> <text...> / wf poll / wf session / wf open-tab / wf fix-tab
 wf tabs / wf cleanup / wf clean / wf debug     # 排查/清理
 ```
 
-全部 32 条命令清单与双入口差异见 skill/SKILL.md §4.6。
+全部 32 条命令清单与双入口差异见 skill/SKILL.md §1.3。
 
 ## 文件结构
 
