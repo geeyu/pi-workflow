@@ -68,11 +68,7 @@ import {
 	startMonitor,
 } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
-import {
-	buildBoard,
-	renderBoardHtml,
-	renderBoardText,
-} from "./board.ts";
+import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
 
 // ────────────────────────────────────────────────────────────
 // 身份解析
@@ -607,10 +603,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	}
 
 	// ── /wf board [workflowId] [--wave N] [--html out.html] ──
-	function cmdBoard(
-		ctx: ExtensionCommandContext,
-		args: string[],
-	): void {
+	function cmdBoard(ctx: ExtensionCommandContext, args: string[]): void {
 		const htmlIdx = args.indexOf("--html");
 		const htmlPath = htmlIdx !== -1 ? args[htmlIdx + 1] : undefined;
 		const waveIdx = args.indexOf("--wave");

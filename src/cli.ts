@@ -47,11 +47,7 @@ import {
 import { dispatchStep, resolveBin } from "./dispatch.ts";
 import { mergeWave } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
-import {
-	buildBoard,
-	renderBoardHtml,
-	renderBoardText,
-} from "./board.ts";
+import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
 import { resolveIdentity } from "./index.ts";
 import type { PlanInput } from "./validate.ts";

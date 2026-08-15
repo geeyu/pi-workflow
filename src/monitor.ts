@@ -9,6 +9,7 @@
  *   冲突 → 步骤 conflict(事件 merge_conflict),wave → merged(事件 wave_merged)
  */
 import type { DatabaseSync } from "node:sqlite";
+import * as fs from "node:fs";
 import {
 	ATTEMPT_STATUS,
 	EVT,
@@ -24,7 +25,7 @@ import {
 	getWave,
 	updateStepStatus,
 } from "./db.ts";
-import { depsDone, resolveBin, run, worktreeName } from "./dispatch.ts";
+import { depsDone, resolveBin, run, worktreeName, worktreePath } from "./dispatch.ts";
 
 // ────────────────────────────────────────────────────────────
 // tab 存活检测
@@ -296,6 +297,26 @@ export async function mergeWave(
 
 	for (const s of ordered) {
 		if (s.status === STEP_STATUS.skipped || !s.worktree) {
+			continue;
+		}
+		// 幂等:worktree 目录已不存在(上次 merge --delete 已清理)→ 视为已合并跳过
+		const wtDir = worktreePath(
+			workflow.repo_path,
+			workflow.id,
+			s.id.slice(workflow.id.length + 1),
+		);
+		if (!fs.existsSync(wtDir)) {
+			merged.push(s.id);
+			continue;
+		}
+		// 分支不存在(评审类步骤无提交/此前已合并清理)→ 无需合并,跳过
+		const branchCheck = await run(
+			"git",
+			["rev-parse", "--verify", `refs/heads/gittree-${s.worktree}`],
+			workflow.repo_path,
+		);
+		if (branchCheck.code !== 0) {
+			merged.push(s.id);
 			continue;
 		}
 		const res = await run(

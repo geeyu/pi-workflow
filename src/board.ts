@@ -45,7 +45,11 @@ const COLUMNS: Array<{ key: string; label: string; statuses: string[] }> = [
 	{ key: "running", label: "进行中", statuses: ["dispatched", "running"] },
 	{ key: "verify", label: "待核对", statuses: ["reported", "waiting-verify"] },
 	{ key: "done", label: "完成", statuses: ["done", "skipped"] },
-	{ key: "abnormal", label: "异常", statuses: ["failed", "aborted", "conflict", "needs-fix"] },
+	{
+		key: "abnormal",
+		label: "异常",
+		statuses: ["failed", "aborted", "conflict", "needs-fix"],
+	},
 ];
 
 export const STATUS_ICON_BOARD: Record<string, string> = {
@@ -112,7 +116,9 @@ export function buildBoard(
 function cardLine(card: BoardCard): string {
 	const icon = STATUS_ICON_BOARD[card.status] ?? "?";
 	const indent = "  ".repeat(card.depth - 1);
-	const meta = [card.agent, card.gate ? "gate" : null].filter(Boolean).join("/");
+	const meta = [card.agent, card.gate ? "gate" : null]
+		.filter(Boolean)
+		.join("/");
 	const summary = card.summary ? ` · ${card.summary.slice(0, 12)}` : "";
 	return `${indent}${icon} ${card.dotted} ${card.title} [${meta}]${summary}`;
 }
@@ -146,9 +152,7 @@ export function renderBoardText(board: Board): string[] {
 		const mid = "├" + cols.map((c) => "─".repeat(c.width)).join("┼") + "┤";
 		const bottom = "└" + cols.map((c) => "─".repeat(c.width)).join("┴") + "┘";
 		lines.push(top);
-		lines.push(
-			cols.map((c) => `│${c.label.padEnd(c.width)}`).join("") + "│",
-		);
+		lines.push(cols.map((c) => `│${c.label.padEnd(c.width)}`).join("") + "│");
 		lines.push(mid);
 		for (let i = 0; i < rows; i++) {
 			lines.push(
@@ -185,7 +189,9 @@ export function renderBoardHtml(board: Board): string {
 			? `<div class="empty">(空)</div>`
 			: c.cards
 					.map(
-						(card) => `<div class="card" style="margin-left:${(card.depth - 1) * 14}px;border-left-color:${colColor[c.key]}">
+						(
+							card,
+						) => `<div class="card" style="margin-left:${(card.depth - 1) * 14}px;border-left-color:${colColor[c.key]}">
   <div class="card-title">${esc(card.dotted)} ${esc(card.title)}${card.gate ? " <span class='tag'>gate</span>" : ""}</div>
   <div class="card-meta">${esc(card.agent)} · ${esc(card.status)}</div>
   ${card.summary ? `<div class="card-summary">${esc(card.summary)}</div>` : ""}
