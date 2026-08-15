@@ -163,7 +163,10 @@ export async function runPlanner(
 				} catch {
 					return;
 				}
-				if (event.type === "message_end" && event.message?.role === "assistant") {
+				if (
+					event.type === "message_end" &&
+					event.message?.role === "assistant"
+				) {
 					const text = (event.message.content ?? [])
 						.filter((p) => p.type === "text" && p.text)
 						.map((p) => p.text)

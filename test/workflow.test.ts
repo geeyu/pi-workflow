@@ -826,17 +826,27 @@ async function main(): Promise<void> {
 	// 进入 verifying
 	dbMod.updateWorkflowStatus(db2, "ready-wf", dbMod.WORKFLOW_STATUS.running);
 	const gcStart = orchMod.goalCheckEnter(db2, "ready-wf");
-	assert(gcStart.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "verifying", "进入 verifying");
+	assert(
+		gcStart.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "verifying",
+		"进入 verifying",
+	);
 	const evtStart = dbMod
 		.getEvents(db2, { workflowId: "ready-wf", limit: 100 })
 		.some((e) => e.type === "workflow_goal_check_started");
 	assert(evtStart, "workflow_goal_check_started 事件");
 	// approve → completed
 	const gcApprove = orchMod.goalCheckApprove(db2, "ready-wf", "全部达成");
-	assert(gcApprove.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "completed", "approve → completed");
+	assert(
+		gcApprove.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "completed",
+		"approve → completed",
+	);
 	let goalCheckResult = "";
 	try {
-		goalCheckResult = (JSON.parse(dbMod.getWorkflow(db2, "ready-wf")?.goal_check ?? "{}") as { result: string }).result;
+		goalCheckResult = (
+			JSON.parse(dbMod.getWorkflow(db2, "ready-wf")?.goal_check ?? "{}") as {
+				result: string;
+			}
+		).result;
 	} catch {
 		goalCheckResult = "";
 	}
@@ -880,10 +890,7 @@ async function main(): Promise<void> {
 		AGENTS,
 	);
 	assert(appendRes.ok && appendRes.added === 1, "gap wave 追加步骤");
-	assert(
-		dbMod.getStep(db2, "merge-wf-3")?.wave_id !== null,
-		"新步骤挂 wave 2",
-	);
+	assert(dbMod.getStep(db2, "merge-wf-3")?.wave_id !== null, "新步骤挂 wave 2");
 	const dupAppend = orchMod.appendSteps(
 		db2,
 		"merge-wf",
@@ -897,7 +904,10 @@ async function main(): Promise<void> {
 		tmpDir,
 		AGENTS,
 	);
-	assert(!dupAppend.ok && dupAppend.errors![0].includes("已存在"), "重复 dotted 拒绝");
+	assert(
+		!dupAppend.ok && dupAppend.errors![0].includes("已存在"),
+		"重复 dotted 拒绝",
+	);
 
 	// 清理
 	try {

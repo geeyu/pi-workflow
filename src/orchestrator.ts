@@ -153,12 +153,13 @@ export function appendSteps(
 	if (!result.ok) {
 		return { ok: false, errors: result.errors };
 	}
-	const existing = new Set(
-		getStepsByWorkflow(db, workflowId).map((s) => s.id),
-	);
+	const existing = new Set(getStepsByWorkflow(db, workflowId).map((s) => s.id));
 	const dup = result.steps.filter((s) => existing.has(s.fullId));
 	if (dup.length > 0) {
-		return { ok: false, errors: [`步骤已存在: ${dup.map((s) => s.dotted).join(", ")}`] };
+		return {
+			ok: false,
+			errors: [`步骤已存在: ${dup.map((s) => s.dotted).join(", ")}`],
+		};
 	}
 
 	db.exec("BEGIN");

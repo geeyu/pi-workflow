@@ -347,19 +347,20 @@ async function cmdPlan(args: string[]): Promise<void> {
 			: process.cwd();
 	const wfFlagIdx = args.indexOf("--workflow");
 	const explicitWf =
-		wfFlagIdx !== -1 && args[wfFlagIdx + 1]
-			? args[wfFlagIdx + 1]
-			: undefined;
+		wfFlagIdx !== -1 && args[wfFlagIdx + 1] ? args[wfFlagIdx + 1] : undefined;
 	const request = args
 		.filter((a, i) => {
-			if (a === "--dry-run" || a === "--repo" || a === "--workflow") return false;
+			if (a === "--dry-run" || a === "--repo" || a === "--workflow")
+				return false;
 			if (repoFlagIdx !== -1 && i === repoFlagIdx + 1) return false;
 			if (wfFlagIdx !== -1 && i === wfFlagIdx + 1) return false;
 			return true;
 		})
 		.join(" ");
 	if (!request.trim()) {
-		console.error("用法: wf plan \"<需求目标>\" [--repo <path>] [--workflow <id>] [--dry-run]");
+		console.error(
+			'用法: wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]',
+		);
 		process.exit(1);
 	}
 	console.log(`[wf] planner 拆解中:"${request.slice(0, 60)}"…`);
@@ -381,7 +382,9 @@ async function cmdPlan(args: string[]): Promise<void> {
 		!plan.name ||
 		!Array.isArray(plan.steps)
 	) {
-		console.error(`✗ planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`);
+		console.error(
+			`✗ planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`,
+		);
 		process.exit(1);
 	}
 	if (explicitWf) {
@@ -394,7 +397,9 @@ async function cmdPlan(args: string[]): Promise<void> {
 			process.cwd(),
 		);
 		if (!appendRes.ok) {
-			console.error(`✗ 追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`);
+			console.error(
+				`✗ 追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`,
+			);
 			process.exit(1);
 		}
 		console.log(`✓ 已向 ${explicitWf} 追加 ${appendRes.added} 个步骤`);
@@ -402,7 +407,9 @@ async function cmdPlan(args: string[]): Promise<void> {
 	}
 	const importRes = importPlan(db, plan, repoPath);
 	if (!importRes.ok) {
-		console.error(`✗ 计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`);
+		console.error(
+			`✗ 计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`,
+		);
 		process.exit(1);
 	}
 	console.log(
@@ -428,7 +435,9 @@ function cmdGoalCheck(args: string[]): void {
 		console.log(`[${wfId}] 已进入目标核对(verifying)`);
 		console.log(`最初目标: ${workflow.goal}`);
 		for (const s of getStepsByWorkflow(db, wfId)) {
-			console.log(`  ${s.id} [${s.status}] summary=${s.summary ?? "-"} issues=${s.issues ?? "-"} tests=${s.tests ?? "-"}`);
+			console.log(
+				`  ${s.id} [${s.status}] summary=${s.summary ?? "-"} issues=${s.issues ?? "-"} tests=${s.tests ?? "-"}`,
+			);
 		}
 		console.log(`核对: wf goal-check approve | wf goal-check reject <原因>`);
 		return;
@@ -438,13 +447,21 @@ function cmdGoalCheck(args: string[]): void {
 			db,
 			"workflow",
 			{
-				goal_check: JSON.stringify({ result: "passed", reason: rest.join(" "), checkedAt: Date.now() }),
+				goal_check: JSON.stringify({
+					result: "passed",
+					reason: rest.join(" "),
+					checkedAt: Date.now(),
+				}),
 				updated_at: Date.now(),
 			},
 			{ id: wfId },
 		);
 		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.completed);
-		addEvent(db, { workflowId: wfId, type: EVT.workflowGoalCheckPassed, payload: { reason: rest.join(" ") } });
+		addEvent(db, {
+			workflowId: wfId,
+			type: EVT.workflowGoalCheckPassed,
+			payload: { reason: rest.join(" ") },
+		});
 		console.log(`✓ ${wfId} 目标核对通过 → completed`);
 		return;
 	}
@@ -454,13 +471,21 @@ function cmdGoalCheck(args: string[]): void {
 			db,
 			"workflow",
 			{
-				goal_check: JSON.stringify({ result: "failed", reason, checkedAt: Date.now() }),
+				goal_check: JSON.stringify({
+					result: "failed",
+					reason,
+					checkedAt: Date.now(),
+				}),
 				updated_at: Date.now(),
 			},
 			{ id: wfId },
 		);
 		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.running);
-		addEvent(db, { workflowId: wfId, type: EVT.workflowGoalCheckFailed, payload: { reason } });
+		addEvent(db, {
+			workflowId: wfId,
+			type: EVT.workflowGoalCheckFailed,
+			payload: { reason },
+		});
 		console.log(`✗ ${wfId} 目标未达成 → 回到 running;/wf next 拆 gap wave`);
 		return;
 	}
@@ -471,7 +496,9 @@ function cmdGoalCheck(args: string[]): void {
 function cmdNext(args: string[]): void {
 	const noteIdx = args.indexOf("--note");
 	const note = noteIdx !== -1 ? args.slice(noteIdx + 1).join(" ") : undefined;
-	const wfId = resolveWorkflowId(args.find((a) => a !== "--note" && !a.startsWith("--")));
+	const wfId = resolveWorkflowId(
+		args.find((a) => a !== "--note" && !a.startsWith("--")),
+	);
 	if (!wfId) {
 		console.error("无法确定 workflow(传 id 或在仓库根目录运行)");
 		process.exit(1);
@@ -484,14 +511,21 @@ function cmdNext(args: string[]): void {
 	const waves = listWaves(db, wfId);
 	const nextSeq = (waves.length > 0 ? waves[waves.length - 1].seq : 0) + 1;
 	const wave = createWave(db, wfId, nextSeq, note);
-	buildUpdate(db, "workflow", { current_wave: nextSeq, updated_at: Date.now() }, { id: wfId });
+	buildUpdate(
+		db,
+		"workflow",
+		{ current_wave: nextSeq, updated_at: Date.now() },
+		{ id: wfId },
+	);
 	addEvent(db, {
 		workflowId: wfId,
 		waveId: wave.id,
 		type: EVT.waveStarted,
 		payload: { wave: nextSeq, note: note ?? null },
 	});
-	console.log(`✓ wave ${nextSeq} 已创建${note ? `(${note})` : ""};wf plan --workflow ${wfId} 补步骤`);
+	console.log(
+		`✓ wave ${nextSeq} 已创建${note ? `(${note})` : ""};wf plan --workflow ${wfId} 补步骤`,
+	);
 }
 
 function cmdDone(args: string[]): void {

@@ -853,9 +853,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 				: ctx.cwd;
 		const wfFlagIdx = args.indexOf("--workflow");
 		const explicitWf =
-			wfFlagIdx !== -1 && args[wfFlagIdx + 1]
-				? args[wfFlagIdx + 1]
-				: undefined;
+			wfFlagIdx !== -1 && args[wfFlagIdx + 1] ? args[wfFlagIdx + 1] : undefined;
 		const skip = new Set(["--dry-run", "--repo", "--workflow"]);
 		const request = args
 			.filter((a, i) => {
@@ -868,7 +866,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		if (!request.trim()) {
 			notify(
 				ctx,
-				"用法: /wf plan \"<需求目标>\" [--repo <path>] [--workflow <id>] [--dry-run]",
+				'用法: /wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]',
 				"warning",
 			);
 			return;
@@ -896,22 +894,43 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			!plan.name ||
 			!Array.isArray(plan.steps)
 		) {
-			notify(ctx, `planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`, "error");
+			notify(
+				ctx,
+				`planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`,
+				"error",
+			);
 			return;
 		}
 		if (explicitWf) {
 			// 给已有 workflow 的当前 wave 追加步骤(gap wave)
-			const appendRes = appendSteps(db, explicitWf, getWorkflow(db, explicitWf)?.current_wave ?? 1, plan, ctx.cwd);
+			const appendRes = appendSteps(
+				db,
+				explicitWf,
+				getWorkflow(db, explicitWf)?.current_wave ?? 1,
+				plan,
+				ctx.cwd,
+			);
 			if (!appendRes.ok) {
-				notify(ctx, `追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`, "error");
+				notify(
+					ctx,
+					`追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`,
+					"error",
+				);
 				return;
 			}
-			notify(ctx, `✓ 已向 ${explicitWf} 追加 ${appendRes.added} 个步骤(wave ${getWorkflow(db, explicitWf)?.current_wave}),可 /wf dispatch 派发`);
+			notify(
+				ctx,
+				`✓ 已向 ${explicitWf} 追加 ${appendRes.added} 个步骤(wave ${getWorkflow(db, explicitWf)?.current_wave}),可 /wf dispatch 派发`,
+			);
 			return;
 		}
 		const importRes = importPlan(db, plan, repoPath);
 		if (!importRes.ok) {
-			notify(ctx, `计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`, "error");
+			notify(
+				ctx,
+				`计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`,
+				"error",
+			);
 			return;
 		}
 		notify(
@@ -921,14 +940,15 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	}
 
 	// ── /wf goal-check [approve|reject <原因>] ────────────
-	function cmdGoalCheck(
-		ctx: ExtensionCommandContext,
-		args: string[],
-	): void {
+	function cmdGoalCheck(ctx: ExtensionCommandContext, args: string[]): void {
 		const [action, ...rest] = args;
 		const wfId = resolveWorkflowId(ctx);
 		if (!wfId) {
-			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			notify(
+				ctx,
+				"无法确定 workflow(在仓库根目录运行,或显式传 workflow id)",
+				"warning",
+			);
 			return;
 		}
 		const workflow = getWorkflow(db, wfId);
@@ -945,8 +965,10 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			}
 			const steps = getStepsByWorkflow(db, wfId);
 			const lines = [
-				`[${wfId}] 目标核对(verifying)`, ``,
-				`最初目标: ${workflow.goal}`, ``,
+				`[${wfId}] 目标核对(verifying)`,
+				``,
+				`最初目标: ${workflow.goal}`,
+				``,
 				...steps.map(
 					(s) =>
 						`${stepIcon(s)} ${s.id} ${s.title}\n    summary: ${s.summary ?? "-"}\n    issues: ${s.issues ?? "-"} | tests: ${s.tests ?? "-"}`,
@@ -955,7 +977,10 @@ export default function workflowExtension(pi: ExtensionAPI) {
 				`核对通过 → /wf goal-check approve;未达成 → /wf goal-check reject <原因>(拆 gap wave)`,
 			];
 			ctx.ui.setWidget("workflow-goal-check", lines);
-			notify(ctx, "[wf] 已进入目标核对(verifying),请对照最初目标 approve / reject");
+			notify(
+				ctx,
+				"[wf] 已进入目标核对(verifying),请对照最初目标 approve / reject",
+			);
 			return;
 		}
 		if (action === "approve") {
@@ -986,14 +1011,17 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	// ── /wf next [--note <说明>] ──────────────────────────
 	function cmdNext(ctx: ExtensionCommandContext, args: string[]): void {
 		const noteIdx = args.indexOf("--note");
-		const note =
-			noteIdx !== -1 ? args.slice(noteIdx + 1).join(" ") : undefined;
+		const note = noteIdx !== -1 ? args.slice(noteIdx + 1).join(" ") : undefined;
 		const wfId = resolveWorkflowId(
 			ctx,
 			args.find((a) => a !== "--note" && !a.startsWith("--")),
 		);
 		if (!wfId) {
-			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			notify(
+				ctx,
+				"无法确定 workflow(在仓库根目录运行,或显式传 workflow id)",
+				"warning",
+			);
 			return;
 		}
 		const r = nextWave(db, wfId, note);
@@ -1011,7 +1039,11 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	function cmdResume(ctx: ExtensionCommandContext, args: string[]): void {
 		const wfId = resolveWorkflowId(ctx, args[0]);
 		if (!wfId) {
-			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			notify(
+				ctx,
+				"无法确定 workflow(在仓库根目录运行,或显式传 workflow id)",
+				"warning",
+			);
 			return;
 		}
 		const workflow = getWorkflow(db, wfId);
