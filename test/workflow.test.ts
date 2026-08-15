@@ -218,7 +218,12 @@ async function main(): Promise<void> {
 	const steps = dbMod.getStepsByWorkflow(db2, "demo-wf");
 	assert(steps.length === 4, "4 个步骤落库");
 	assert(
-		steps.every((s) => s.task_md === DEMO_PLAN.steps.find((p) => p.id === s.id.slice("demo-wf".length + 1))?.task),
+		steps.every(
+			(s) =>
+				s.task_md ===
+				DEMO_PLAN.steps.find((p) => p.id === s.id.slice("demo-wf".length + 1))
+					?.task,
+		),
 		"task_md 初值 = 原始任务文本",
 	);
 	const dupImport = orchMod.importPlan(db2, DEMO_PLAN, tmpDir, AGENTS);
@@ -770,21 +775,129 @@ async function main(): Promise<void> {
 	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
 	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
 	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
-	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
+	const budgetOk = orchMod.checkBudget(
+		db2,
+		dbMod.getWorkflow(db2, "merge-wf")!,
+	);
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
 	// 构造 running 但 started_at 在 timeout_min 之前的步骤
 	dbMod.updateStepStatus(db2, "ready-wf-1", dbMod.STEP_STATUS.running);
-	db2.prepare(
-		"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
-	).run(Date.now() - 3 * 60 * 1000);
+	db2
+		.prepare(
+			"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
+		)
+		.run(Date.now() - 3 * 60 * 1000);
 	const poll = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
 	assert(poll.timedOut.includes("ready-wf-1"), "超时标 aborted");
 	assert(
 		dbMod.getStep(db2, "ready-wf-1")?.status === "aborted",
 		"超时步骤 aborted",
 	);
+
+	console.log("== T16 planner 输出解析 ==");
+	const plannerMod = await import("../src/planner.ts");
+	const pure = plannerMod.parsePlannerOutput(
+		'{"name":"a","title":"t","goal":"g","steps":[{"id":"1","title":"x","agent":"worker","task":"y"}]}',
+	);
+	assert(
+		(pure as { name: string }).name === "a" &&
+			(pure as { steps: unknown[] }).steps.length === 1,
+		"纯 JSON 解析",
+	);
+	const fenced = plannerMod.parsePlannerOutput(
+		'好的,计划如下:\n```json\n{"name":"b","title":"t","goal":"g","steps":[]}\n```\n请确认',
+	);
+	assert((fenced as { name: string }).name === "b", "```json 围栏解析");
+	const plain = plannerMod.parsePlannerOutput(
+		'计划:{"name":"c","title":"t","goal":"g","steps":[]}完毕',
+	);
+	assert((plain as { name: string }).name === "c", "前后文夹杂解析");
+	let threw = false;
+	try {
+		plannerMod.parsePlannerOutput("抱歉,我无法完成");
+	} catch {
+		threw = true;
+	}
+	assert(threw, "无 JSON 报错");
+
+	console.log("== T17 goal-check 状态机 ==");
+	// 进入 verifying
+	dbMod.updateWorkflowStatus(db2, "ready-wf", dbMod.WORKFLOW_STATUS.running);
+	const gcStart = orchMod.goalCheckEnter(db2, "ready-wf");
+	assert(gcStart.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "verifying", "进入 verifying");
+	const evtStart = dbMod
+		.getEvents(db2, { workflowId: "ready-wf", limit: 100 })
+		.some((e) => e.type === "workflow_goal_check_started");
+	assert(evtStart, "workflow_goal_check_started 事件");
+	// approve → completed
+	const gcApprove = orchMod.goalCheckApprove(db2, "ready-wf", "全部达成");
+	assert(gcApprove.ok && dbMod.getWorkflow(db2, "ready-wf")?.status === "completed", "approve → completed");
+	let goalCheckResult = "";
+	try {
+		goalCheckResult = (JSON.parse(dbMod.getWorkflow(db2, "ready-wf")?.goal_check ?? "{}") as { result: string }).result;
+	} catch {
+		goalCheckResult = "";
+	}
+	assert(goalCheckResult === "passed", "goal_check 落库");
+	// reject 路径:merge-wf → verifying → reject → running
+	dbMod.updateWorkflowStatus(db2, "merge-wf", dbMod.WORKFLOW_STATUS.running);
+	orchMod.goalCheckEnter(db2, "merge-wf");
+	const gcReject = orchMod.goalCheckReject(db2, "merge-wf", "还差文档");
+	assert(
+		gcReject.ok && dbMod.getWorkflow(db2, "merge-wf")?.status === "running",
+		"reject → 回 running(gap wave)",
+	);
+	const evtFail = dbMod
+		.getEvents(db2, { workflowId: "merge-wf", limit: 100 })
+		.some((e) => e.type === "workflow_goal_check_failed");
+	assert(evtFail, "workflow_goal_check_failed 事件");
+
+	console.log("== T18 next 滚动 + appendSteps ==");
+	const nextRes = orchMod.nextWave(db2, "merge-wf", "补齐文档");
+	assert(nextRes.ok && nextRes.seq === 2, `wave 2 创建(${nextRes.seq})`);
+	assert(
+		dbMod.getWorkflow(db2, "merge-wf")?.current_wave === 2,
+		"current_wave 滚动到 2",
+	);
+	const evtWave = dbMod
+		.getEvents(db2, { workflowId: "merge-wf", limit: 100 })
+		.some((e) => e.type === "wave_started");
+	assert(evtWave, "wave_started 事件");
+	// 追加步骤到 wave 2(gap wave)
+	const appendRes = orchMod.appendSteps(
+		db2,
+		"merge-wf",
+		2,
+		{
+			name: "merge-wf",
+			title: "补齐",
+			goal: "还差文档",
+			steps: [{ id: "3", title: "补文档", agent: "worker", task: "写 README" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(appendRes.ok && appendRes.added === 1, "gap wave 追加步骤");
+	assert(
+		dbMod.getStep(db2, "merge-wf-3")?.wave_id !== null,
+		"新步骤挂 wave 2",
+	);
+	const dupAppend = orchMod.appendSteps(
+		db2,
+		"merge-wf",
+		2,
+		{
+			name: "merge-wf",
+			title: "补齐",
+			goal: "还差文档",
+			steps: [{ id: "3", title: "重复", agent: "worker", task: "x" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(!dupAppend.ok && dupAppend.errors![0].includes("已存在"), "重复 dotted 拒绝");
 
 	// 清理
 	try {

@@ -17,6 +17,11 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import {
 	DB_PATH,
+	EVT,
+	WORKFLOW_STATUS,
+	addEvent,
+	buildUpdate,
+	createWave,
 	getEvents,
 	getRunningSteps,
 	getStep,
@@ -24,13 +29,16 @@ import {
 	getWorkflow,
 	getWorkflowMeta,
 	listActiveWorkflows,
+	listWaves,
 	listWorkflows,
 	stepStatusCounts,
+	updateWorkflowStatus,
 	workflowCost,
 	getDb,
 	getAttemptsByStep,
 } from "./db.ts";
 import {
+	appendSteps,
 	importPlan,
 	reportDone,
 	reportFail,
@@ -38,6 +46,7 @@ import {
 } from "./orchestrator.ts";
 import { dispatchStep, resolveBin } from "./dispatch.ts";
 import { mergeWave } from "./monitor.ts";
+import { planFromGoal } from "./planner.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
 import { resolveIdentity } from "./index.ts";
 import type { PlanInput } from "./validate.ts";
@@ -308,7 +317,9 @@ async function cmdRetry(args: string[]): Promise<void> {
 		process.exit(1);
 	}
 	if (!["failed", "aborted", "needs-fix"].includes(step.status)) {
-		console.error(`✗ 状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`);
+		console.error(
+			`✗ 状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`,
+		);
 		process.exit(1);
 	}
 	const workflow = getWorkflow(db, step.workflow_id);
@@ -325,6 +336,162 @@ async function cmdRetry(args: string[]): Promise<void> {
 		console.error(`✗ 重派失败: ${res.error}`);
 		process.exit(1);
 	}
+}
+
+async function cmdPlan(args: string[]): Promise<void> {
+	const dryRun = args.includes("--dry-run");
+	const repoFlagIdx = args.indexOf("--repo");
+	const repoPath =
+		repoFlagIdx !== -1 && args[repoFlagIdx + 1]
+			? args[repoFlagIdx + 1]
+			: process.cwd();
+	const wfFlagIdx = args.indexOf("--workflow");
+	const explicitWf =
+		wfFlagIdx !== -1 && args[wfFlagIdx + 1]
+			? args[wfFlagIdx + 1]
+			: undefined;
+	const request = args
+		.filter((a, i) => {
+			if (a === "--dry-run" || a === "--repo" || a === "--workflow") return false;
+			if (repoFlagIdx !== -1 && i === repoFlagIdx + 1) return false;
+			if (wfFlagIdx !== -1 && i === wfFlagIdx + 1) return false;
+			return true;
+		})
+		.join(" ");
+	if (!request.trim()) {
+		console.error("用法: wf plan \"<需求目标>\" [--repo <path>] [--workflow <id>] [--dry-run]");
+		process.exit(1);
+	}
+	console.log(`[wf] planner 拆解中:"${request.slice(0, 60)}"…`);
+	let result;
+	try {
+		result = await planFromGoal(repoPath, request);
+	} catch (e) {
+		console.error(`✗ planner 失败: ${(e as Error).message}`);
+		process.exit(1);
+	}
+	if (dryRun) {
+		console.log(JSON.stringify(result.plan, null, 2));
+		return;
+	}
+	const plan = result.plan as PlanInput;
+	if (
+		typeof plan !== "object" ||
+		plan === null ||
+		!plan.name ||
+		!Array.isArray(plan.steps)
+	) {
+		console.error(`✗ planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`);
+		process.exit(1);
+	}
+	if (explicitWf) {
+		const wf = getWorkflow(db, explicitWf);
+		const appendRes = appendSteps(
+			db,
+			explicitWf,
+			wf?.current_wave ?? 1,
+			plan,
+			process.cwd(),
+		);
+		if (!appendRes.ok) {
+			console.error(`✗ 追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`);
+			process.exit(1);
+		}
+		console.log(`✓ 已向 ${explicitWf} 追加 ${appendRes.added} 个步骤`);
+		return;
+	}
+	const importRes = importPlan(db, plan, repoPath);
+	if (!importRes.ok) {
+		console.error(`✗ 计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`);
+		process.exit(1);
+	}
+	console.log(
+		`✓ 已生成 workflow ${importRes.workflowId}:${importRes.stepCount} 步(wave ${importRes.wave})`,
+	);
+}
+
+function cmdGoalCheck(args: string[]): void {
+	const [action, ...rest] = args;
+	const wfId = resolveWorkflowId();
+	if (!wfId) {
+		console.error("无法确定 workflow(传 id 或在仓库根目录运行)");
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, wfId);
+	if (!workflow) {
+		console.error(`✗ workflow 不存在: ${wfId}`);
+		process.exit(1);
+	}
+	if (action === undefined) {
+		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.verifying);
+		addEvent(db, { workflowId: wfId, type: EVT.workflowGoalCheckStarted });
+		console.log(`[${wfId}] 已进入目标核对(verifying)`);
+		console.log(`最初目标: ${workflow.goal}`);
+		for (const s of getStepsByWorkflow(db, wfId)) {
+			console.log(`  ${s.id} [${s.status}] summary=${s.summary ?? "-"} issues=${s.issues ?? "-"} tests=${s.tests ?? "-"}`);
+		}
+		console.log(`核对: wf goal-check approve | wf goal-check reject <原因>`);
+		return;
+	}
+	if (action === "approve") {
+		buildUpdate(
+			db,
+			"workflow",
+			{
+				goal_check: JSON.stringify({ result: "passed", reason: rest.join(" "), checkedAt: Date.now() }),
+				updated_at: Date.now(),
+			},
+			{ id: wfId },
+		);
+		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.completed);
+		addEvent(db, { workflowId: wfId, type: EVT.workflowGoalCheckPassed, payload: { reason: rest.join(" ") } });
+		console.log(`✓ ${wfId} 目标核对通过 → completed`);
+		return;
+	}
+	if (action === "reject") {
+		const reason = rest.join(" ") || "(未说明)";
+		buildUpdate(
+			db,
+			"workflow",
+			{
+				goal_check: JSON.stringify({ result: "failed", reason, checkedAt: Date.now() }),
+				updated_at: Date.now(),
+			},
+			{ id: wfId },
+		);
+		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.running);
+		addEvent(db, { workflowId: wfId, type: EVT.workflowGoalCheckFailed, payload: { reason } });
+		console.log(`✗ ${wfId} 目标未达成 → 回到 running;/wf next 拆 gap wave`);
+		return;
+	}
+	console.error("用法: wf goal-check [approve|reject <原因>]");
+	process.exit(1);
+}
+
+function cmdNext(args: string[]): void {
+	const noteIdx = args.indexOf("--note");
+	const note = noteIdx !== -1 ? args.slice(noteIdx + 1).join(" ") : undefined;
+	const wfId = resolveWorkflowId(args.find((a) => a !== "--note" && !a.startsWith("--")));
+	if (!wfId) {
+		console.error("无法确定 workflow(传 id 或在仓库根目录运行)");
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, wfId);
+	if (!workflow) {
+		console.error(`✗ workflow 不存在: ${wfId}`);
+		process.exit(1);
+	}
+	const waves = listWaves(db, wfId);
+	const nextSeq = (waves.length > 0 ? waves[waves.length - 1].seq : 0) + 1;
+	const wave = createWave(db, wfId, nextSeq, note);
+	buildUpdate(db, "workflow", { current_wave: nextSeq, updated_at: Date.now() }, { id: wfId });
+	addEvent(db, {
+		workflowId: wfId,
+		waveId: wave.id,
+		type: EVT.waveStarted,
+		payload: { wave: nextSeq, note: note ?? null },
+	});
+	console.log(`✓ wave ${nextSeq} 已创建${note ? `(${note})` : ""};wf plan --workflow ${wfId} 补步骤`);
 }
 
 function cmdDone(args: string[]): void {
@@ -543,6 +710,15 @@ async function main(): Promise<void> {
 		case "retry":
 			await cmdRetry(args);
 			break;
+		case "plan":
+			await cmdPlan(args);
+			break;
+		case "goal-check":
+			cmdGoalCheck(args);
+			break;
+		case "next":
+			cmdNext(args);
+			break;
 		case "done":
 			cmdDone(args);
 			break;
@@ -563,6 +739,7 @@ async function main(): Promise<void> {
 			console.log(`pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手册)
 
 用法:
+  wf plan "<需求目标>" [--repo <path>] [--workflow <id>]      planner 自动拆解(无 id=新建,有 id=追加 gap wave)
   wf plan-init <name> "<目标>" [--repo <path>] [--steps N]   生成 plan.json 模板
   wf import <plan.json>                                      校验 + 落库
   wf status [--json] [wfId]                                  状态全景
@@ -573,6 +750,8 @@ async function main(): Promise<void> {
   wf verify <id> approve|reject [原因]                       期望核对
   wf merge [--wave N]                                        合并 wave 回主分支
   wf retry <id> [--fresh]                                     重派失败/中止/待修步骤(--fresh 重建 worktree)
+  wf goal-check [approve|reject <原因>]                        目标把关(verifying→completed/gap wave)
+  wf next [--note <说明>]                                      滚动到下一 wave
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
   wf clean                                                   清理 worktree
   wf doctor                                                  环境自检

@@ -11,6 +11,7 @@ import {
 	ATTEMPT_STATUS,
 	EVT,
 	STEP_STATUS,
+	WORKFLOW_STATUS,
 	type WorkflowRow,
 	addEvent,
 	addStepDeps,
@@ -20,10 +21,14 @@ import {
 	createWorkflow,
 	getLatestAttempt,
 	getStep,
+	getStepsByWorkflow,
+	getWave,
 	getWorkflow,
+	listWaves,
 	setStepMeta,
 	updateStepReport,
 	updateStepStatus,
+	updateWorkflowStatus,
 	workflowCost,
 } from "./db.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
@@ -111,6 +116,78 @@ export function importPlan(
 		stepCount: result.steps.length,
 		wave: result.wave,
 	};
+}
+
+export interface AppendStepsResult {
+	ok: boolean;
+	errors?: string[];
+	added?: number;
+}
+
+/**
+ * 给已有 workflow 的指定 wave 追加步骤(P4 gap wave:/wf plan --workflow <id>)。
+ * 校验同 importPlan;重复 dotted id 拒绝;不新建 workflow/wave。
+ */
+export function appendSteps(
+	db: DatabaseSync,
+	workflowId: string,
+	waveSeq: number,
+	plan: PlanInput,
+	cwd: string,
+	agents?: AgentConfig[],
+): AppendStepsResult {
+	const workflow = getWorkflow(db, workflowId);
+	if (!workflow) {
+		return { ok: false, errors: [`workflow 不存在: ${workflowId}`] };
+	}
+	const wave = getWave(db, workflowId, waveSeq);
+	if (!wave) {
+		return { ok: false, errors: [`wave ${waveSeq} 不存在,先 /wf next 创建`] };
+	}
+	const agentList = agents ?? discoverAgents(cwd, "user").agents;
+	// 步骤 id 前缀用现有 workflow id
+	const result = validatePlan(
+		{ ...plan, name: workflowId, repoPath: workflow.repo_path },
+		agentList,
+	);
+	if (!result.ok) {
+		return { ok: false, errors: result.errors };
+	}
+	const existing = new Set(
+		getStepsByWorkflow(db, workflowId).map((s) => s.id),
+	);
+	const dup = result.steps.filter((s) => existing.has(s.fullId));
+	if (dup.length > 0) {
+		return { ok: false, errors: [`步骤已存在: ${dup.map((s) => s.dotted).join(", ")}`] };
+	}
+
+	db.exec("BEGIN");
+	try {
+		for (const s of result.steps) {
+			const step = createStep(db, {
+				workflowId,
+				dotted: s.dotted,
+				parentId: s.parentId,
+				waveId: wave.id,
+				title: s.title,
+				agent: s.agent,
+				task: s.task,
+				expectations: s.expectations ?? undefined,
+				gate: s.gate,
+				maxRetries: s.maxRetries,
+				timeoutMin: s.timeoutMin,
+				sortOrder: s.sortOrder,
+			});
+			setStepMeta(db, step.id, "task_raw", s.task);
+			if (s.deps.length > 0) addStepDeps(db, step.id, s.deps);
+		}
+		db.exec("COMMIT");
+	} catch (e) {
+		db.exec("ROLLBACK");
+		throw e;
+	}
+
+	return { ok: true, added: result.steps.length };
 }
 
 export interface ReportResult {
@@ -351,4 +428,123 @@ export function verifyStep(
 		type: EVT.stepVerified,
 	});
 	return { ok: true, status: STEP_STATUS.done };
+}
+
+export interface GoalCheckResult {
+	ok: boolean;
+	error?: string;
+	status?: string;
+}
+
+/** 进入目标核对状态(设计 §4.4:workflow → verifying) */
+export function goalCheckEnter(
+	db: DatabaseSync,
+	workflowId: string,
+): GoalCheckResult {
+	const wf = getWorkflow(db, workflowId);
+	if (!wf) {
+		return { ok: false, error: `workflow 不存在: ${workflowId}` };
+	}
+	updateWorkflowStatus(db, workflowId, WORKFLOW_STATUS.verifying);
+	addEvent(db, { workflowId, type: EVT.workflowGoalCheckStarted });
+	return { ok: true, status: WORKFLOW_STATUS.verifying };
+}
+
+/** 目标核对通过 → completed */
+export function goalCheckApprove(
+	db: DatabaseSync,
+	workflowId: string,
+	reason?: string,
+): GoalCheckResult {
+	const wf = getWorkflow(db, workflowId);
+	if (!wf) {
+		return { ok: false, error: `workflow 不存在: ${workflowId}` };
+	}
+	buildUpdate(
+		db,
+		"workflow",
+		{
+			goal_check: JSON.stringify({
+				result: "passed",
+				reason: reason ?? "",
+				checkedAt: Date.now(),
+			}),
+			updated_at: Date.now(),
+		},
+		{ id: workflowId },
+	);
+	updateWorkflowStatus(db, workflowId, WORKFLOW_STATUS.completed);
+	addEvent(db, {
+		workflowId,
+		type: EVT.workflowGoalCheckPassed,
+		payload: { reason: reason ?? "" },
+	});
+	return { ok: true, status: WORKFLOW_STATUS.completed };
+}
+
+/** 目标未达成 → 回 running,拆 gap wave 补齐 */
+export function goalCheckReject(
+	db: DatabaseSync,
+	workflowId: string,
+	reason?: string,
+): GoalCheckResult {
+	const wf = getWorkflow(db, workflowId);
+	if (!wf) {
+		return { ok: false, error: `workflow 不存在: ${workflowId}` };
+	}
+	const why = reason?.trim() || "(未说明)";
+	buildUpdate(
+		db,
+		"workflow",
+		{
+			goal_check: JSON.stringify({
+				result: "failed",
+				reason: why,
+				checkedAt: Date.now(),
+			}),
+			updated_at: Date.now(),
+		},
+		{ id: workflowId },
+	);
+	updateWorkflowStatus(db, workflowId, WORKFLOW_STATUS.running);
+	addEvent(db, {
+		workflowId,
+		type: EVT.workflowGoalCheckFailed,
+		payload: { reason: why },
+	});
+	return { ok: true, status: WORKFLOW_STATUS.running };
+}
+
+export interface NextWaveResult {
+	ok: boolean;
+	seq?: number;
+	error?: string;
+}
+
+/** wave 滚动:创建 wave N+1 并更新 current_wave(gap wave 用) */
+export function nextWave(
+	db: DatabaseSync,
+	workflowId: string,
+	note?: string,
+): NextWaveResult {
+	const wf = getWorkflow(db, workflowId);
+	if (!wf) {
+		return { ok: false, error: `workflow 不存在: ${workflowId}` };
+	}
+	const waves = listWaves(db, workflowId);
+	const nextSeq = (waves.length > 0 ? waves[waves.length - 1].seq : 0) + 1;
+	const wave = createWave(db, workflowId, nextSeq, note);
+	buildUpdate(
+		db,
+		"workflow",
+		{ current_wave: nextSeq, updated_at: Date.now() },
+		{ id: workflowId },
+	);
+	addEvent(db, {
+		workflowId,
+		waveId: wave.id,
+		type: EVT.waveStarted,
+		payload: { wave: nextSeq, note: note ?? null },
+	});
+	return { ok: true, seq: nextSeq };
 }

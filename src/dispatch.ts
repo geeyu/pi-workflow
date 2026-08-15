@@ -146,58 +146,58 @@ export function renderTaskMd(
 	step: StepRow,
 	waveSeq: number,
 ): string {
-// 原始任务文本:优先 step_metadata.task_raw(import 时写入),退化到 task_md
-const rawTask =
-(getStepMeta(db, step.id, "task_raw") as string | undefined) ??
-step.task_md;
-const renderedTask = injectDeps(
-rawTask,
-getDepSummaries(db, step),
-workflow.repo_path,
-);
+	// 原始任务文本:优先 step_metadata.task_raw(import 时写入),退化到 task_md
+	const rawTask =
+		(getStepMeta(db, step.id, "task_raw") as string | undefined) ??
+		step.task_md;
+	const renderedTask = injectDeps(
+		rawTask,
+		getDepSummaries(db, step),
+		workflow.repo_path,
+	);
 
-const expectations = parseExpectations(step.expectations);
-const expLines =
-expectations.length > 0
-? expectations.map((e) => `- ${e}`).join("\n")
-: "- (未设定,自主判断完成标准)";
+	const expectations = parseExpectations(step.expectations);
+	const expLines =
+		expectations.length > 0
+			? expectations.map((e) => `- ${e}`).join("\n")
+			: "- (未设定,自主判断完成标准)";
 
-const dotted = step.id.slice(workflow.id.length + 1);
-const lines = [
-`# 任务 ${dotted}(workflow: ${workflow.id}, wave ${waveSeq})`,
-``,
-`## 需求目标`,
-workflow.goal.trim() || "(无)",
-``,
-`## 本步任务`,
-renderedTask.trim() || "(无任务描述,自行理解目标)",
-``,
-`## 期望/验收标准(执行前设定)`,
-expLines,
-``,
-`## 约束`,
-`- 你工作在 worktree ${step.worktree ?? worktreeName(workflow.id, dotted)} 内,只改动该目录下的文件`,
-`- 不要使用 git stash / 不要动 .worktrees/ 与主工作区`,
-`- 完成后在 worktree 内提交 git commit`,
-``,
-`## 输出契约`,
-`完成任务后,执行 /wf done ${dotted},参数为 JSON:`,
-`{"summary": "...", "filesChanged": [...], "issues": [...], "tests": "passed|failed|none"}`,
-`完成后可自行关闭本 tab。`,
-];
+	const dotted = step.id.slice(workflow.id.length + 1);
+	const lines = [
+		`# 任务 ${dotted}(workflow: ${workflow.id}, wave ${waveSeq})`,
+		``,
+		`## 需求目标`,
+		workflow.goal.trim() || "(无)",
+		``,
+		`## 本步任务`,
+		renderedTask.trim() || "(无任务描述,自行理解目标)",
+		``,
+		`## 期望/验收标准(执行前设定)`,
+		expLines,
+		``,
+		`## 约束`,
+		`- 你工作在 worktree ${step.worktree ?? worktreeName(workflow.id, dotted)} 内,只改动该目录下的文件`,
+		`- 不要使用 git stash / 不要动 .worktrees/ 与主工作区`,
+		`- 完成后在 worktree 内提交 git commit`,
+		``,
+		`## 输出契约`,
+		`完成任务后,执行 /wf done ${dotted},参数为 JSON:`,
+		`{"summary": "...", "filesChanged": [...], "issues": [...], "tests": "passed|failed|none"}`,
+		`完成后可自行关闭本 tab。`,
+	];
 
-// 重派上下文:needs-fix / failed / aborted 时注入上次失败原因与回报(设计 P3)
-if (["needs-fix", "failed", "aborted"].includes(step.status)) {
-const attempt = getLatestAttempt(db, step.id);
-const parts: string[] = [``, `## 上次尝试反馈(重派参考)`];
-if (attempt?.error) parts.push(`- 原因: ${attempt.error}`);
-else if (step.error) parts.push(`- 原因: ${step.error}`);
-if (attempt?.report) parts.push(`- 上次回报: ${attempt.report}`);
-else if (step.report) parts.push(`- 上次回报: ${step.report}`);
-if (parts.length > 2) lines.push(...parts);
-}
+	// 重派上下文:needs-fix / failed / aborted 时注入上次失败原因与回报(设计 P3)
+	if (["needs-fix", "failed", "aborted"].includes(step.status)) {
+		const attempt = getLatestAttempt(db, step.id);
+		const parts: string[] = [``, `## 上次尝试反馈(重派参考)`];
+		if (attempt?.error) parts.push(`- 原因: ${attempt.error}`);
+		else if (step.error) parts.push(`- 原因: ${step.error}`);
+		if (attempt?.report) parts.push(`- 上次回报: ${attempt.report}`);
+		else if (step.report) parts.push(`- 上次回报: ${step.report}`);
+		if (parts.length > 2) lines.push(...parts);
+	}
 
-return lines.join("\n");
+	return lines.join("\n");
 }
 
 /** 组装短指引(注入子 pi 首条消息,不传长任务正文) */
@@ -322,7 +322,11 @@ export interface RunResult {
 	stderr: string;
 }
 
-export function run(cmd: string, args: string[], cwd: string): Promise<RunResult> {
+export function run(
+	cmd: string,
+	args: string[],
+	cwd: string,
+): Promise<RunResult> {
 	return new Promise((resolve) => {
 		// Ghostty 新窗口的非交互 shell 的 PATH 极简(无 brew),会命中系统旧版
 		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。

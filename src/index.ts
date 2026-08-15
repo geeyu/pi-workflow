@@ -44,19 +44,30 @@ import {
 } from "./db.ts";
 import {
 	importPlan,
+	appendSteps,
 	checkBudget,
+	goalCheckApprove,
+	goalCheckEnter,
+	goalCheckReject,
+	nextWave,
 	reportDone,
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
 import type { PlanInput } from "./validate.ts";
-import { dispatchStep, parseExpectations, resolveBin, run } from "./dispatch.ts";
+import {
+	dispatchStep,
+	parseExpectations,
+	resolveBin,
+	run,
+} from "./dispatch.ts";
 import {
 	getReadySteps,
 	mergeWave,
 	recoverStaleSteps,
 	startMonitor,
 } from "./monitor.ts";
+import { planFromGoal } from "./planner.ts";
 
 // ────────────────────────────────────────────────────────────
 // 身份解析
@@ -256,6 +267,18 @@ export default function workflowExtension(pi: ExtensionAPI) {
 					case "merge":
 						await cmdMerge(ctx, rest);
 						break;
+					case "plan":
+						await cmdPlan(ctx, rest);
+						break;
+					case "goal-check":
+						cmdGoalCheck(ctx, rest);
+						break;
+					case "next":
+						cmdNext(ctx, rest);
+						break;
+					case "resume":
+						cmdResume(ctx, rest);
+						break;
 					case "status":
 						cmdStatus(ctx, rest);
 						break;
@@ -364,7 +387,11 @@ export default function workflowExtension(pi: ExtensionAPI) {
 					type: EVT.workflowPaused,
 					payload: { reason: budget.reason },
 				});
-				notify(ctx, `${budget.reason};workflow 已暂停(/wf resume 恢复)`, "warning");
+				notify(
+					ctx,
+					`${budget.reason};workflow 已暂停(/wf resume 恢复)`,
+					"warning",
+				);
 				return;
 			}
 		}
@@ -772,7 +799,11 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		}
 		const ghostctl = resolveBin("ghostctl");
 		const msg = text.join(" ");
-		const res = await run(ghostctl, ["input", msg, "--to", step.tab_id], ctx.cwd);
+		const res = await run(
+			ghostctl,
+			["input", msg, "--to", step.tab_id],
+			ctx.cwd,
+		);
 		await run(ghostctl, ["key", "enter", "--to", step.tab_id], ctx.cwd);
 		if (res.code === 0) {
 			notify(ctx, `已向 ${step.id} 的 tab 发送指令`);
@@ -807,6 +838,194 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			type: EVT.stepResolved,
 		});
 		notify(ctx, `已确认解决 ${step.id} → done,可 /wf merge 继续`);
+	}
+
+	// ── /wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run] ──
+	async function cmdPlan(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): Promise<void> {
+		const dryRun = args.includes("--dry-run");
+		const repoFlagIdx = args.indexOf("--repo");
+		const repoPath =
+			repoFlagIdx !== -1 && args[repoFlagIdx + 1]
+				? args[repoFlagIdx + 1]
+				: ctx.cwd;
+		const wfFlagIdx = args.indexOf("--workflow");
+		const explicitWf =
+			wfFlagIdx !== -1 && args[wfFlagIdx + 1]
+				? args[wfFlagIdx + 1]
+				: undefined;
+		const skip = new Set(["--dry-run", "--repo", "--workflow"]);
+		const request = args
+			.filter((a, i) => {
+				if (skip.has(a)) return false;
+				if (repoFlagIdx !== -1 && i === repoFlagIdx + 1) return false;
+				if (wfFlagIdx !== -1 && i === wfFlagIdx + 1) return false;
+				return true;
+			})
+			.join(" ");
+		if (!request.trim()) {
+			notify(
+				ctx,
+				"用法: /wf plan \"<需求目标>\" [--repo <path>] [--workflow <id>] [--dry-run]",
+				"warning",
+			);
+			return;
+		}
+		notify(ctx, `[wf] planner 拆解中:"${request.slice(0, 60)}"…`);
+		let result;
+		try {
+			result = await planFromGoal(repoPath, request);
+		} catch (e) {
+			notify(ctx, `planner 失败: ${(e as Error).message}`, "error");
+			return;
+		}
+		if (dryRun) {
+			ctx.ui.setWidget(
+				"workflow-plan",
+				JSON.stringify(result.plan, null, 2).split("\n"),
+			);
+			notify(ctx, "[wf] planner 输出已显示(--dry-run,未落库)");
+			return;
+		}
+		const plan = result.plan as PlanInput;
+		if (
+			typeof plan !== "object" ||
+			plan === null ||
+			!plan.name ||
+			!Array.isArray(plan.steps)
+		) {
+			notify(ctx, `planner 输出缺少 name/steps:\n${result.output.slice(0, 500)}`, "error");
+			return;
+		}
+		if (explicitWf) {
+			// 给已有 workflow 的当前 wave 追加步骤(gap wave)
+			const appendRes = appendSteps(db, explicitWf, getWorkflow(db, explicitWf)?.current_wave ?? 1, plan, ctx.cwd);
+			if (!appendRes.ok) {
+				notify(ctx, `追加失败:\n${appendRes.errors?.slice(0, 10).join("\n")}`, "error");
+				return;
+			}
+			notify(ctx, `✓ 已向 ${explicitWf} 追加 ${appendRes.added} 个步骤(wave ${getWorkflow(db, explicitWf)?.current_wave}),可 /wf dispatch 派发`);
+			return;
+		}
+		const importRes = importPlan(db, plan, repoPath);
+		if (!importRes.ok) {
+			notify(ctx, `计划校验失败:\n${importRes.errors?.slice(0, 10).join("\n")}`, "error");
+			return;
+		}
+		notify(
+			ctx,
+			`✓ 已生成 workflow ${importRes.workflowId}:${importRes.stepCount} 步(wave ${importRes.wave}),可 /wf dispatch 派发`,
+		);
+	}
+
+	// ── /wf goal-check [approve|reject <原因>] ────────────
+	function cmdGoalCheck(
+		ctx: ExtensionCommandContext,
+		args: string[],
+	): void {
+		const [action, ...rest] = args;
+		const wfId = resolveWorkflowId(ctx);
+		if (!wfId) {
+			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			return;
+		}
+		const workflow = getWorkflow(db, wfId);
+		if (!workflow) {
+			notify(ctx, `workflow 不存在: ${wfId}`, "error");
+			return;
+		}
+		if (action === undefined) {
+			// 进入 verifying 并展示核对依据(设计 §4.4)
+			const r = goalCheckEnter(db, wfId);
+			if (!r.ok) {
+				notify(ctx, r.error!, "error");
+				return;
+			}
+			const steps = getStepsByWorkflow(db, wfId);
+			const lines = [
+				`[${wfId}] 目标核对(verifying)`, ``,
+				`最初目标: ${workflow.goal}`, ``,
+				...steps.map(
+					(s) =>
+						`${stepIcon(s)} ${s.id} ${s.title}\n    summary: ${s.summary ?? "-"}\n    issues: ${s.issues ?? "-"} | tests: ${s.tests ?? "-"}`,
+				),
+				``,
+				`核对通过 → /wf goal-check approve;未达成 → /wf goal-check reject <原因>(拆 gap wave)`,
+			];
+			ctx.ui.setWidget("workflow-goal-check", lines);
+			notify(ctx, "[wf] 已进入目标核对(verifying),请对照最初目标 approve / reject");
+			return;
+		}
+		if (action === "approve") {
+			const r = goalCheckApprove(db, wfId, rest.join(" "));
+			if (!r.ok) {
+				notify(ctx, r.error!, "error");
+				return;
+			}
+			notify(ctx, `✓ ${wfId} 目标核对通过 → completed`);
+			return;
+		}
+		if (action === "reject") {
+			const r = goalCheckReject(db, wfId, rest.join(" "));
+			if (!r.ok) {
+				notify(ctx, r.error!, "error");
+				return;
+			}
+			notify(
+				ctx,
+				`${wfId} 目标未达成 → 回到 running;/wf next 拆 gap wave 补齐`,
+				"warning",
+			);
+			return;
+		}
+		notify(ctx, "用法: /wf goal-check [approve|reject <原因>]", "warning");
+	}
+
+	// ── /wf next [--note <说明>] ──────────────────────────
+	function cmdNext(ctx: ExtensionCommandContext, args: string[]): void {
+		const noteIdx = args.indexOf("--note");
+		const note =
+			noteIdx !== -1 ? args.slice(noteIdx + 1).join(" ") : undefined;
+		const wfId = resolveWorkflowId(
+			ctx,
+			args.find((a) => a !== "--note" && !a.startsWith("--")),
+		);
+		if (!wfId) {
+			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			return;
+		}
+		const r = nextWave(db, wfId, note);
+		if (!r.ok) {
+			notify(ctx, r.error!, "error");
+			return;
+		}
+		notify(
+			ctx,
+			`wave ${r.seq} 已创建${note ? `(${note})` : ""};用 /wf plan --workflow ${wfId} 补步骤,或 /wf dispatch 派发`,
+		);
+	}
+
+	// ── /wf resume(暂停后恢复)─────────────────────────────
+	function cmdResume(ctx: ExtensionCommandContext, args: string[]): void {
+		const wfId = resolveWorkflowId(ctx, args[0]);
+		if (!wfId) {
+			notify(ctx, "无法确定 workflow(在仓库根目录运行,或显式传 workflow id)", "warning");
+			return;
+		}
+		const workflow = getWorkflow(db, wfId);
+		if (!workflow) {
+			notify(ctx, `workflow 不存在: ${wfId}`, "error");
+			return;
+		}
+		if (workflow.status !== WORKFLOW_STATUS.paused) {
+			notify(ctx, `状态 ${workflow.status} 不是 paused,无需恢复`, "warning");
+			return;
+		}
+		updateWorkflowStatus(db, wfId, WORKFLOW_STATUS.running);
+		addEvent(db, { workflowId: wfId, type: EVT.workflowResumed });
+		notify(ctx, `✓ ${wfId} 已恢复(running)`);
 	}
 
 	// ── 注册本插件 skill(使用与排查手册)──────────────────

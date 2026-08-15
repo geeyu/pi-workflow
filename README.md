@@ -109,7 +109,20 @@ node --experimental-strip-types test/workflow.test.ts
 - P1 派发闭环 ✅(db + import + dispatch + context/done/fail + verify + status/tree/step/events)
 - P2 监听与批次 ✅(monitor.ts:tab 存活轮询 5s + 消失→aborted + 崩溃恢复 + 就绪集派发 + wave 串行 merge)
 - P3 期望核对 ✅(retry 上下文注入 + max_retries + steer + resolve-conflict + usage 自报 + 预算护栏 + 超时检查)
-- P4-P5 见设计文档 §11
+- P4 智能编排 ✅(/wf plan 自动拆解 + goal-check 目标把关 + /wf next wave 滚动 + /wf resume)
+- P5 看板见设计文档 §11
+
+### P4 新增用法
+
+```text
+/wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]
+    # planner agent(headless 子进程)自动拆解:无 --workflow = 新建 workflow;
+    # 有 --workflow = 给当前 wave 追加步骤(gap wave)
+/wf goal-check [approve|reject <原因>]   # 目标把关:进入 verifying → approve=completed / reject=拆 gap wave
+/wf next [--note <说明>]                 # wave 滚动:创建 wave N+1 并更新 current_wave
+/wf resume                               # paused → running(预算超限暂停后恢复)
+wf plan / wf goal-check / wf next        # CLI 同款
+```
 
 ### P3 新增用法
 

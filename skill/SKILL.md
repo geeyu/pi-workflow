@@ -14,6 +14,16 @@ description: pi workflow 编排插件(pi-workflow)的使用与排查手册。当
 
 ## 1. 创建 workflow(编排者侧)
 
+### 1.0 一句话自动拆解(推荐)
+
+```
+/wf plan "<需求目标>" [--repo <path>] [--workflow <id>] [--dry-run]
+```
+
+planner agent(headless 子进程)读取仓库上下文后自动拆解成层级计划(JSON 契约)。
+- 无 `--workflow`:新建 workflow;有 `--workflow <id>`:给当前 wave 追加步骤(gap wave);
+- `--dry-run`:只看拆解结果不落库。
+
 ### 1.1 用模板初始化 plan.json
 
 ```bash
@@ -73,6 +83,14 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 
 - 完成后**必须在 worktree 内 git commit**(合并前强制)
 - 输出契约 JSON:`summary`(必填)/ `filesChanged` / `issues` / `tests`(passed|failed|none)
+
+## 3.5 目标把关与 wave 滚动
+
+```
+/wf goal-check [approve|reject <原因>]   # 进入 verifying 展示核对依据 → approve=completed / reject=回 running 拆 gap wave
+/wf next [--note <说明>]                 # 滚动到下一 wave(先 /wf next 再 /wf plan --workflow <id> 补步骤)
+/wf resume                               # 预算超限暂停后恢复
+```
 
 ## 4. 核对与状态
 
