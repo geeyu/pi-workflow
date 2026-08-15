@@ -274,7 +274,10 @@ async function main(): Promise<void> {
 	fs.mkdirSync(path.join(tmpDir, "extensions", "workflow", "src"), {
 		recursive: true,
 	});
-	fs.writeFileSync(path.join(tmpDir, "extensions", "workflow", "src", "cli.ts"), "// cli\n");
+	fs.writeFileSync(
+		path.join(tmpDir, "extensions", "workflow", "src", "cli.ts"),
+		"// cli\n",
+	);
 	const cliNoPiBin = dispatchMod.piInvocation();
 	assert(
 		!cliNoPiBin.includes("cli.ts") &&
@@ -282,10 +285,7 @@ async function main(): Promise<void> {
 		`wf CLI 上下文不启动自身(${cliNoPiBin})`,
 	);
 	process.env.PI_BIN = "/custom/pi";
-	assert(
-		dispatchMod.piInvocation() === '"/custom/pi"',
-		"PI_BIN 显式覆盖",
-	);
+	assert(dispatchMod.piInvocation() === '"/custom/pi"', "PI_BIN 显式覆盖");
 	if (savedPiBin === undefined) delete process.env.PI_BIN;
 	else process.env.PI_BIN = savedPiBin;
 	process.argv[1] = savedArgv;
@@ -318,8 +318,7 @@ async function main(): Promise<void> {
 	});
 	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") &&
-			dry.pointer!.includes("/wf done 1.1"),
+		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
@@ -402,11 +401,7 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
-	const boundWin = dbMod.getWorkflowMeta(
-		db2,
-		"scratch-wf",
-		"ghostty_window_id",
-	);
+	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
 	assert(boundWin === "win-test-1", "workflow 绑定焦点窗口(meta)");
 	const ghostctlCalls = fs
 		.readFileSync(ghostctlLog, "utf-8")
@@ -547,10 +542,7 @@ async function main(): Promise<void> {
 		goneRes.error!.includes("绑定窗口") && goneRes.error!.includes("win-gone"),
 		`错误提及绑定窗口与 id(${goneRes.error})`,
 	);
-	assert(
-		goneRes.error!.includes("rebind-window"),
-		"错误提示 /wf rebind-window",
-	);
+	assert(goneRes.error!.includes("rebind-window"), "错误提示 /wf rebind-window");
 	assert(
 		dbMod.getStep(db2, "gonewin-wf-1")?.status === "failed",
 		"步骤回退 failed(可重派,不卡 dispatched)",
@@ -560,8 +552,7 @@ async function main(): Promise<void> {
 		"attempt 置 aborted",
 	);
 	assert(
-		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") ===
-			"win-gone",
+		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") === "win-gone",
 		"锁定不被焦点窗口覆盖",
 	);
 	const goneCalls = fs
@@ -675,10 +666,7 @@ async function main(): Promise<void> {
 	const cost = dbMod.workflowCost(db2, "demo-wf");
 	assert(cost === null, "无尝试的 workflow → 成本为 null");
 	const costScratch = dbMod.workflowCost(db2, "scratch-wf");
-	assert(
-		costScratch !== null && costScratch.attempts === 1,
-		"成本聚合(1 尝试)",
-	);
+	assert(costScratch !== null && costScratch.attempts === 1, "成本聚合(1 尝试)");
 	const kanban = db2
 		.prepare(
 			"SELECT * FROM v_workflow_kanban WHERE workflow_id = 'demo-wf' ORDER BY sort_order",
@@ -694,72 +682,66 @@ async function main(): Promise<void> {
 		"事件倒序返回",
 	);
 
-console.log("== T9 resolveIdentity ==");
-const idxMod = await import("../src/index.ts");
-// 状态段渲染:紧凑单行、着色、running 步骤、待核对/异常计数
-const segWf = dbMod.getWorkflow(db2, "demo-wf")!;
-const segSteps = dbMod.getStepsByWorkflow(db2, "demo-wf");
-const segAll = idxMod.workflowStatusSegment(
-	segWf,
-	dbMod.stepStatusCounts(db2, "demo-wf"),
-	segSteps,
-	null,
-);
-const segVisible = segAll.replace(/\x1b\[[0-9;]*m/g, "");
-assert(
-	segVisible.startsWith("demo-wf") && segVisible.includes("/"),
-	`状态段含 id 与进度(${segVisible})`,
-);
-assert(
-	!segAll.startsWith("["),
-	"状态段不以 [ 开头(powerline 不当通知过滤)",
-);
-// running 步骤 → 🔄N 计数(语义化);待办 → ⏳N
-const runSteps = segSteps.map((s) => ({ ...s }));
-for (const s of runSteps) {
-	if (s.id.endsWith(".1")) s.status = "running";
-}
-const segRun = idxMod.workflowStatusSegment(
-	segWf,
-	{ ...dbMod.stepStatusCounts(db2, "demo-wf"), running: 1, dispatched: 0 },
-	runSteps,
-	null,
-);
-const segRunVisible = segRun.replace(/\x1b\[[0-9;]*m/g, "");
-assert(
-	segRunVisible.includes("🔄1"),
-	`running 步骤以 🔄N 计数展示(${segRunVisible})`,
-);
-assert(
-	!segRunVisible.includes("▶"),
-	"不再用 ▶+点号 id 列表(footer 语义化)",
-);
-// 计划概览面板:rpiv-todo 式列表(● 标题 + 树形连接线逐条,完成行删除线)
-const statusUiMod = await import("../src/ui/status.ts");
-const mockTheme = {
-	fg: (_c: string, s: string) => s,
-	strikethrough: (s: string) => s,
-	bold: (s: string) => s,
-};
-const planLines = statusUiMod.buildPlanLines(db2, [segWf], mockTheme, 120);
-const planText = planLines.join("\n");
-const planVisible = planText.replace(/\x1b\[[0-9;]*m/g, "");
-assert(
-	planVisible.includes("●") &&
-		planVisible.includes("/") &&
-		planVisible.includes("(") &&
-		!planVisible.includes("┌"),
-	`面板为 rpiv-todo 式标题(● 进度计数:${planVisible.slice(0, 60)})`,
-);
-assert(
-	/^[├└]─ [🔄◐○✗✓⚠↻–]/m.test(planVisible),
-	`面板逐条渲染(树形连接线 + 状态字形:${planVisible.slice(0, 120)})`,
-);
-// 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
-delete process.env.PI_WF_WORKFLOW;
-delete process.env.PI_WF_STEP;
-const fromEnv = idxMod.resolveIdentity("/whatever");
-assert(fromEnv === null, "无 env/cwd 无身份");
+	console.log("== T9 resolveIdentity ==");
+	const idxMod = await import("../src/index.ts");
+	// 状态段渲染:紧凑单行、着色、running 步骤、待核对/异常计数
+	const segWf = dbMod.getWorkflow(db2, "demo-wf")!;
+	const segSteps = dbMod.getStepsByWorkflow(db2, "demo-wf");
+	const segAll = idxMod.workflowStatusSegment(
+		segWf,
+		dbMod.stepStatusCounts(db2, "demo-wf"),
+		segSteps,
+		null,
+	);
+	const segVisible = segAll.replace(/\x1b\[[0-9;]*m/g, "");
+	assert(
+		segVisible.startsWith("demo-wf") && segVisible.includes("/"),
+		`状态段含 id 与进度(${segVisible})`,
+	);
+	assert(!segAll.startsWith("["), "状态段不以 [ 开头(powerline 不当通知过滤)");
+	// running 步骤 → 🔄N 计数(语义化);待办 → ⏳N
+	const runSteps = segSteps.map((s) => ({ ...s }));
+	for (const s of runSteps) {
+		if (s.id.endsWith(".1")) s.status = "running";
+	}
+	const segRun = idxMod.workflowStatusSegment(
+		segWf,
+		{ ...dbMod.stepStatusCounts(db2, "demo-wf"), running: 1, dispatched: 0 },
+		runSteps,
+		null,
+	);
+	const segRunVisible = segRun.replace(/\x1b\[[0-9;]*m/g, "");
+	assert(
+		segRunVisible.includes("🔄1"),
+		`running 步骤以 🔄N 计数展示(${segRunVisible})`,
+	);
+	assert(!segRunVisible.includes("▶"), "不再用 ▶+点号 id 列表(footer 语义化)");
+	// 计划概览面板:rpiv-todo 式列表(● 标题 + 树形连接线逐条,完成行删除线)
+	const statusUiMod = await import("../src/ui/status.ts");
+	const mockTheme = {
+		fg: (_c: string, s: string) => s,
+		strikethrough: (s: string) => s,
+		bold: (s: string) => s,
+	};
+	const planLines = statusUiMod.buildPlanLines(db2, [segWf], mockTheme, 120);
+	const planText = planLines.join("\n");
+	const planVisible = planText.replace(/\x1b\[[0-9;]*m/g, "");
+	assert(
+		planVisible.includes("●") &&
+			planVisible.includes("/") &&
+			planVisible.includes("(") &&
+			!planVisible.includes("┌"),
+		`面板为 rpiv-todo 式标题(● 进度计数:${planVisible.slice(0, 60)})`,
+	);
+	assert(
+		/^[├└]─ [🔄◐○✗✓⚠↻–]/mu.test(planVisible),
+		`面板逐条渲染(树形连接线 + 状态字形:${planVisible.slice(0, 120)})`,
+	);
+	// 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
+	delete process.env.PI_WF_WORKFLOW;
+	delete process.env.PI_WF_STEP;
+	const fromEnv = idxMod.resolveIdentity("/whatever");
+	assert(fromEnv === null, "无 env/cwd 无身份");
 	process.env.PI_WF_WORKFLOW = "demo-wf";
 	process.env.PI_WF_STEP = "1.1";
 	const withEnv = idxMod.resolveIdentity("/whatever");
@@ -852,7 +834,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
 		error: "模拟 monitor 误判",
 	});
-	const logBefore = fs.readFileSync(ghostctlLog, "utf-8").split("\n").filter(Boolean).length;
+	const logBefore = fs
+		.readFileSync(ghostctlLog, "utf-8")
+		.split("\n")
+		.filter(Boolean).length;
 	const retriesBefore = dbMod.getStep(db2, "scratch-wf-1")!.retries_done;
 	const reuse = await dispatchMod.dispatchStep(
 		db2,
@@ -860,7 +845,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		dbMod.getStep(db2, "scratch-wf-1")!,
 		{ gittreeBin: "gittree", ghostctlBin: fakeGhostctl },
 	);
-	assert(reuse.ok && reuse.reused === true, `tab 存活 → 复用不重开(${reuse.error ?? ""})`);
+	assert(
+		reuse.ok && reuse.reused === true,
+		`tab 存活 → 复用不重开(${reuse.error ?? ""})`,
+	);
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
 		"复用后恢复 running",
@@ -886,7 +874,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
 		error: "tab 已关闭",
 	});
-	const logBefore2 = fs.readFileSync(ghostctlLog, "utf-8").split("\n").filter(Boolean).length;
+	const logBefore2 = fs
+		.readFileSync(ghostctlLog, "utf-8")
+		.split("\n")
+		.filter(Boolean).length;
 	const reopen = await dispatchMod.dispatchStep(
 		db2,
 		sWf2,
@@ -1023,9 +1014,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	// merge --delete 后 worktree 已清理
 	assert(
-		!fs.existsSync(
-			path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1"),
-		),
+		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
 		"merge --delete 清理 worktree",
 	);
 
@@ -1081,10 +1070,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
 	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
 	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
-	const budgetOk = orchMod.checkBudget(
-		db2,
-		dbMod.getWorkflow(db2, "merge-wf")!,
-	);
+	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
@@ -1226,7 +1212,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	const doneCards = demoBoard!.columns.find((c) => c.key === "done")!.cards;
 	assert(doneCards.length === 2, "done 列 2 张");
-	const abnormalCards = demoBoard!.columns.find((c) => c.key === "abnormal")!.cards;
+	const abnormalCards = demoBoard!.columns.find(
+		(c) => c.key === "abnormal",
+	)!.cards;
 	assert(
 		abnormalCards.length === 1 && abnormalCards[0].status === "needs-fix",
 		"异常列 needs-fix",
@@ -1277,7 +1265,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		"HTML 转义(XSS 防护)",
 	);
 
-	console.log("== T20 状态事件通知 detectStateChanges / markNotified / sendWorkflowNotifications ==");
+	console.log(
+		"== T20 状态事件通知 detectStateChanges / markNotified / sendWorkflowNotifications ==",
+	);
 	// 构造覆盖 6 种步骤级事件的工作流
 	const notifyWf = orchMod.importPlan(
 		db2,
@@ -1288,15 +1278,21 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			repoPath: scratchRepo,
 			steps: [
 				{ id: "1", title: "非gate回报", agent: "worker", task: "a" },
-				{ id: "1.1", title: "gate待核对", agent: "reviewer", task: "b", gate: true },
+				{
+					id: "1.1",
+					title: "gate待核对",
+					agent: "reviewer",
+					task: "b",
+					gate: true,
+				},
 				{ id: "1.2", title: "失败", agent: "worker", task: "c" },
 				{ id: "1.3", title: "中止", agent: "worker", task: "d" },
 				{ id: "1.4", title: "冲突", agent: "worker", task: "e" },
 				{ id: "1.5", title: "待修复", agent: "worker", task: "f" },
 			],
 		},
-			tmpDir,
-			AGENTS,
+		tmpDir,
+		AGENTS,
 	);
 	assert(notifyWf.ok, "notify-wf 导入");
 	dbMod.updateStepStatus(db2, "notify-wf-1", dbMod.STEP_STATUS.reported);
@@ -1331,23 +1327,26 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	]) {
 		assert(stepKinds.includes(k), `检测到 ${k} 事件`);
 	}
-	assert(items1.every((i) => i.text.includes("/wf ")), "每条文案含具体 /wf 命令");
 	assert(
-		items1.find((i) => i.stepId === "notify-wf-1")!.text.includes(
-			"/wf verify notify-wf-1 approve",
-		),
+		items1.every((i) => i.text.includes("/wf ")),
+		"每条文案含具体 /wf 命令",
+	);
+	assert(
+		items1
+			.find((i) => i.stepId === "notify-wf-1")!
+			.text.includes("/wf verify notify-wf-1 approve"),
 		"reported 文案指向 /wf verify approve",
 	);
 	assert(
-		items1.find((i) => i.stepId === "notify-wf-1.1")!.text.includes(
-			"/wf verify notify-wf-1.1 reject",
-		),
+		items1
+			.find((i) => i.stepId === "notify-wf-1.1")!
+			.text.includes("/wf verify notify-wf-1.1 reject"),
 		"waiting-verify 文案含 /wf verify reject 分支",
 	);
 	assert(
-		items1.find((i) => i.stepId === "notify-wf-1.2")!.text.includes(
-			"/wf retry notify-wf-1.2",
-		),
+		items1
+			.find((i) => i.stepId === "notify-wf-1.2")!
+			.text.includes("/wf retry notify-wf-1.2"),
 		"failed 文案指向 /wf retry",
 	);
 	// 标记后同 attempt 不再重复
@@ -1380,8 +1379,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 				{ id: "2", title: "B", agent: "worker", task: "b" },
 			],
 		},
-			tmpDir,
-			AGENTS,
+		tmpDir,
+		AGENTS,
 	);
 	assert(doneWf.ok, "notify-done-wf 导入");
 	dbMod.updateStepStatus(db2, "notify-done-wf-1", dbMod.STEP_STATUS.done);
@@ -1454,7 +1453,11 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	assert(overWf.ok, "notify-over-wf 导入");
 	for (let i = 1; i <= 7; i++) {
-		dbMod.updateStepStatus(db2, `notify-over-wf-${i}`, dbMod.STEP_STATUS.reported);
+		dbMod.updateStepStatus(
+			db2,
+			`notify-over-wf-${i}`,
+			dbMod.STEP_STATUS.reported,
+		);
 	}
 	const overFilter = (arr: monitorMod.NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-over-wf");
@@ -1462,14 +1465,15 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(overItems.length === 7, `7 个事件待通知(${overItems.length})`);
 	await idxMod.sendWorkflowNotifications(db2, fakeSender, overItems);
 	assert(sent.length === 1, "一次调用发送一条聚合消息");
-	const sentOpts = sent[0].options as { deliverAs: string; triggerTurn: boolean };
+	const sentOpts = sent[0].options as {
+		deliverAs: string;
+		triggerTurn: boolean;
+	};
 	assert(
 		sentOpts.deliverAs === "followUp" && sentOpts.triggerTurn === true,
 		"deliverAs=followUp + triggerTurn(不打断,空闲唤醒)",
 	);
-	const lines = sent[0].content
-		.split("\n")
-		.filter((l) => l.startsWith("- "));
+	const lines = sent[0].content.split("\n").filter((l) => l.startsWith("- "));
 	assert(lines.length === 5, "单条聚合最多 5 行");
 	assert(
 		sent[0].content.includes("workflow-notify") === false &&
@@ -1503,7 +1507,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	await idxMod.sendWorkflowNotifications(db2, fakeSender, []);
 	assert(sent.length === 0, "无事件不发送");
 
-	console.log("== T20d 会话隔离:listActiveWorkflows/detectStateChanges 按 repo 过滤 ==");
+	console.log(
+		"== T20d 会话隔离:listActiveWorkflows/detectStateChanges 按 repo 过滤 ==",
+	);
 	// 两个不同仓库的 workflow
 	const isoA = orchMod.importPlan(
 		db2,
@@ -1562,9 +1568,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	console.log("== T21 pollTargetReached 纯函数 + wf poll 退出码 ==");
 	const pollMod = await import("../src/observe/monitor.ts");
 	const mkSteps = (...statuses: string[]): StepRow[] =>
-		statuses.map(
-			(s, i) => ({ id: `t${i}`, status: s }) as unknown as StepRow,
-		);
+		statuses.map((s, i) => ({ id: `t${i}`, status: s }) as unknown as StepRow);
 	{
 		const r = pollMod.pollTargetReached(
 			mkSteps("done", "done", "skipped"),
@@ -1583,10 +1587,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		);
 	}
 	{
-		const r = pollMod.pollTargetReached(
-			mkSteps("done", "running"),
-			"done",
-		);
+		const r = pollMod.pollTargetReached(mkSteps("done", "running"), "done");
 		assert(!r.reached && r.unreachable.length === 0, "running 未达成不 reached");
 	}
 	{
@@ -1597,11 +1598,11 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		);
 	}
 	{
-		const r = pollMod.pollTargetReached(
-			mkSteps("failed", "skipped"),
-			"failed",
+		const r = pollMod.pollTargetReached(mkSteps("failed", "skipped"), "failed");
+		assert(
+			r.reached && r.unreachable.length === 0,
+			"until=failed → failed ∈ 达成集",
 		);
-		assert(r.reached && r.unreachable.length === 0, "until=failed → failed ∈ 达成集");
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("pending", "ready"), "done");
@@ -1688,7 +1689,16 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	setSt("poll-wf-1", "done");
 	setSt("poll-wf-1.1", "done");
 	setSt("poll-wf-1.2", "skipped");
-	let pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "3", "--interval", "1"]);
+	let pr = runCli([
+		"poll",
+		"poll-wf",
+		"--until",
+		"done",
+		"--timeout",
+		"3",
+		"--interval",
+		"1",
+	]);
 	assert(
 		pr.code === 0 && pr.stdout.includes("达成"),
 		`poll 全终态 → 退出 0(${pr.code} ${pr.stdout.trim()})`,
@@ -1697,7 +1707,16 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	setSt("poll-wf-1", "failed");
 	setSt("poll-wf-1.1", "done");
 	setSt("poll-wf-1.2", "done");
-	pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "3", "--interval", "1"]);
+	pr = runCli([
+		"poll",
+		"poll-wf",
+		"--until",
+		"done",
+		"--timeout",
+		"3",
+		"--interval",
+		"1",
+	]);
 	assert(
 		pr.code === 2 && pr.stderr.includes("wf retry"),
 		`poll 出现 failed → 退出 2(${pr.code} stderr=${pr.stderr.trim().slice(0, 80)})`,
@@ -1706,25 +1725,39 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	setSt("poll-wf-1", "pending");
 	setSt("poll-wf-1.1", "pending");
 	setSt("poll-wf-1.2", "pending");
-	pr = runCli(["poll", "poll-wf", "--until", "done", "--timeout", "2", "--interval", "1"]);
+	pr = runCli([
+		"poll",
+		"poll-wf",
+		"--until",
+		"done",
+		"--timeout",
+		"2",
+		"--interval",
+		"1",
+	]);
 	assert(
 		pr.code === 1 && pr.stdout.includes("超时") && pr.stderr.includes("未派发 3"),
 		`poll 超时 → 退出 1(${pr.code} ${pr.stdout.trim().slice(0, 60)})`,
 	);
 	// 用法错误 → 3
 	pr = runCli(["poll", "poll-wf", "--until", "bogus", "--timeout", "2"]);
-	assert(pr.code === 3 && pr.stderr.includes("--until"), "poll 非法 --until → 退出 3");
+	assert(
+		pr.code === 3 && pr.stderr.includes("--until"),
+		"poll 非法 --until → 退出 3",
+	);
 	pr = runCli(["poll", "poll-wf", "--timeout", "0"]);
 	assert(pr.code === 3, "poll timeout<=0 → 退出 3");
 	pr = runCli(["poll", "no-such-wf", "--timeout", "2"]);
-	assert(pr.code === 3 && pr.stderr.includes("workflow 不存在"), "poll 不存在 workflow → 退出 3");
+	assert(
+		pr.code === 3 && pr.stderr.includes("workflow 不存在"),
+		"poll 不存在 workflow → 退出 3",
+	);
 
 	console.log("== T22 session 目录选择 + 行解析 ==");
 	const sessMod = await import("../src/session.ts");
 	assert(
-		sessMod.encodeSessionDir(
-			"/Users/geeyu/.pi/agent/extensions/workflow",
-		) === "--Users-geeyu-.pi-agent-extensions-workflow--",
+		sessMod.encodeSessionDir("/Users/geeyu/.pi/agent/extensions/workflow") ===
+			"--Users-geeyu-.pi-agent-extensions-workflow--",
 		"cwd 编码规则(/ → -,包 --)",
 	);
 	const sLine1 = '{"type":"session","timestamp":"2026-01-01T00:00:00Z"}';
@@ -1756,10 +1789,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		[sLine1, sLine4].join("\n"),
 	);
 	const newFile = path.join(sessDir, "2026-01-01T01-00-00Z_new.jsonl");
-	fs.writeFileSync(
-		newFile,
-		[sLine1, sLine2, sLine3, sLine4].join("\n"),
-	);
+	fs.writeFileSync(newFile, [sLine1, sLine2, sLine3, sLine4].join("\n"));
 	const sessImp = orchMod.importPlan(
 		db2,
 		{
@@ -1812,11 +1842,17 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	sr = runCli(["session", "sess-wf"], {
 		env: { WF_SESSIONS_DIR: path.join(tmpDir, "no-sessions") },
 	});
-	assert(sr.code === 1 && sr.stderr.includes("无会话文件"), "无会话目录 → 退出 1");
+	assert(
+		sr.code === 1 && sr.stderr.includes("无会话文件"),
+		"无会话目录 → 退出 1",
+	);
 	sr = runCli(["session", "no-such-wf"], {
 		env: { WF_SESSIONS_DIR: sessRoot },
 	});
-	assert(sr.code === 3 && sr.stderr.includes("workflow 不存在"), "session 不存在 workflow → 退出 3");
+	assert(
+		sr.code === 3 && sr.stderr.includes("workflow 不存在"),
+		"session 不存在 workflow → 退出 3",
+	);
 
 	console.log("== T23 inject 注入(参数解析 + 三种 target + 退出码) ==");
 	const injRepo = path.join(tmpDir, "injrepo");
@@ -1904,7 +1940,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		cwd: injFailBin,
 		env: { PATH: `${injFailBin}:${process.env.PATH ?? ""}` },
 	});
-	assert(ir.code === 1 && ir.stderr.includes("注入失败"), "ghostctl 失败 → 退出 1");
+	assert(
+		ir.code === 1 && ir.stderr.includes("注入失败"),
+		"ghostctl 失败 → 退出 1",
+	);
 
 	console.log("== T24 openStepTab 共享开 tab + open-tab/fix-tab CLI ==");
 	const openRepo = path.join(tmpDir, "openrepo");
@@ -1947,12 +1986,12 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		{ mode: 0o755 },
 	);
 	fs.writeFileSync(openLog, "");
-	// openStepTab 单测(共享序列:new-tab → 反查 → 落库 + manual 事件)
+	// openStepTab 单测(共享序列:new-tab(pointer 位置参数)→ 反查 → 落库 + manual 事件)
 	const openRes = await dispatchMod.openStepTab(
 		db2,
 		dbMod.getWorkflow(db2, "open-wf")!,
 		dbMod.getStep(db2, "open-wf-1")!,
-		{ ghostctlBin: openGhostctl, manual: true, enterDelayMs: 0 },
+		{ ghostctlBin: openGhostctl, manual: true },
 	);
 	assert(
 		openRes.ok && openRes.tabId === "feedface12345678",
@@ -1973,12 +2012,26 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 				true,
 		"step_tab_opened 事件带 manual 标记",
 	);
-	const openCalls = fs.readFileSync(openLog, "utf-8").trim().split("\n");
+	const openLogRaw = fs.readFileSync(openLog, "utf-8");
 	assert(
-		openCalls.some(
-			(l) => l.includes("new-tab") && l.includes("--window-id win-9"),
-		),
+		openLogRaw.includes("new-tab") && openLogRaw.includes("--window-id win-9"),
 		"openStepTab 复用绑定窗口(--window-id)",
+	);
+	// pointer 改为 pi 位置参数交付:--command 内嵌单引号指引;不再 --input 注入、不再补回车
+	assert(
+		openLogRaw.includes("'[wf] task ready") && !openLogRaw.includes("--input"),
+		`pointer 作为位置参数传入(--input 已移除): ${openLogRaw.slice(0, 160)}`,
+	);
+	assert(
+		!openLogRaw.includes("key enter"),
+		"openStepTab 不再盲等 + 补回车(pi 启动即自动发送)",
+	);
+	// shellQuote:单引号包裹 + 嵌入 ' 按 POSIX '\'' 转义(防御性)
+	assert(
+		dispatchMod.shellQuote("plain") === "'plain'" &&
+			dispatchMod.shellQuote("a'b") === "'a'\\''b'" &&
+			dispatchMod.shellQuote("x\ny") === "'x\ny'",
+		"shellQuote 单引号包裹 + 嵌入引号转义",
 	);
 	// open-tab CLI:无参数 → 3;步骤不存在 → 1;tab 存活 → 1;无 worktree → 1
 	const openBin = path.join(tmpDir, "open-bin");
@@ -1988,7 +2041,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	let or = runCli(["open-tab"], { cwd: openBin, env: openEnv });
 	assert(or.code === 3, "open-tab 无参数 → 退出 3");
 	or = runCli(["open-tab", "open-wf-9"], { cwd: openBin, env: openEnv });
-	assert(or.code === 1 && or.stderr.includes("步骤不存在"), "open-tab 未知步骤 → 退出 1");
+	assert(
+		or.code === 1 && or.stderr.includes("步骤不存在"),
+		"open-tab 未知步骤 → 退出 1",
+	);
 	or = runCli(["open-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
 	assert(
 		or.code === 1 && or.stderr.includes("无需重开"),
@@ -2052,7 +2108,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	fr = runCli(["fix-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
 	assert(fr.code === 3, "fix-tab 缺 terminal → 退出 3");
 	fr = runCli(["fix-tab", "no-such", "auto"], { cwd: openBin, env: openEnv });
-	assert(fr.code === 1 && fr.stderr.includes("步骤不存在"), "fix-tab 未知步骤 → 退出 1");
+	assert(
+		fr.code === 1 && fr.stderr.includes("步骤不存在"),
+		"fix-tab 未知步骤 → 退出 1",
+	);
 
 	console.log("== T25 命令注册表 + parseArgs + 退出码契约 ==");
 	const cmdMod = await import("../src/command.ts");
@@ -2081,7 +2140,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			cliNames.includes("resolve-conflict") &&
 			cliNames.includes("board") &&
 			cliNames.includes("fix-tab"),
-		`listCommands(cli) = 31 条(${cliNames.length})含 context/skip/resolve-conflict`, 	);
+		`listCommands(cli) = 31 条(${cliNames.length})含 context/skip/resolve-conflict`,
+	);
 	const piNames = cmdMod.listCommands("pi").map((d) => d.name);
 	assert(
 		piNames.length === 21 &&
@@ -2089,7 +2149,8 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 			piNames.includes("resume") &&
 			piNames.includes("resolve-conflict") &&
 			!piNames.includes("poll"),
-		`listCommands(pi) = 21 条(${piNames.length})含 both 共享命令`, 	);
+		`listCommands(pi) = 21 条(${piNames.length})含 both 共享命令`,
+	);
 	assert(
 		cmdMod.listCommands().length === 32,
 		`注册表共 32 条(${cmdMod.listCommands().length})`,
@@ -2124,7 +2185,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		`skip 终态步骤拒绝(warns=${warns.join(" | ") || "空"}, status=${dbMod.getStep(db2, "merge-wf-1")?.status})`,
 	);
 	warns.length = 0;
-	cmdMod.getCommand("resolve-conflict")!.run(["merge-wf-1"], fakeCliEnv as never);
+	cmdMod
+		.getCommand("resolve-conflict")!
+		.run(["merge-wf-1"], fakeCliEnv as never);
 	assert(
 		warns.some((w) => w.includes("不是 conflict")),
 		`resolve-conflict 非冲突拒绝(${warns.join(" | ")})`,
@@ -2295,10 +2358,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → failed"),
 		`wf fail(注册表派发): ${pr.stdout.trim()}`,
 	);
-	pr = runCli(
-		["done", "reg-wf-1", '{"summary":"s","tests":"none"}'],
-		{ cwd: tmpDir },
-	);
+	pr = runCli(["done", "reg-wf-1", '{"summary":"s","tests":"none"}'], {
+		cwd: tmpDir,
+	});
 	assert(
 		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → reported"),
 		`wf done(注册表派发): ${pr.stdout.trim()}`,
@@ -2322,12 +2384,21 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 
 	console.log("== T26 状态机迁移校验接线(canTransition/strict/关键入口)= ");
 	const stateMod = await import("../src/core/state.ts");
-	assert(stateMod.canTransition("running", "reported"), "running → reported 合法");
+	assert(
+		stateMod.canTransition("running", "reported"),
+		"running → reported 合法",
+	);
 	assert(stateMod.canTransition("running", "running"), "同态幂等合法");
 	assert(!stateMod.canTransition("done", "running"), "done → running 非法");
 	assert(!stateMod.canTransition("skipped", "reported"), "skipped 终态不可回退");
-	assert(stateMod.canTransition("done", "conflict"), "done → conflict(merge 冲突)合法");
-	assert(stateMod.canTransition("conflict", "skipped"), "conflict → skipped(人工终态)合法");
+	assert(
+		stateMod.canTransition("done", "conflict"),
+		"done → conflict(merge 冲突)合法",
+	);
+	assert(
+		stateMod.canTransition("conflict", "skipped"),
+		"conflict → skipped(人工终态)合法",
+	);
 	assert(
 		stateMod.legalTargets("done").join(",") === "done,conflict",
 		"legalTargets(done) = [done, conflict]",
@@ -2335,14 +2406,21 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	// updateStepStatus strict:非法迁移抛 StepTransitionError 且带合法目标列表
 	let transErr = "";
 	try {
-		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.reported, undefined, {
-			strict: true,
-		});
+		dbMod.updateStepStatus(
+			db2,
+			"demo-wf-2",
+			dbMod.STEP_STATUS.reported,
+			undefined,
+			{
+				strict: true,
+			},
+		);
 	} catch (e) {
 		transErr = (e as Error).message;
 	}
 	assert(
-		transErr.includes("非法状态迁移") && transErr.includes("允许: done, conflict"),
+		transErr.includes("非法状态迁移") &&
+			transErr.includes("允许: done, conflict"),
 		`strict 非法迁移明确报错+合法目标(${transErr})`,
 	);
 	// 同态幂等 strict 不抛
@@ -2362,7 +2440,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		`reportDone 终态拒绝(${re1.error})`,
 	);
 	const rf1 = orchMod.reportFail(db2, "demo-wf-2", "x");
-	assert(!rf1.ok && rf1.error!.includes("允许"), `reportFail 终态拒绝(${rf1.error})`);
+	assert(
+		!rf1.ok && rf1.error!.includes("允许"),
+		`reportFail 终态拒绝(${rf1.error})`,
+	);
 	const vp = orchMod.verifyStep(db2, "skip-wf-1", "approve");
 	assert(
 		!vp.ok && vp.error!.includes("允许") && vp.error!.includes("reported"),
@@ -2507,7 +2588,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	// toggle 切换(恢复原态)
 	const wasCollapsed = statusUiMod.isPlanCollapsed();
 	statusUiMod.togglePlanCollapsed();
-	assert(statusUiMod.isPlanCollapsed() === !wasCollapsed, "togglePlanCollapsed 切换");
+	assert(
+		statusUiMod.isPlanCollapsed() === !wasCollapsed,
+		"togglePlanCollapsed 切换",
+	);
 	statusUiMod.togglePlanCollapsed();
 	// 完成行收起:本 turn 显示 → 下 turn(agent_start)收起
 	statusUiMod.resetCompletedDisplayState();
@@ -2516,10 +2600,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(h1.includes("– 1") && h1.includes("✓ 2"), "本 turn 完成行显示");
 	statusUiMod.hideCompletedFromPreviousTurn();
 	const h2 = statusUiMod.buildPlanLines(db2, [hw], mockTheme, 120).join("\n");
-	assert(
-		!h2.includes("– 1") && !h2.includes("✓ 2"),
-		"下 turn 完成行收起",
-	);
+	assert(!h2.includes("– 1") && !h2.includes("✓ 2"), "下 turn 完成行收起");
 	assert(
 		h2.includes("(2/4)") && h2.includes("+2 步未显示"),
 		`计数保留在标题,收起行计入未显示(${h2.split("\n").slice(0, 3).join(" | ")})`,
@@ -2565,9 +2646,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		AGENTS,
 	);
 	assert(
-		vHang.errors.some(
-			(e) => e.includes("悬空") && e.includes("依赖不存在"),
-		),
+		vHang.errors.some((e) => e.includes("悬空") && e.includes("依赖不存在")),
 		`悬空文案(${vHang.errors.join("; ")})`,
 	);
 	const vCycle = validateMod.validatePlan(
@@ -2586,7 +2665,6 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		),
 		`环路径文案(${vCycle.errors.join("; ")})`,
 	);
-
 
 	console.log("== T26 P0-1 终端净化:sanitize 纯函数 + 落库/渲染接线 ==");
 	const sanMod = await import("../src/sanitize.ts");
@@ -2703,7 +2781,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		`面板对历史脏标题渲染前净化(${sanPlanLines.find((l) => l.includes("脏")) ?? "无脏行"})`,
 	);
 
-	console.log("== T26b P0-3 workflow-notify 结构化渲染(字形 + 进度 + details + renderer) ==");
+	console.log(
+		"== T26b P0-3 workflow-notify 结构化渲染(字形 + 进度 + details + renderer) ==",
+	);
 	const notifyMod = await import("../src/ui/notify.ts");
 	const renderMod = await import("../src/ui/renderers.ts");
 	const sent2: Array<{ content: string; details?: unknown }> = [];
@@ -2717,16 +2797,22 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	const sanItems = monitorMod
 		.detectStateChanges(db2)
 		.filter((i) => i.workflowId === "san-wf");
-	assert(sanItems.length === 1 && sanItems[0]!.kind === "failed", "san-wf failed 事件待通知");
+	assert(
+		sanItems.length === 1 && sanItems[0]!.kind === "failed",
+		"san-wf failed 事件待通知",
+	);
 	await notifyMod.sendWorkflowNotifications(db2, fakeSender2, sanItems);
 	assert(sent2.length === 1, "发送一条聚合消息");
 	const nContent = sent2[0]!.content;
 	assert(
-		nContent.includes("● san-wf") && nContent.includes("0/1") && nContent.includes("✗1"),
+		nContent.includes("● san-wf") &&
+			nContent.includes("0/1") &&
+			nContent.includes("✗1"),
 		`内容含进度摘要+字形(${nContent.split("\n")[0]})`,
 	);
 	assert(
-		nContent.includes("- ✗ 步骤 san-wf-1 失败") && nContent.includes("/wf retry san-wf-1"),
+		nContent.includes("- ✗ 步骤 san-wf-1 失败") &&
+			nContent.includes("/wf retry san-wf-1"),
 		"事件行字形前缀 + 可执行命令",
 	);
 	const details = sent2[0]!.details as WorkflowNotifyDetails;
@@ -2850,9 +2936,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	pr = runCli(["import", "bad-plan.json"], { cwd: tmpDir });
 	assert(
-		pr.code === 1 &&
-			pr.stderr.includes("导入失败") &&
-			pr.stderr.includes("点号"),
+		pr.code === 1 && pr.stderr.includes("导入失败") && pr.stderr.includes("点号"),
 		`非法 plan 校验错误逐条可读(${pr.stderr.slice(0, 80).replace(/\n/g, " ")})`,
 	);
 
@@ -2872,9 +2956,15 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	// 非法迁移:明确错误 + 允许列表;同状态重复写入幂等
 	try {
-		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.dispatched, undefined, {
-			strict: true,
-		});
+		dbMod.updateStepStatus(
+			db2,
+			"san-wf-1",
+			dbMod.STEP_STATUS.dispatched,
+			undefined,
+			{
+				strict: true,
+			},
+		);
 		assert(false, "conflict → dispatched 应被拒绝");
 	} catch (e) {
 		const msg = (e as Error).message;
@@ -2891,9 +2981,15 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		"done → done 幂等(重复写入不报错)",
 	);
 	try {
-		dbMod.updateStepStatus(db2, "san-wf-1", dbMod.STEP_STATUS.running, undefined, {
-			strict: true,
-		});
+		dbMod.updateStepStatus(
+			db2,
+			"san-wf-1",
+			dbMod.STEP_STATUS.running,
+			undefined,
+			{
+				strict: true,
+			},
+		);
 		assert(false, "done → running 应被拒绝");
 	} catch (e) {
 		assert(
@@ -2903,9 +2999,15 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		);
 	}
 	try {
-		dbMod.updateStepStatus(db2, "no-such-step", dbMod.STEP_STATUS.done, undefined, {
-			strict: true,
-		});
+		dbMod.updateStepStatus(
+			db2,
+			"no-such-step",
+			dbMod.STEP_STATUS.done,
+			undefined,
+			{
+				strict: true,
+			},
+		);
 		assert(false, "不存在步骤应报错");
 	} catch (e) {
 		assert(
@@ -2934,11 +3036,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	});
 	pr = runCli(["skip", "sm-wf-1", "人工终态"], { cwd: tmpDir });
 	assert(
-		pr.code === 0 &&
-			dbMod.getStep(db2, "sm-wf-1")!.status === "skipped",
+		pr.code === 0 && dbMod.getStep(db2, "sm-wf-1")!.status === "skipped",
 		`needs-fix → skipped 人工终态合法(${pr.code} ${pr.stdout.trim().slice(0, 40)})`,
 	);
-
 
 	// 清理
 	try {

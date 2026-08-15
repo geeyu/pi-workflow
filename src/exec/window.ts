@@ -2,8 +2,9 @@
  * exec/window.ts — Ghostty 窗口/终端操作层(arch-refactor §3.5,自 src/exec/dispatch.ts 同名迁移)
  *
  * - sendTextToTerminal:注入文本并自动回车(与 /wf steer 同构的共享注入序列);
- * - openStepTab:开子任务 tab(构造 env 命令 + pointer → new-tab 到绑定窗口 → 反查
- *   terminal id → 等就绪回车 → 写库);
+ * - openStepTab:开子任务 tab(构造 env 命令 + pointer 位置参数 → new-tab 到绑定窗口 →
+ *   反查 terminal id → 写库);pointer 经 `pi '<msg>'` 位置参数交付,由 pi 自身在 UI
+ *   就绪后自动发送,无需 --input 注入、盲等或补回车(设计 §0);
  * - resolveWorkflowWindow / parseLayout:workflow 绑定窗口解析(按 id 定位,绝不回退焦点窗口);
  * - findTerminalId:反查 terminal id(优先 tab id,兜底 cwd / 终端名)。
  */
@@ -56,16 +57,16 @@ export interface OpenStepTabOptions {
 	ghostctlBin?: string;
 	/** 已创建的 attempt id(dispatchStep 传入;成功后回写 tab_id/running) */
 	attemptId?: number;
-	/** 新 tab 就绪后到回车提交 pointer 的等待毫秒数(测试可传 0) */
-	enterDelayMs?: number;
 	/** 事件 payload 标 manual=true(open-tab 命令传,自动派发不传) */
 	manual?: boolean;
 }
 
 /**
  * 开子任务 tab(dispatchStep §4 抽取的共享序列,dispatch 与 open-tab 共用):
- *   1. 构造 env 命令 + pointer,new-tab 到 workflow 绑定窗口(锁定窗口 id,绝不裸开);
- *   2. 反查 terminal id(findTerminalId),等就绪后 key enter 提交 pointer;
+ *   1. 构造 env 命令 + pointer 位置参数,new-tab 到 workflow 绑定窗口(锁定窗口 id,
+ *      绝不裸开)。pointer 以 `pi '<pointer>'` 位置参数传给子 pi,pi 在 UI 就绪后
+ *      自动发送为首条消息 —— 不再 --input 注入 + 盲等 + 补回车,零时序风险;
+ *   2. 反查 terminal id(findTerminalId);
  *   3. 写库:step → running + tab_id;事件 step_tab_opened(manual 标记区分人工补开);
  *   4. 传入 attemptId 时成功后回写 attempt(tab_id/running)。
  * 失败返回 {ok:false, phase, error},步骤状态不动(是否中止由调用方决定)。
@@ -79,22 +80,10 @@ export async function openStepTab(
 	const dotted = step.id.slice(workflow.id.length + 1);
 	const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
 	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
-	const pointer = buildPointer(
-		workflow.id,
-		dotted,
-		workflow.current_wave || 1,
-	);
+	const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
 
-	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()}`;
-	const tabArgs = [
-		"new-tab",
-		"--cwd",
-		wtPath,
-		"--command",
-		cmd,
-		"--input",
-		pointer,
-	];
+	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()} ${shellQuote(pointer)}`;
+	const tabArgs = ["new-tab", "--cwd", wtPath, "--command", cmd];
 	const win = await resolveWorkflowWindow(
 		db,
 		ghostctlBin,
@@ -122,12 +111,6 @@ export async function openStepTab(
 		tabIdFromOutput,
 		wtPath,
 	);
-
-	// pointer 已注入子 pi 编辑器(--input 不带回车);等 pi 就绪后补回车提交为首条消息
-	if (tabId) {
-		await new Promise((r) => setTimeout(r, opts.enterDelayMs ?? 4000));
-		await run(ghostctlBin, ["key", "enter", "--to", tabId], workflow.repo_path);
-	}
 
 	if (opts.attemptId !== undefined) {
 		buildUpdate(
@@ -160,6 +143,15 @@ export async function openStepTab(
 
 /** new-tab 输出的 tab id(稳定,layout 中可定位) */
 const TAB_ID_RE = /id=(tab-[0-9a-f]+)/;
+
+/**
+ * POSIX shell 单引号包裹(pointer 经 --command 进入 shell 解析):
+ * 嵌入的 ' 转义为 '\''(关引号 + 转义引号 + 重开引号)。
+ * pointer 为受控 ASCII 内容,此转义仅作防御。
+ */
+export function shellQuote(s: string): string {
+	return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 /** workflow 绑定的 Ghostty 窗口 meta key */
 export const WF_WINDOW_META_KEY = "ghostty_window_id";

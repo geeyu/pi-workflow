@@ -10,10 +10,11 @@
  *   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
  *      → 写入 workflow_steps.task_md;事件 step_dispatched
  *   3. 组装短指引 pointer → 写入 workflow_attempts.pointer
- *   4. ghostctl new-window --cwd <worktree> --command "env PI_WF_* pi" --input "<短指引>"
+ *   4. ghostctl new-tab --cwd <worktree> --command "env PI_WF_* pi '<pointer>'"
+ *      (pointer 为 pi 位置参数,由 pi 自身在 UI 就绪后自动发送,无注入/盲等/回车)
  *      (事件 step_tab_opened,记录 tab_id)
  *
- * 任务正文存库(--input 只注入短指引,杜绝长文本粘贴错乱)。
+ * 任务正文存库(pointer 只带短指引经位置参数交付,杜绝长文本/中文粘贴错乱)。
  */
 
 import type { DatabaseSync } from "node:sqlite";
@@ -301,16 +302,8 @@ export async function dispatchStep(
 	});
 	if (!tabRes.ok) {
 		// 绑定窗口不可用(含已关闭)/ new-tab 失败 → 中止派发
-		const reason =
-			tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
-		abortDispatch(
-			db,
-			attempt.id,
-			step,
-			workflow.id,
-			reason,
-			tabRes.error ?? "",
-		);
+		const reason = tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
+		abortDispatch(db, attempt.id, step, workflow.id, reason, tabRes.error ?? "");
 		return {
 			ok: false,
 			stepId: step.id,
@@ -370,6 +363,7 @@ export {
 	sendTextToTerminal,
 	openStepTab,
 	findTerminalId,
+	shellQuote,
 	WF_WINDOW_META_KEY,
 	type OpenStepTabResult,
 	type OpenStepTabOptions,
