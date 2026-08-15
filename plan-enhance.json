@@ -1,0 +1,42 @@
+{
+	"name": "wf-enhance",
+	"title": "增强:主控自主编排 + 排查工具固化 + skill 派发流程",
+	"goal": "三件事:① monitor 检测关键状态事件(步骤回报/gate 待核对/wave 完成/冲突)后自动通知主控 agent,让主控 AI 自主推进编排(verify/merge/下发),而非依赖人工注入命令;② 把常见排查操作固化为 wf 工具(wf cleanup 清理 .pi-glla 与残留 tab、wf tabs 查看子任务 tab 状态),并自动处理合并前置问题;③ skill 手册补充完整的「派发 workflow」操作流程章节",
+	"repoPath": "/Users/geeyu/.pi/agent/extensions/workflow",
+	"wave": 1,
+	"waveNote": "主控自动化 + 工具固化 + skill 文档",
+	"steps": [
+		{
+			"id": "1",
+			"title": "输出增强方案",
+			"agent": "planner",
+			"task": "阅读 {{root}}/src/monitor.ts(startMonitor/pollOnce 回调结构)、{{root}}/src/index.ts(monitor 启动、sendMessage 可用性)、{{root}}/src/cli.ts(子命令结构)、{{root}}/skill/SKILL.md 结构,输出三部分方案:① monitor 状态事件通知机制(检测哪些事件、如何避免重复通知、如何通知主控 agent 自主行动);② wf cleanup/tabs 工具设计(清理 .pi-glla、关闭已完成步骤 tab、合并前置检查);③ skill「派发 workflow」章节大纲。",
+			"expectations": ["明确通知去重机制", "工具命令参数与行为定义", "skill 章节大纲含派发全流程"]
+		},
+		{
+			"id": "1.1",
+			"title": "实现主控自主编排通知",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 在 src/index.ts 的 monitor 回调中实现:轮询时检测关键状态变化(步骤从 running→reported、gate 步骤 reported→waiting-verify、wave 内全部 done、出现 conflict),通过 pi.sendMessage 向主控会话发送引导消息(如'步骤 X 已回报,请 /wf verify 或查看 /wf status'),要求:① 每种事件每个步骤只通知一次(用 workflow_step_metadata 记录已通知事件);② 用 deliverAs followUp 不打断正在进行的对话;③ 通知文案明确指向可执行的 /wf 命令。实现后运行 node --experimental-strip-types test/workflow.test.ts 确保测试全绿。提交。",
+			"expectations": ["关键事件触发通知且不重复", "通知文案含具体 /wf 命令", "测试全绿"]
+		},
+		{
+			"id": "1.2",
+			"title": "固化排查工具 + skill 派发章节",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "实现两个 CLI 工具并更新 skill 手册:① wf cleanup [workflowId]:遍历该 workflow 步骤,关闭已 done/skipped 且 tab 仍开的子任务 tab(ghostctl close-terminal by tab_id),清理各 worktree 下的 .pi-glla 目录,输出清理摘要;② wf tabs [workflowId]:列出所有步骤的 tab 状态(步骤/状态/tab_id 前 8 位/是否存活),便于排查;③ skill/SKILL.md 新增「派发 workflow」章节:从 /wf import 到 dispatch/verify/merge/goal-check 的完整操作流程示例(含依赖顺序、gate、冲突处理),并在 §5 排查表补充 wf cleanup/wf tabs 的使用。cli.ts 子命令与 help 同步更新。提交。",
+			"expectations": ["wf cleanup 能关已完成步骤的 tab 并清 .pi-glla", "wf tabs 输出含存活状态", "skill 新增派发流程章节且排查表更新"]
+		},
+		{
+			"id": "2",
+			"title": "整体评审",
+			"agent": "reviewer",
+			"deps": ["1.1", "1.2"],
+			"gate": true,
+			"task": "评审 {{steps.1.1.summary}} 与 {{steps.1.2.summary}} 的实现:① 通知机制是否去重、是否可能干扰主控;② wf cleanup/tabs 是否安全(close 前确认状态、.pi-glla 清理不越界);③ skill 章节是否完整覆盖派发流程。逐条核对期望,输出结论。",
+			"expectations": ["通知机制无重复且文案可执行", "工具安全性 OK", "skill 文档完整"]
+		}
+	]
+}

@@ -34,9 +34,10 @@ import { depsDone, resolveBin, run, worktreeName, worktreePath } from "./dispatc
 export async function fetchLiveTabIds(
 	ghostctlBin: string,
 	cwd: string,
-): Promise<Set<string>> {
+): Promise<Set<string> | null> {
+	// 查询失败返回 null:调用方必须跳过本轮,绝不把"查询失败"误判为"所有 tab 消失"
 	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return new Set();
+	if (res.code !== 0) return null;
 	try {
 		const layout = JSON.parse(res.stdout) as {
 			windows: Array<{ tabs: Array<{ terminals: Array<{ id: string }> }> }>;
@@ -49,7 +50,7 @@ export async function fetchLiveTabIds(
 		}
 		return ids;
 	} catch {
-		return new Set();
+		return null;
 	}
 }
 
@@ -116,6 +117,7 @@ export async function pollOnce(
 
 	for (const [repo, steps] of byRepo) {
 		const live = await fetchLiveTabIds(ghostctlBin, repo);
+		if (!live) continue; // 查询失败 → 本轮跳过,不误标 aborted
 		for (const s of steps) {
 			if (!s.tab_id) continue;
 			if (live.has(s.tab_id)) continue;
