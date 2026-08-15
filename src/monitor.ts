@@ -20,9 +20,15 @@ import {
 	buildUpdate,
 	getLatestAttempt,
 	getRunningSteps,
+	getStepMeta,
 	getStepsByWave,
 	getStepsByWorkflow,
 	getWave,
+	getWorkflowMeta,
+	listActiveWorkflows,
+	listWaves,
+	setStepMeta,
+	setWorkflowMeta,
 	updateStepStatus,
 } from "./db.ts";
 import { depsDone, resolveBin, run, worktreeName, worktreePath } from "./dispatch.ts";
@@ -172,6 +178,8 @@ export interface MonitorOptions {
 	ghostctlBin?: string;
 	/** 本轮检测到 tab 消失的步骤 */
 	onClosed?: (closed: string[]) => void;
+	/** 本轮检测到的关键状态事件(主控自主编排通知,已按 attempt 去重) */
+	onState?: (items: NotifyItem[]) => void | Promise<void>;
 	/** 每轮结束回调(如刷新 widget) */
 	onTick?: () => void;
 }
@@ -195,6 +203,9 @@ export function startMonitor(
 				ghostctlBin: opts.ghostctlBin,
 			});
 			if (closed.length > 0) opts.onClosed?.(closed);
+			// 状态事件检测(主控自主编排):扫描 DB 快照,产出未通知的关键事件
+			const items = detectStateChanges(db);
+			if (items.length > 0) await opts.onState?.(items);
 			opts.onTick?.();
 		} catch {
 			/* 轮询异常不中断后续 */
@@ -209,6 +220,173 @@ export function startMonitor(
 			timer = null;
 		}
 	};
+}
+
+// ────────────────────────────────────────────────────────────
+// 状态事件检测(设计增强①:主控自主编排通知)
+// ────────────────────────────────────────────────────────────
+export type NotifyKind =
+	| "reported"
+	| "waiting-verify"
+	| "failed"
+	| "aborted"
+	| "conflict"
+	| "needs-fix"
+	| "wave-done"
+	| "workflow-done";
+
+/** 关键状态事件(步骤级;stepId 缺省时按 kind 区分 wave/workflow 级) */
+export interface NotifyItem {
+	workflowId: string;
+	stepId?: string;
+	/** wave 级事件携带 wave 序号(去重 key 与文案用) */
+	waveSeq?: number;
+	kind: NotifyKind;
+	text: string;
+}
+
+export interface DetectOptions {
+	/** 测试用:标记时间戳 */
+	now?: number;
+}
+
+/** 步骤状态 → 事件 kind(仅关键状态,其余不通知) */
+const KIND_BY_STATUS: Record<string, NotifyKind> = {
+	[STEP_STATUS.reported]: "reported",
+	[STEP_STATUS.waitingVerify]: "waiting-verify",
+	[STEP_STATUS.failed]: "failed",
+	[STEP_STATUS.aborted]: "aborted",
+	[STEP_STATUS.conflict]: "conflict",
+	[STEP_STATUS.needsFix]: "needs-fix",
+};
+
+/** 步骤级事件文案(必含具体可执行的 /wf 命令) */
+function stepNotifyText(kind: NotifyKind, stepId: string): string {
+	switch (kind) {
+		case "reported":
+			return `步骤 ${stepId} 已回报 → 请执行 /wf verify ${stepId} approve(或 /wf status 查看)`;
+		case "waiting-verify":
+			return `gate 步骤 ${stepId} 待核对 → 请执行 /wf verify ${stepId} approve 或 /wf verify ${stepId} reject <原因>`;
+		case "failed":
+			return `步骤 ${stepId} 失败 → 请执行 /wf step ${stepId} 查看错误,再 /wf retry ${stepId}`;
+		case "aborted":
+			return `步骤 ${stepId} 中止(超时/tab 关闭)→ 请执行 /wf step ${stepId} 查看原因,再 /wf retry ${stepId}`;
+		case "conflict":
+			return `步骤 ${stepId} 合并冲突 → 解决后 /wf resolve-conflict ${stepId},再 /wf merge`;
+		case "needs-fix":
+			return `步骤 ${stepId} 被驳回待修复 → 请执行 /wf step ${stepId} 查看原因,再 /wf retry ${stepId}`;
+		default:
+			return stepId;
+	}
+}
+
+const NOTIFY_WF_DONE_KEY = "notify:workflow:done";
+
+function waveDoneKey(seq: number): string {
+	return `notify:wave:${seq}:done`;
+}
+
+/**
+ * 状态事件检测(纯 DB 扫描,无外部副作用):
+ * 在 monitor tick 内对 DB 全量快照检测「新发生」的关键状态,返回尚未通知的事件。
+ * 去重采用 workflow_step_metadata / workflow_metadata KV(调用方发送成功后 markNotified 落标记):
+ * - 步骤级:key=notify:<kind>,value={attemptId,at};同 attempt 只通知一次,attemptId 变化(重试后)重新通知;
+ * - wave 级:key=notify:wave:<seq>:done;workflow 级:key=notify:workflow:done。
+ * 事件集:reported(非 gate)/ waiting-verify(gate)/ failed / aborted / conflict / needs-fix /
+ * wave 全部终态 / 全流程所有 wave 已合并。
+ */
+export function detectStateChanges(
+	db: DatabaseSync,
+	_opts: DetectOptions = {},
+): NotifyItem[] {
+	const items: NotifyItem[] = [];
+	for (const wf of listActiveWorkflows(db)) {
+		// 1) 步骤级:关键状态且未通知(同 attempt)
+		for (const s of getStepsByWorkflow(db, wf.id)) {
+			const kind = KIND_BY_STATUS[s.status];
+			if (!kind) continue;
+			const attemptId = getLatestAttempt(db, s.id)?.id ?? null;
+			const meta = getStepMeta(db, s.id, `notify:${kind}`) as
+				| { attemptId?: number | null }
+				| undefined;
+			if (meta && (meta.attemptId ?? null) === attemptId) continue;
+			items.push({
+				workflowId: wf.id,
+				stepId: s.id,
+				kind,
+				text: stepNotifyText(kind, s.id),
+			});
+		}
+		// 2) wave 级:未合并 wave 且全部步骤终态(done/skipped)→ 提示合并
+		const waves = listWaves(db, wf.id);
+		for (const wave of waves) {
+			if (wave.status === "merged") continue;
+			const steps = getStepsByWave(db, wave.id);
+			if (steps.length === 0) continue;
+			if (
+				!steps.every(
+					(s) =>
+						s.status === STEP_STATUS.done ||
+						s.status === STEP_STATUS.skipped,
+				)
+			) {
+				continue;
+			}
+			if (getWorkflowMeta(db, wf.id, waveDoneKey(wave.seq)) !== undefined) {
+				continue;
+			}
+			const mergeCmd =
+				wave.seq === wf.current_wave
+					? "/wf merge"
+					: `/wf merge --wave ${wave.seq}`;
+			items.push({
+				workflowId: wf.id,
+				waveSeq: wave.seq,
+				kind: "wave-done",
+				text: `wave ${wave.seq} 全部完成 → 请执行 ${mergeCmd}(前置可先 wf cleanup)`,
+			});
+		}
+		// 3) workflow 级:所有 wave 已合并 → 提示目标把关
+		if (
+			waves.length > 0 &&
+			waves.every((w) => w.status === "merged") &&
+			getWorkflowMeta(db, wf.id, NOTIFY_WF_DONE_KEY) === undefined
+		) {
+			items.push({
+				workflowId: wf.id,
+				kind: "workflow-done",
+				text: `workflow ${wf.id} 所有 wave 已合并 → 请执行 /wf goal-check approve`,
+			});
+		}
+	}
+	return items;
+}
+
+/**
+ * 落去重标记(发送成功后调用;失败不标记,下轮重试):
+ * 步骤级记 {attemptId, at}(attemptId 变化后重新通知);wave/workflow 级记 {at}。
+ */
+export function markNotified(
+	db: DatabaseSync,
+	item: NotifyItem,
+	opts: DetectOptions = {},
+): void {
+	const at = opts.now ?? Date.now();
+	if (item.stepId) {
+		const attempt = getLatestAttempt(db, item.stepId);
+		setStepMeta(db, item.stepId, `notify:${item.kind}`, {
+			attemptId: attempt?.id ?? null,
+			at,
+		});
+		return;
+	}
+	if (item.kind === "wave-done" && item.waveSeq !== undefined) {
+		setWorkflowMeta(db, item.workflowId, waveDoneKey(item.waveSeq), { at });
+		return;
+	}
+	if (item.kind === "workflow-done") {
+		setWorkflowMeta(db, item.workflowId, NOTIFY_WF_DONE_KEY, { at });
+	}
 }
 
 // ────────────────────────────────────────────────────────────

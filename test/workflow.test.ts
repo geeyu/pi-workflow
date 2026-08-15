@@ -653,10 +653,13 @@ async function main(): Promise<void> {
 		"事件倒序返回",
 	);
 
-	console.log("== T9 resolveIdentity ==");
-	const idxMod = await import("../src/index.ts");
-	const fromEnv = idxMod.resolveIdentity("/whatever");
-	assert(fromEnv === null, "无 env/cwd 无身份");
+console.log("== T9 resolveIdentity ==");
+const idxMod = await import("../src/index.ts");
+// 先清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
+delete process.env.PI_WF_WORKFLOW;
+delete process.env.PI_WF_STEP;
+const fromEnv = idxMod.resolveIdentity("/whatever");
+assert(fromEnv === null, "无 env/cwd 无身份");
 	process.env.PI_WF_WORKFLOW = "demo-wf";
 	process.env.PI_WF_STEP = "1.1";
 	const withEnv = idxMod.resolveIdentity("/whatever");
@@ -1102,6 +1105,232 @@ async function main(): Promise<void> {
 		!htmlEsc.includes('x&<>"wf-1') && htmlEsc.includes("x&amp;&lt;&gt;"),
 		"HTML 转义(XSS 防护)",
 	);
+
+	console.log("== T20 状态事件通知 detectStateChanges / markNotified / sendWorkflowNotifications ==");
+	// 构造覆盖 6 种步骤级事件的工作流
+	const notifyWf = orchMod.importPlan(
+		db2,
+		{
+			name: "notify-wf",
+			title: "通知",
+			goal: "测试通知",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "非gate回报", agent: "worker", task: "a" },
+				{ id: "1.1", title: "gate待核对", agent: "reviewer", task: "b", gate: true },
+				{ id: "1.2", title: "失败", agent: "worker", task: "c" },
+				{ id: "1.3", title: "中止", agent: "worker", task: "d" },
+				{ id: "1.4", title: "冲突", agent: "worker", task: "e" },
+				{ id: "1.5", title: "待修复", agent: "worker", task: "f" },
+			],
+		},
+			tmpDir,
+			AGENTS,
+	);
+	assert(notifyWf.ok, "notify-wf 导入");
+	dbMod.updateStepStatus(db2, "notify-wf-1", dbMod.STEP_STATUS.reported);
+	dbMod.updateStepStatus(db2, "notify-wf-1.1", dbMod.STEP_STATUS.waitingVerify);
+	dbMod.updateStepStatus(db2, "notify-wf-1.2", dbMod.STEP_STATUS.failed, {
+		error: "x",
+	});
+	dbMod.updateStepStatus(db2, "notify-wf-1.3", dbMod.STEP_STATUS.aborted, {
+		error: "x",
+	});
+	dbMod.updateStepStatus(db2, "notify-wf-1.4", dbMod.STEP_STATUS.conflict, {
+		error: "x",
+	});
+	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.needsFix, {
+		error: "x",
+	});
+	const notifyFilter = (arr: monitorMod.NotifyItem[]) =>
+		arr.filter((i) => i.workflowId === "notify-wf");
+	const items1 = notifyFilter(monitorMod.detectStateChanges(db2));
+	assert(
+		items1.length === 6,
+		`6 种步骤事件全部检测(${items1.map((i) => i.kind).join(",")})`,
+	);
+	const stepKinds = items1.map((i) => i.kind);
+	for (const k of [
+		"reported",
+		"waiting-verify",
+		"failed",
+		"aborted",
+		"conflict",
+		"needs-fix",
+	]) {
+		assert(stepKinds.includes(k), `检测到 ${k} 事件`);
+	}
+	assert(items1.every((i) => i.text.includes("/wf ")), "每条文案含具体 /wf 命令");
+	assert(
+		items1.find((i) => i.stepId === "notify-wf-1")!.text.includes(
+			"/wf verify notify-wf-1 approve",
+		),
+		"reported 文案指向 /wf verify approve",
+	);
+	assert(
+		items1.find((i) => i.stepId === "notify-wf-1.1")!.text.includes(
+			"/wf verify notify-wf-1.1 reject",
+		),
+		"waiting-verify 文案含 /wf verify reject 分支",
+	);
+	assert(
+		items1.find((i) => i.stepId === "notify-wf-1.2")!.text.includes(
+			"/wf retry notify-wf-1.2",
+		),
+		"failed 文案指向 /wf retry",
+	);
+	// 标记后同 attempt 不再重复
+	for (const item of items1) monitorMod.markNotified(db2, item, { now: 1000 });
+	assert(
+		notifyFilter(monitorMod.detectStateChanges(db2)).length === 0,
+		"同 attempt 标记后不再重复通知",
+	);
+	// attemptId 变化(重试后)→ 重新通知
+	dbMod.createAttempt(db2, "notify-wf-1", { taskMd: "t", pointer: "p" });
+	const items2 = notifyFilter(monitorMod.detectStateChanges(db2));
+	assert(
+		items2.length === 1 &&
+			items2[0].stepId === "notify-wf-1" &&
+			items2[0].kind === "reported",
+		"attemptId 变化(重试)→ 重新通知",
+	);
+	monitorMod.markNotified(db2, items2[0], { now: 1001 });
+
+	console.log("== T20b wave-done / workflow-done =");
+	const doneWf = orchMod.importPlan(
+		db2,
+		{
+			name: "notify-done-wf",
+			title: "完成",
+			goal: "测试完成通知",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "A", agent: "worker", task: "a" },
+				{ id: "2", title: "B", agent: "worker", task: "b" },
+			],
+		},
+			tmpDir,
+			AGENTS,
+	);
+	assert(doneWf.ok, "notify-done-wf 导入");
+	dbMod.updateStepStatus(db2, "notify-done-wf-1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "notify-done-wf-2", dbMod.STEP_STATUS.done);
+	const doneFilter = (arr: monitorMod.NotifyItem[]) =>
+		arr.filter((i) => i.workflowId === "notify-done-wf");
+	const wd = doneFilter(monitorMod.detectStateChanges(db2));
+	assert(
+		wd.length === 1 && wd[0].kind === "wave-done",
+		"wave 全部终态 → wave-done",
+	);
+	assert(
+		wd[0].text.includes("/wf merge") && wd[0].waveSeq === 1,
+		"wave-done 文案含 /wf merge",
+	);
+	monitorMod.markNotified(db2, wd[0], { now: 1000 });
+	assert(
+		doneFilter(monitorMod.detectStateChanges(db2)).length === 0,
+		"wave-done 去重",
+	);
+	// wave 合并后 → workflow-done
+	db2
+		.prepare(
+			"UPDATE workflow_waves SET status='merged' WHERE workflow_id='notify-done-wf' AND seq=1",
+		)
+		.run();
+	const wfd = doneFilter(monitorMod.detectStateChanges(db2));
+	assert(
+		wfd.length === 1 &&
+			wfd[0].kind === "workflow-done" &&
+			wfd[0].text.includes("/wf goal-check approve"),
+		"全部 wave 合并 → workflow-done(含 /wf goal-check)",
+	);
+	monitorMod.markNotified(db2, wfd[0], { now: 1000 });
+	assert(
+		doneFilter(monitorMod.detectStateChanges(db2)).length === 0,
+		"workflow-done 去重",
+	);
+
+	console.log("== T20c 聚合发送 sendWorkflowNotifications =");
+	const sent: Array<{ content: string; options: unknown }> = [];
+	const uiNotifies: Array<{ msg: string; type?: string }> = [];
+	const fakeSender = {
+		sendMessage: async (msg: { content: string }, options: unknown) => {
+			sent.push({ content: msg.content, options });
+		},
+		ui: {
+			notify: (msg: string, type?: string) => {
+				uiNotifies.push({ msg, type });
+			},
+		},
+	};
+	// 7 条待发事件 → 单条聚合消息最多 5 行,超出留到下一轮
+	const overWf = orchMod.importPlan(
+		db2,
+		{
+			name: "notify-over-wf",
+			title: "溢出",
+			goal: "溢出测试",
+			repoPath: scratchRepo,
+			steps: Array.from({ length: 7 }, (_, i) => ({
+				id: `${i + 1}`,
+				title: `S${i + 1}`,
+				agent: "worker",
+				task: "t",
+			})),
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(overWf.ok, "notify-over-wf 导入");
+	for (let i = 1; i <= 7; i++) {
+		dbMod.updateStepStatus(db2, `notify-over-wf-${i}`, dbMod.STEP_STATUS.reported);
+	}
+	const overFilter = (arr: monitorMod.NotifyItem[]) =>
+		arr.filter((i) => i.workflowId === "notify-over-wf");
+	const overItems = overFilter(monitorMod.detectStateChanges(db2));
+	assert(overItems.length === 7, `7 个事件待通知(${overItems.length})`);
+	await idxMod.sendWorkflowNotifications(db2, fakeSender, overItems);
+	assert(sent.length === 1, "一次调用发送一条聚合消息");
+	const sentOpts = sent[0].options as { deliverAs: string; triggerTurn: boolean };
+	assert(
+		sentOpts.deliverAs === "followUp" && sentOpts.triggerTurn === true,
+		"deliverAs=followUp + triggerTurn(不打断,空闲唤醒)",
+	);
+	const lines = sent[0].content
+		.split("\n")
+		.filter((l) => l.startsWith("- "));
+	assert(lines.length === 5, "单条聚合最多 5 行");
+	assert(
+		sent[0].content.includes("workflow-notify") === false &&
+			sent[0].content.includes("/wf verify notify-over-wf-1"),
+		"聚合文案含具体命令",
+	);
+	const remain = overFilter(monitorMod.detectStateChanges(db2));
+	assert(remain.length === 2, "超出 5 行的留到下一轮(未标记)");
+	// 降级:sendMessage 抛错 → ui.notify,仍标记去重
+	const throwingSender = {
+		sendMessage: async () => {
+			throw new Error("sendMessage 不可用");
+		},
+		ui: {
+			notify: (msg: string, type?: string) => {
+				uiNotifies.push({ msg, type });
+			},
+		},
+	};
+	await idxMod.sendWorkflowNotifications(db2, throwingSender, remain);
+	assert(
+		uiNotifies.length === 1 && uiNotifies[0].msg.includes("/wf verify"),
+		"sendMessage 失败降级 ctx.ui.notify",
+	);
+	assert(
+		overFilter(monitorMod.detectStateChanges(db2)).length === 0,
+		"降级发送后同样标记去重",
+	);
+	// 空 items → 不发送
+	sent.length = 0;
+	await idxMod.sendWorkflowNotifications(db2, fakeSender, []);
+	assert(sent.length === 0, "无事件不发送");
 
 	// 清理
 	try {
