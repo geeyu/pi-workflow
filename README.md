@@ -47,7 +47,7 @@ src/
 ├── core/           # db.ts(SQLite repository)+ state.ts(图标/状态机迁移表单一来源)
 ├── exec/           # dispatch.ts(派发/重试/去重)+ shell.ts(进程)+ window.ts(Ghostty)+ template.ts(任务渲染)
 ├── observe/        # monitor.ts(存活轮询/事件检测)+ wave.ts(wave 合并)
-├── ui/             # status.ts(footer 状态条)+ notify.ts(主控通知)+ board.ts(看板)
+├── ui/             # status.ts(footer 状态条)+ notify.ts(主控通知)+ renderers.ts(对话流渲染)+ board.ts(看板)
 ├── orchestrator.ts # 核心流程:importPlan / reportDone / verifyStep / goal-check(纯逻辑,可测)
 ├── planner.ts      # planner agent(headless)自动拆解
 ├── validate.ts     # 计划 JSON 校验(层级点号 id / agent / deps 无环)

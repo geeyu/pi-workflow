@@ -1,5 +1,5 @@
 /**
- * observe/wave.ts — wave 合并(arch-refactor §3.7,自 src/monitor.ts 同名迁移)
+ * observe/wave.ts — wave 合并(arch-refactor §3.7,自 src/observe/monitor.ts 同名迁移)
  *
  * - mergeWave:wave 全部终态后按 sort_order 串行 gittree merge --delete,
  *   冲突 → 步骤 conflict(事件 merge_conflict),wave → merged(事件 wave_merged);
@@ -16,7 +16,7 @@ import {
 	getStepsByWave,
 	getWave,
 	updateStepStatus,
-} from "../db.ts";
+} from "../core/db.ts";
 import { resolveBin, run, worktreeName, worktreePath } from "../exec/shell.ts";
 
 export interface MergeResult {

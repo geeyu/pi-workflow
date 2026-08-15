@@ -1,5 +1,5 @@
 /**
- * exec/window.ts — Ghostty 窗口/终端操作层(arch-refactor §3.5,自 src/dispatch.ts 同名迁移)
+ * exec/window.ts — Ghostty 窗口/终端操作层(arch-refactor §3.5,自 src/exec/dispatch.ts 同名迁移)
  *
  * - sendTextToTerminal:注入文本并自动回车(与 /wf steer 同构的共享注入序列);
  * - openStepTab:开子任务 tab(构造 env 命令 + pointer → new-tab 到绑定窗口 → 反查
@@ -17,7 +17,7 @@ import {
 	buildUpdate,
 	getWorkflowMeta,
 	setWorkflowMeta,
-} from "../db.ts";
+} from "../core/db.ts";
 import {
 	piInvocation,
 	resolveBin,

@@ -10,11 +10,11 @@
  * - NOTIFY_MAX_LINES:单次聚合通知的最大行数,超出留到下一轮。
  */
 import type { DatabaseSync } from "node:sqlite";
-import { markNotified, type NotifyItem, type NotifyKind } from "../monitor.ts";
+import { markNotified, type NotifyItem, type NotifyKind } from "../observe/monitor.ts";
 import {
 	getStepsByWorkflow,
 	stepStatusCounts,
-} from "../db.ts";
+} from "../core/db.ts";
 import { PLAN_ICON } from "./status.ts";
 
 /** 通知发送通道的最小类型面(pi.sendMessage + ctx.ui.notify,便于测试注入) */

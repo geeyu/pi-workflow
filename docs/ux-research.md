@@ -121,7 +121,7 @@
 
 **P0-4 状态机迁移校验接线**(D1/D2)✅
 - 目标:STEP_TRANSITIONS 在 reportDone/reportFail/verifyStep/skip/resolve-conflict/fix-tab 等关键入口校验 canTransition;非法迁移明确报错并给合法目标列表;迁移表覆盖 orchestrator/dispatch/monitor 全部真实路径(T6/T7/T10/T13/T15 作路径清单核对)。
-- 实现位置:`src/core/state.ts`(表修订 + legalTargets + 幂等)、`src/db.ts`(updateStepStatus strict 模式 + StepTransitionError)、`src/orchestrator.ts`/`src/command.ts`/`src/monitor.ts`/`src/observe/wave.ts`(生产调用点 strict)。
+- 实现位置:`src/core/state.ts`(表修订 + legalTargets + 幂等)、`src/core/db.ts`(updateStepStatus strict 模式 + StepTransitionError)、`src/orchestrator.ts`/`src/command.ts`/`src/observe/monitor.ts`/`src/observe/wave.ts`(生产调用点 strict)。
 - 风险:中(表遗漏真实路径会打断既有流程;已按 T6/T7/T10/T13/T15 + 源码全调用点核对:补 done→conflict、conflict→skipped,幂等同态)。工作量:M。
 - pi API 依赖:无。
 

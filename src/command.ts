@@ -42,8 +42,8 @@ import {
 	updateStepStatus,
 	updateWorkflowStatus,
 	workflowCost,
-} from "./db.ts";
-import type { StepRow } from "./db.ts";
+} from "./core/db.ts";
+import type { StepRow } from "./core/db.ts";
 import {
 	appendSteps,
 	checkBudget,
@@ -67,15 +67,15 @@ import {
 	sendTextToTerminal,
 	worktreePath,
 	WF_WINDOW_META_KEY,
-} from "./dispatch.ts";
+} from "./exec/dispatch.ts";
 import {
 	fetchLiveTabIds,
 	getReadySteps,
 	mergeWave,
 	pollTargetReached,
-} from "./monitor.ts";
+} from "./observe/monitor.ts";
 import { planFromGoal } from "./planner.ts";
-import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
+import { buildBoard, renderBoardHtml, renderBoardText } from "./ui/board.ts";
 import {
 	encodeSessionDir,
 	findLatestSessionFile,

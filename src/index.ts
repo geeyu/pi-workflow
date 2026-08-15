@@ -40,13 +40,13 @@ import {
 import {
 	getDb,
 	StepTransitionError,
-} from "./db.ts";
+} from "./core/db.ts";
 import {
 	recoverStaleSteps,
 	startMonitor,
 	markNotified,
 	type NotifyItem,
-} from "./monitor.ts";
+} from "./observe/monitor.ts";
 
 // 兼容再导出(定义已移至 command.ts / ui/status.ts)
 export { resolveIdentity, type WfIdentity } from "./command.ts";

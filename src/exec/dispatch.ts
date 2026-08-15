@@ -1,5 +1,5 @@
 /**
- * dispatch.ts — 子任务派发核心(设计文档 §5.3 / §6.1 / §7)
+ * exec/dispatch.ts — 子任务派发核心(设计文档 §5.3 / §6.1 / §7)
  *
  * 1.2 模块拆分后:保留派发主流程(dispatchStep)与去重复用(isTerminalAlive);
  * 进程执行/worktree 路径 → exec/shell.ts,窗口操作 → exec/window.ts,
@@ -26,10 +26,10 @@ import {
 	createAttempt,
 	getStep,
 	getStepDeps,
-} from "./db.ts";
-import { resolveBin, run, worktreeName, worktreePath } from "./exec/shell.ts";
-import { openStepTab } from "./exec/window.ts";
-import { buildPointer, renderTaskMd } from "./exec/template.ts";
+} from "../core/db.ts";
+import { resolveBin, run, worktreeName, worktreePath } from "./shell.ts";
+import { openStepTab } from "./window.ts";
+import { buildPointer, renderTaskMd } from "./template.ts";
 
 export interface DispatchResult {
 	ok: boolean;
@@ -373,7 +373,7 @@ export {
 	WF_WINDOW_META_KEY,
 	type OpenStepTabResult,
 	type OpenStepTabOptions,
-} from "./exec/window.ts";
+} from "./window.ts";
 export {
 	run,
 	resolveBin,
@@ -381,7 +381,7 @@ export {
 	worktreeName,
 	worktreePath,
 	type RunResult,
-} from "./exec/shell.ts";
+} from "./shell.ts";
 export {
 	getDepSummaries,
 	injectDeps,
@@ -389,4 +389,4 @@ export {
 	renderTaskMd,
 	buildPointer,
 	type DepSummary,
-} from "./exec/template.ts";
+} from "./template.ts";

@@ -71,6 +71,7 @@ workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 │   ├── ui/
 │   │   ├── status.ts       # footer 状态条渲染(setStatus,powerline 兼容)
 │   │   ├── notify.ts       # 主控自主编排通知(sendMessage followUp)
+│   │   ├── renderers.ts    # workflow-notify 对话流渲染(registerMessageRenderer)
 │   │   └── board.ts        # 看板构建/文本/HTML 渲染
 │   ├── orchestrator.ts # 编排流程:import→report→verify→goal-check→next(纯逻辑,可测)
 │   ├── planner.ts      # headless planner agent 自动拆解
@@ -648,10 +649,10 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 ### 实施状态
 
 - **P1 派发闭环 ✅(2026-08)** — src/: index/cli/orchestrator/dispatch/db/validate/agents + skill/ + bin/;
-- **P2 监听与批次 ✅(2026-08)** — src/monitor.ts(tab 存活轮询 5s/消失→aborted/崩溃恢复/就绪集/wave 串行 merge);
+- **P2 监听与批次 ✅(2026-08)** — src/observe/monitor.ts(tab 存活轮询 5s/消失→aborted/崩溃恢复/就绪集)+ src/observe/wave.ts(串行 merge);
 - **P3 期望核对 ✅(2026-08)** — retry 上下文注入/max_retries/--fresh/steer/resolve-conflict/usage 自报/预算护栏/超时;
 - **P4 智能编排 ✅(2026-08)** — src/planner.ts(headless planner 自动拆解,JSON 契约)+ goal-check 目标把关(verifying→completed/gap wave)+ /wf next wave 滚动 + appendSteps(gap wave 追加);真实链路:一条需求目标 → 5 步计划落库;
-- **P5 看板 ✅(2026-08)** — src/board.ts(buildBoard 5 列数据 + 文本列布局 + 单文件 HTML 导出 + XSS 转义);/wf board + wf board [--html];思源同步(P5b)待实施;
+- **P5 看板 ✅(2026-08)** — src/ui/board.ts(buildBoard 5 列数据 + 文本列布局 + 单文件 HTML 导出 + XSS 转义);/wf board + wf board [--html];思源同步(P5b)待实施;
 - 验收:129 断言。
 
 ---

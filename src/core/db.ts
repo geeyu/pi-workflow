@@ -1,5 +1,5 @@
 /**
- * db.ts — workflow 插件数据层(node:sqlite 封装)
+ * core/db.ts — workflow 插件数据层(node:sqlite 封装)
  *
  * 唯一事实源:~/.pi/agent/workflows/workflow.db
  * - WAL + busy_timeout + foreign_keys,编排者/子 pi/外部工具并发安全
@@ -12,7 +12,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { canTransition, legalTargets } from "./core/state.ts";
+import { canTransition, legalTargets } from "./state.ts";
 
 export const DB_DIR = path.join(os.homedir(), ".pi", "agent", "workflows");
 export const DB_PATH =

@@ -1,5 +1,5 @@
 /**
- * monitor.ts — 监听与批次推进(设计 §4.5 崩溃恢复 / §5.5 监听 / §7.2 合并)
+ * observe/monitor.ts — 监听与批次推进(设计 §4.5 崩溃恢复 / §5.5 监听 / §7.2 合并)
  *
  * - pollOnce:tab 存活检测(ghostctl layout 按 tab_id=terminal id 匹配),
  *   running/dispatched 步骤的 tab 消失且未回报 → step_tab_closed → aborted
@@ -27,9 +27,9 @@ import {
 	setStepMeta,
 	setWorkflowMeta,
 	updateStepStatus,
-} from "./db.ts";
-import { depsDone } from "./dispatch.ts";
-import { resolveBin, run } from "./exec/shell.ts";
+} from "../core/db.ts";
+import { depsDone } from "../exec/dispatch.ts";
+import { resolveBin, run } from "../exec/shell.ts";
 
 // ────────────────────────────────────────────────────────────
 // tab 存活检测
@@ -488,5 +488,5 @@ export function getReadySteps(
 // 兼容再导出壳(arch-refactor §3.9)
 // mergeWave/mergePreview 已移至 observe/wave.ts,同名再导出保持外部调用面不变。
 // ────────────────────────────────────────────────────────────
-export { mergeWave, mergePreview } from "./observe/wave.ts";
-export type { MergeResult } from "./observe/wave.ts";
+export { mergeWave, mergePreview } from "./wave.ts";
+export type { MergeResult } from "./wave.ts";

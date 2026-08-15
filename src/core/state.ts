@@ -1,7 +1,7 @@
 /**
  * core/state.ts — 步骤/工作流状态常量与状态机迁移表(单一来源)
  *
- * STATUS_ICON / stepIcon 自 index.ts / cli.ts / board.ts 收敛到此处;
+ * STATUS_ICON / stepIcon 自 index.ts / cli.ts / ui/board.ts 收敛到此处;
  * STEP_TRANSITIONS / WORKFLOW_TRANSITIONS 为状态机迁移表(1.2 起接线:
  * canTransition 在 updateStepStatus(strict) 与 reportDone/reportFail/
  * verifyStep/skip/resolve-conflict/fix-tab 等关键入口校验,非法迁移给出

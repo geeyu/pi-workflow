@@ -20,9 +20,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { StepRow } from "../src/db.ts";
+import type { StepRow } from "../src/core/db.ts";
 
-// 必须在 import db.ts 之前设置(DB_PATH 模块加载时计算)
+// 必须在 import core/db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
 process.env.WF_DB_PATH = path.join(tmpDir, "test.db");
 
@@ -107,7 +107,7 @@ const DEMO_PLAN = {
 
 async function main(): Promise<void> {
 	console.log("== T1 db 迁移 ==");
-	const dbMod = await import("../src/db.ts");
+	const dbMod = await import("../src/core/db.ts");
 	const db = dbMod.getDb();
 	const tables = db
 		.prepare(
@@ -256,7 +256,7 @@ async function main(): Promise<void> {
 	);
 
 	console.log("== T4 renderTaskMd + injectDeps ==");
-	const dispatchMod = await import("../src/dispatch.ts");
+	const dispatchMod = await import("../src/exec/dispatch.ts");
 	// piInvocation:pi 插件上下文复用当前 node + 脚本;wf CLI 上下文解析真实 pi 二进制
 	const savedArgv = process.argv[1];
 	const savedPiBin = process.env.PI_BIN;
@@ -782,7 +782,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(fromCwdSub?.stepId === "add-redis-cache-1.2", "cwd 子目录身份解析");
 
 	console.log("== T10 monitor 存活检测 ==");
-	const monitorMod = await import("../src/monitor.ts");
+	const monitorMod = await import("../src/observe/monitor.ts");
 	// T7 已 fail 过 scratch-wf-1 一次(retries_done=1);调大上限以便本测试多次重派
 	dbMod.buildUpdate(
 		db2,
@@ -1216,7 +1216,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 
 	console.log("== T19 看板 buildBoard / 渲染 ==");
-	const boardMod = await import("../src/board.ts");
+	const boardMod = await import("../src/ui/board.ts");
 	const demoBoard = boardMod.buildBoard(db2, "demo-wf");
 	assert(demoBoard !== null && demoBoard.total === 4, "看板 4 张卡片");
 	const colKeys = demoBoard!.columns.map((c) => c.key);
@@ -1560,7 +1560,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 
 	console.log("== T21 pollTargetReached 纯函数 + wf poll 退出码 ==");
-	const pollMod = await import("../src/monitor.ts");
+	const pollMod = await import("../src/observe/monitor.ts");
 	const mkSteps = (...statuses: string[]): StepRow[] =>
 		statuses.map(
 			(s, i) => ({ id: `t${i}`, status: s }) as unknown as StepRow,

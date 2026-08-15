@@ -1,5 +1,5 @@
 /**
- * exec/template.ts — 任务模板渲染层(arch-refactor §3.6,自 src/dispatch.ts 同名迁移)
+ * exec/template.ts — 任务模板渲染层(arch-refactor §3.6,自 src/exec/dispatch.ts 同名迁移)
  *
  * - renderTaskMd:任务 markdown 渲染(目标 + 本步任务 + 期望 + 输出契约 + 约束,模板注入依赖结果);
  * - injectDeps:{{steps.<dotted>.summary|files|status}} / {{root}} 模板注入;
@@ -14,7 +14,7 @@ import {
 	getStep,
 	getStepDeps,
 	getStepMeta,
-} from "../db.ts";
+} from "../core/db.ts";
 import { worktreeName } from "./shell.ts";
 
 /** 依赖步骤的可注入结果(模板/看板共用) */

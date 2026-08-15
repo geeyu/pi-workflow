@@ -12,7 +12,7 @@ import {
 	UsageError,
 	type CmdEnv,
 } from "./command.ts";
-import { getDb } from "./db.ts";
+import { getDb } from "./core/db.ts";
 
 /** help 文本与重构前逐字一致(静态文本;命令清单与注册表一致性由测试保证) */
 const HELP_TEXT = `pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手册)

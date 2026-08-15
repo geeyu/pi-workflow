@@ -30,7 +30,7 @@ import {
 	updateStepStatus,
 	updateWorkflowStatus,
 	workflowCost,
-} from "./db.ts";
+} from "./core/db.ts";
 import { canTransition, legalTargets } from "./core/state.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { validatePlan, type PlanInput } from "./validate.ts";

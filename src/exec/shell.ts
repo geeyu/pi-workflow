@@ -1,6 +1,6 @@
 /**
  * exec/shell.ts — 无状态工具层:进程执行 + 可执行文件解析 + worktree 路径计算
- * (arch-refactor §3.4,自 src/dispatch.ts 同名迁移;三者均无依赖,最先 import)
+ * (arch-refactor §3.4,自 src/exec/dispatch.ts 同名迁移;三者均无依赖,最先 import)
  *
  * - run:execFile 封装(Ghostty 非交互 shell 的 PATH 极简,补充 brew 常用目录);
  * - resolveBin / resolveOnPath:gittree/ghostctl/pi 可执行文件解析;

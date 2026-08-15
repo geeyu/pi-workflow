@@ -1,5 +1,5 @@
 /**
- * board.ts — P5 看板(设计 §8:看板即查询)
+ * ui/board.ts — P5 看板(设计 §8:看板即查询)
  *
  * buildBoard:按状态列分组(5 列映射,层级 id 缩进)
  * renderBoardText:终端文本列布局(pi widget / CLI 输出)
@@ -10,9 +10,9 @@
  * failed/aborted/conflict/needs-fix→异常。
  */
 import type { DatabaseSync } from "node:sqlite";
-import { getStepsByWave, getStepsByWorkflow } from "./db.ts";
-import { STATUS_ICON } from "./core/state.ts";
-import { sanitizeTerminalText } from "./sanitize.ts";
+import { getStepsByWave, getStepsByWorkflow } from "../core/db.ts";
+import { STATUS_ICON } from "../core/state.ts";
+import { sanitizeTerminalText } from "../sanitize.ts";
 
 export interface BoardCard {
 	id: string; // <workflowId>-<dotted>

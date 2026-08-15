@@ -13,7 +13,7 @@ import {
 	getDb,
 	type WorkflowRow,
 	type StepRow,
-} from "../db.ts";
+} from "../core/db.ts";
 import { STATUS_ICON } from "../core/state.ts";
 import { sanitizeTerminalText } from "../sanitize.ts";
 import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "../config.ts";
