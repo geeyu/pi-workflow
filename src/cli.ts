@@ -730,6 +730,13 @@ async function cmdTabs(args: string[]): Promise<void> {
 	}
 	const steps = getStepsByWorkflow(db, workflow.id);
 	const live = await fetchLiveTabIds(resolveBin("ghostctl"), workflow.repo_path);
+	if (live === null) {
+		console.error(
+			"✗ ghostctl layout 查询失败,无法判定 tab 存活(与 monitor 同口径:查询失败不算 tab 关闭)",
+		);
+		console.error("  请用 wf doctor 检查 ghostctl/ghostty 环境后重试");
+		process.exit(1);
+	}
 	const rows = steps.map((s) => ({
 		id: s.id,
 		status: s.status,
@@ -809,9 +816,14 @@ async function cmdCleanup(args: string[]): Promise<void> {
 	const ghostctlBin = resolveBin("ghostctl");
 	const ghostctlOk = fs.existsSync(ghostctlBin);
 	const live = await fetchLiveTabIds(ghostctlBin, workflow.repo_path);
+	// 查询失败:绝不关闭任何 tab(与 monitor 同口径:查询失败不算 tab 关闭),其余清理继续
+	const canJudgeTabs = live !== null;
+	if (!canJudgeTabs) {
+		warn("ghostctl layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续");
+	}
 	for (const s of steps) {
-		if (!s.tab_id || !TERMINAL_OK.has(s.status)) continue;
-		if (!live.has(s.tab_id)) continue; // 已不在布局中,无需动作
+		if (!canJudgeTabs || !s.tab_id || !TERMINAL_OK.has(s.status)) continue;
+		if (!live?.has(s.tab_id)) continue; // 已不在布局中,无需动作
 		if (!ghostctlOk) {
 			warn(`${s.id}: ghostctl 不可用,无法关闭 tab ${s.tab_id.slice(0, 8)}`);
 			continue;
