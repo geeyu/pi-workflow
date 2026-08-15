@@ -143,10 +143,10 @@ async function main(): Promise<void> {
 	const s11 = okPlan.steps.find((s) => s.dotted === "1.1")!;
 	assert(s11.parentId === "demo-wf-1", `1.1 父 id 推导: ${s11.parentId}`);
 	assert(s11.fullId === "demo-wf-1.1", "完整 id = workflowId-dotted");
-	assert(s11.sortOrder === 1001, `sort_order 层级编码: ${s11.sortOrder}`);
+	assert(s11.sortOrder === 1001000000, `sort_order 层级编码: ${s11.sortOrder}`);
 	assert(
-		validateMod.packDotted("1.2.3") === 1002003,
-		"packDotted(1.2.3)=1002003",
+		validateMod.packDotted("1.2.3") === 1002003000,
+		"packDotted(1.2.3)=1002003000(固定 4 段补 0,前缀序)",
 	);
 
 	const badId = validateMod.validatePlan(

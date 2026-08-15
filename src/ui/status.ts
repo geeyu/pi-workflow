@@ -131,9 +131,16 @@ function truncWidth(s: string, n: number): string {
 	return out + "…";
 }
 
-/** 单条任务行:状态字形 + 内容(+ 状态标签/依赖标注);完成行删除线。 */
-function planStepLine(s: StepRow, deps: string[]): string {
-	const title = truncWidth(s.title, 64);
+/** 单条任务行:层级缩进 + 状态字形 + 点号 id + 内容(+ 状态标签/依赖标注);完成行删除线。 */
+function planStepLine(
+	s: StepRow,
+	dotted: string,
+	deps: string[],
+	depth: number,
+): string {
+	const indent = "  ".repeat(depth);
+	const id = padEnd(dotted, 6);
+	const title = truncWidth(s.title, Math.max(20, 60 - depth * 2));
 	const depText =
 		deps.length > 0
 			? ` ${WF_ANSI.dim}[依赖 ${deps.join(",")}]${WF_ANSI.reset}`
@@ -141,24 +148,28 @@ function planStepLine(s: StepRow, deps: string[]): string {
 	switch (s.status) {
 		case "running":
 		case "dispatched":
-			return `  ${WF_ANSI.yellow}${PLAN_ICON.running}${WF_ANSI.reset} ${title} ${WF_ANSI.dim}(running)${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.yellow}${PLAN_ICON.running}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.dim}(running)${WF_ANSI.reset}`;
 		case "reported":
 		case "waiting-verify":
-			return `  ${WF_ANSI.cyan}${PLAN_ICON.verify}${WF_ANSI.reset} ${title} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.cyan}${PLAN_ICON.verify}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
 		case "failed":
 		case "aborted":
-			return `  ${WF_ANSI.red}${PLAN_ICON.abnormal}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.abnormal}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
 		case "conflict":
-			return `  ${WF_ANSI.red}${PLAN_ICON.conflict}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.conflict}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
 		case "needs-fix":
-			return `  ${WF_ANSI.red}${PLAN_ICON.needsFix}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.red}${PLAN_ICON.needsFix}${WF_ANSI.reset} ${id}${title} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
 		case "done":
-			return `  ${WF_ANSI.dim}${PLAN_ICON.done}${WF_ANSI.reset} ${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.dim}${PLAN_ICON.done}${WF_ANSI.reset} ${id}${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}`;
 		case "skipped":
-			return `  ${WF_ANSI.dim}${PLAN_ICON.skipped}${WF_ANSI.reset} ${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
+			return `  ${indent}${WF_ANSI.dim}${PLAN_ICON.skipped}${WF_ANSI.reset} ${id}${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
 		default:
-			return `  ${PLAN_ICON.pending} ${title}${depText}`;
+			return `  ${indent}${PLAN_ICON.pending} ${id}${title}${depText}`;
 	}
+}
+
+function padEnd(s: string, n: number): string {
+	return s + " ".repeat(Math.max(0, n - s.length));
 }
 
 /**
@@ -210,10 +221,12 @@ export function buildPlanLines(
 		);
 		const hidden = finished.length - shownFinished.length;
 		for (const s of [...shownUnfinished, ...shownFinished]) {
+			const dotted = s.id.slice(w.id.length + 1);
+			const depth = dotted.split(".").length - 1;
 			const deps = getStepDeps(db, s.id)
 				.map((d) => d.slice(w.id.length + 1))
 				.filter((d) => /^[0-9.]+$/.test(d));
-			lines.push(planStepLine(s, deps));
+			lines.push(planStepLine(s, dotted, deps, depth));
 		}
 		if (hidden > 0) {
 			lines.push(

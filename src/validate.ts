@@ -19,8 +19,12 @@ export function packDotted(dotted: string): number {
 	if (segs.length > 4 || segs.some((s) => s >= 1000)) {
 		throw new Error(`点号层级过深或段值过大: ${dotted}(≤4 层,每层 <1000)`);
 	}
+	// 固定 4 段 × 3 位,未满段补 0:1 → 1000000,1.1 → 1001000,2 → 2000000
+	// 保证前缀序(DFS):父 < 所有子孙 < 下一个兄弟,层级树按 sort_order 即树序
 	let n = 0;
-	for (const seg of segs) n = n * 1000 + seg;
+	for (let i = 0; i < 4; i++) {
+		n = n * 1000 + (segs[i] ?? 0);
+	}
 	return n;
 }
 
