@@ -111,11 +111,33 @@ function resolveOnPath(name: string): string | null {
 
 /**
  * 解析 gittree/ghostctl 可执行文件:
- * 优先 PATH,兜底 ~/.local/bin(Ghostty 新窗口的非交互 shell 不含该路径)。
+ * 优先 PATH,兜底已知安装位(与 gittree/ghostctl skill 的内部约定一致):
+ * - gittree 本体: ~/.pi/agent/extensions/gittree/scripts/gittree.sh
+ * - ghostctl 本体: ~/.pi/skills/ghostctl/scripts/ghostctl(软链在 ~/.local/bin)
+ * Ghostty 新窗口的非交互 shell PATH 极简,不依赖其 PATH 解析。
  */
 export function resolveBin(name: "gittree" | "ghostctl"): string {
+	const known: Record<typeof name, string> = {
+		gittree: path.join(
+			os.homedir(),
+			".pi",
+			"agent",
+			"extensions",
+			"gittree",
+			"scripts",
+			"gittree.sh",
+		),
+		ghostctl: path.join(
+			os.homedir(),
+			".pi",
+			"skills",
+			"ghostctl",
+			"scripts",
+			"ghostctl",
+		),
+	};
 	const local = path.join(os.homedir(), ".local", "bin", name);
-	for (const c of [name, local]) {
+	for (const c of [name, local, known[name]]) {
 		try {
 			fs.accessSync(c, fs.constants.X_OK);
 			return c;

@@ -1059,11 +1059,7 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(sw1Res.ok, "sweep-wf-1 派发(worktree 创建)");
-	const sw1Wt = path.join(
-		scratchRepo,
-		".worktrees",
-		"gittree-wf-sweep-wf-1",
-	);
+	const sw1Wt = path.join(scratchRepo, ".worktrees", "gittree-wf-sweep-wf-1");
 	assert(fs.existsSync(sw1Wt), "sweep-wf-1 worktree 目录存在");
 	dbMod.updateStepStatus(db2, "sweep-wf-1", dbMod.STEP_STATUS.skipped);
 	// 步骤 2 派发 + 真实提交 + done
@@ -1073,11 +1069,7 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(sw2Res.ok, "sweep-wf-2 派发");
-	const sw2Wt = path.join(
-		scratchRepo,
-		".worktrees",
-		"gittree-wf-sweep-wf-2",
-	);
+	const sw2Wt = path.join(scratchRepo, ".worktrees", "gittree-wf-sweep-wf-2");
 	fs.writeFileSync(path.join(sw2Wt, "merge.txt"), "m\n");
 	execFileSync("git", ["-C", sw2Wt, "add", "-A"]);
 	execFileSync("git", ["-C", sw2Wt, "commit", "-q", "-m", "merge 2"]);
