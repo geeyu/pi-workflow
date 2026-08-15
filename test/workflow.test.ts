@@ -1965,6 +1965,215 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	fr = runCli(["fix-tab", "no-such", "auto"], { cwd: openBin, env: openEnv });
 	assert(fr.code === 1 && fr.stderr.includes("步骤不存在"), "fix-tab 未知步骤 → 退出 1");
 
+	console.log("== T25 命令注册表 + parseArgs + 退出码契约 ==");
+	const cmdMod = await import("../src/command.ts");
+	// 注册表:双入口共享、入口过滤、排序、重复注册保护
+	const statusDef = cmdMod.getCommand("status");
+	assert(
+		statusDef !== undefined && statusDef.widget === "workflow-status",
+		"getCommand(status) 命中且带 widget",
+	);
+	assert(
+		cmdMod.getCommand("poll")?.entry === "cli" &&
+			cmdMod.getCommand("context")?.entry === "pi",
+		"入口标记:poll=cli / context=pi",
+	);
+	assert(
+		cmdMod.getCommand("merge")?.entry === undefined,
+		"缺省 entry = both(双入口共享)",
+	);
+	const cliNames = cmdMod.listCommands("cli").map((d) => d.name);
+	assert(
+		cliNames.length === 27 &&
+			cliNames.includes("plan-init") &&
+			!cliNames.includes("context") &&
+			cliNames.includes("board") &&
+			cliNames.includes("fix-tab"),
+		`listCommands(cli) = 27 条(${cliNames.length})且无 pi 独有命令`,
+	);
+	const piNames = cmdMod.listCommands("pi").map((d) => d.name);
+	assert(
+		piNames.length === 20 &&
+			piNames.includes("steer") &&
+			piNames.includes("resume") &&
+			piNames.includes("resolve-conflict") &&
+			!piNames.includes("poll"),
+		`listCommands(pi) = 20 条(${piNames.length})且无 cli 独有命令`,
+	);
+	assert(
+		cmdMod.listCommands().length === 31,
+		`注册表共 31 条(${cmdMod.listCommands().length})`,
+	);
+	assert(
+		[...cliNames].sort().join(",") === cliNames.join(","),
+		"listCommands 按 name 排序",
+	);
+	let dupErr = "";
+	try {
+		cmdMod.register({
+			name: "status",
+			description: "x",
+			usage: "x",
+			run: () => {},
+		});
+	} catch (e) {
+		dupErr = (e as Error).message;
+	}
+	assert(dupErr.includes("重复注册"), "重复注册抛错");
+	// parseArgs:boolean / value / greedy / 缺值 / 未声明 flag 丢弃
+	const pa1 = cmdMod.parseArgs(
+		["wf-id", "--json", "--until", "done"],
+		[{ name: "--json" }, { name: "--until", value: true }],
+	);
+	assert(
+		pa1.positionals.join(",") === "wf-id" &&
+			pa1.bool("--json") &&
+			!pa1.bool("--all") &&
+			pa1.value("--until") === "done" &&
+			pa1.value("--all", "x") === "x",
+		"parseArgs:boolean+value 消费,缺省返回默认",
+	);
+	const pa2 = cmdMod.parseArgs(["a", "--bogus", "c"], []);
+	assert(
+		pa2.positionals.join(",") === "a,c" && !pa2.bool("--bogus"),
+		"未声明 flag 丢弃不进 positionals(与现状 positionalArgs 一致)",
+	);
+	const pa3 = cmdMod.parseArgs(
+		["wf-id", "--note", "hello", "world"],
+		[{ name: "--note", value: "greedy" }],
+	);
+	assert(
+		pa3.positionals.join(",") === "wf-id" &&
+			pa3.value("--note") === "hello world",
+		"greedy flag 消费剩余全部",
+	);
+	const pa4 = cmdMod.parseArgs(["--until"], [{ name: "--until", value: true }]);
+	assert(
+		pa4.value("--until") === undefined &&
+			pa4.value("--until", "done") === undefined,
+		"带值 flag 缺值 → undefined(与现状 flagValue 一致)",
+	);
+	const pa5 = cmdMod.parseArgs(
+		["a", "-n", "3", "b"],
+		[{ name: "-n", value: true }],
+	);
+	assert(
+		pa5.value("-n") === "3" && pa5.positionals.join(",") === "a,b",
+		"短别名 -n 消费值",
+	);
+	// resolveIdentity 收敛:command.ts 与 index.ts 再导出同源
+	const cmdIdent = cmdMod.resolveIdentity("/x/wf-demo-1.1");
+	assert(
+		cmdIdent?.workflowId === "demo" && cmdIdent?.dotted === "1.1",
+		"resolveIdentity worktree 路径解析(command.ts)",
+	);
+	assert(
+		idxMod.resolveIdentity("/x/wf-demo-1.1")?.stepId === "demo-1.1",
+		"index.ts 再导出 resolveIdentity 同源",
+	);
+	// 退出码契约:用法错误统一 3(原部分命令为 1)、未知命令保持 1
+	pr = runCli(["step"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 && pr.stderr.includes("用法: wf step <id>"),
+		`step 缺参数 → 退出 3(${pr.code})`,
+	);
+	pr = runCli(["import"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 && pr.stderr.includes("用法: wf import <plan.json>"),
+		`import 缺文件 → 退出 3(${pr.code})`,
+	);
+	pr = runCli(["verify", "demo-wf-1"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 && pr.stderr.includes("用法: wf verify <id> approve|reject"),
+		`verify 缺 action → 退出 3(${pr.code})`,
+	);
+	pr = runCli(["bogus-command"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("未知命令"),
+		`未知命令 → 退出 1(${pr.code})`,
+	);
+	pr = runCli(["context"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("未知命令"),
+		`pi 独有命令在 CLI 视为未知(${pr.code})`,
+	);
+	// help 与注册表命令齐全
+	pr = runCli(["help"], { cwd: tmpDir });
+	const helpMissing = cmdMod
+		.listCommands("cli")
+		.map((d) => d.name)
+		.filter((n) => !pr.stdout.includes(n));
+	assert(
+		pr.code === 0 && helpMissing.length === 0,
+		`wf help 含全部 ${cmdMod.listCommands("cli").length} 条 CLI 命令${helpMissing.length > 0 ? `(缺:${helpMissing.join(",")})` : ""}`,
+	);
+	// 注册表派发冒烟:新 workflow 走 status/tree/step/fail/done/verify
+	const regRepo = path.join(tmpDir, "regrepo");
+	fs.mkdirSync(regRepo, { recursive: true });
+	const regImp = orchMod.importPlan(
+		db2,
+		{
+			name: "reg-wf",
+			title: "注册表",
+			goal: "冒烟",
+			repoPath: regRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(regImp.ok, "reg-wf 导入");
+	pr = runCli(["status", "reg-wf"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("[reg-wf]"),
+		`wf status(注册表派发): ${pr.stdout.split("\n")[0] ?? ""}`,
+	);
+	pr = runCli(["status", "--json", "reg-wf"], { cwd: tmpDir });
+	const regJson = JSON.parse(pr.stdout) as Array<{ id: string }>;
+	assert(
+		pr.code === 0 && Array.isArray(regJson) && regJson[0].id === "reg-wf",
+		"wf status --json 结构(注册表派发)",
+	);
+	pr = runCli(["tree", "reg-wf"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("1 a [worker]"),
+		`wf tree(注册表派发): ${pr.stdout.trim()}`,
+	);
+	pr = runCli(["step", "reg-wf-1"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("[reg-wf-1]"),
+		"wf step(注册表派发)",
+	);
+	pr = runCli(["fail", "reg-wf-1", "冒烟失败"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → failed"),
+		`wf fail(注册表派发): ${pr.stdout.trim()}`,
+	);
+	pr = runCli(
+		["done", "reg-wf-1", '{"summary":"s","tests":"none"}'],
+		{ cwd: tmpDir },
+	);
+	assert(
+		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → reported"),
+		`wf done(注册表派发): ${pr.stdout.trim()}`,
+	);
+	pr = runCli(["verify", "reg-wf-1", "approve"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("✓ reg-wf-1 → done"),
+		`wf verify approve(注册表派发): ${pr.stdout.trim()}`,
+	);
+	pr = runCli(["verify", "reg-wf-1", "reject", "原因"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("✗"),
+		`verify 已 done 步骤 reject → 退出 1(${pr.code})`,
+	);
+	// UsageError 具体提示:detail + 用法行
+	pr = runCli(["poll", "no-such-wf", "--timeout", "2"], { cwd: tmpDir });
+	assert(
+		pr.code === 3 && pr.stderr.includes("workflow 不存在"),
+		"poll 不存在 workflow → 退出 3(UsageError detail)",
+	);
+
 	// 清理
 	try {
 		db2.close();
