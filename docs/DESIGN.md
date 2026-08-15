@@ -28,8 +28,8 @@
 | 任务 id | **层级化点号 id**(`1`、`1.1`、`1.2.3`),层级即 id 前缀,worktree 命名 `wf-<workflow>-<dotted>` |
 | gate | **执行前设定(期望/验收标准),执行后更新(子任务回报 → 编排者核对)** |
 | worktree | 每步一个,`gittree create wf-<workflow>-<step>`,并行任务同 base_sha |
-| 子任务形态 | 可见交互式子 pi,`ghostctl new-tab --window-id <绑定窗口> --cwd <worktree> --command "pi" --input <短指引>`,一个任务一个 tab |
-| 任务传递 | **任务 markdown 写入数据库**(workflow_steps.task_md,派发时冻结副本入 workflow_attempts.task_md),`--input` 只注入短指引(身份 + 指向 `/wf context`),杜绝长文本粘贴错乱 |
+| 子任务形态 | 可见交互式子 pi,`ghostctl new-tab --window-id <专属窗口> --at-end --no-focus --cwd <worktree> --command "env … pi '<pointer>'"`,一个任务一个 tab;首个 workflow 专属窗口由首次派发 `new-window --no-focus` 创建 |
+| 任务传递 | **任务 markdown 写入数据库**(workflow_steps.task_md,派发时冻结副本入 workflow_attempts.task_md),pointer 只带短指引,经 **pi 位置参数** `pi '<pointer>'` 交付(pi 在 UI 就绪后自动发送,零注入/盲等/回车),杜绝长文本粘贴错乱 |
 | 上下文 | **不复用父会话**:新会话,子 agent 在 worktree 内自主探索、自己发挥 |
 | 完成回报 | 子 pi 内 `/wf done <stepId> <JSON>` 写库;监听端轮询 `ghostctl layout --json` 按 tab 标题感知存活 |
 | 迭代批次 | wave 内并行/串行组合;wave 全部终态 → 串行 merge → 冲突解决 → 继续拆下一 wave |
@@ -40,7 +40,7 @@
 | 积木 | 用途 | 本插件怎么用 |
 | --- | --- | --- |
 | `gittree` 插件 | worktree 创建/合并/清理/占用检测 | `gittree create/merge/clean` 照用 |
-| `ghostctl` | Ghostty 布局查询/建 tab/关 tab/输入 | 派发开 tab(`new-tab --window-id --cwd --command --input`)、监听轮询、steer 注入文本 |
+| `ghostctl` | Ghostty 布局查询/建窗口/建 tab/关 tab/输入 | 派发开专属窗口(`new-window --no-focus`)与开 tab(`new-tab --window-id --at-end --no-focus --cwd --command`)、监听轮询、steer 注入文本 |
 | `ghostty-fork` 扩展(`/fork-split`) | 分屏开子 pi 复用当前会话 | 可作为手动替代路径(用户想复用上下文时手动用) |
 | 官方 `subagent` 示例 | 无头子进程方案 | 保留为可选的 headless 模式(§5 决策 8,未实现),不阻塞主路线 |
 | `ctx.ui.setTitle` / 环境变量(PI_WF_*) | 设置终端标题 / 传递身份 | 子 pi 身份绑定:标题供监听匹配,env 供 /wf context 定位任务 |
@@ -448,7 +448,7 @@ wave N 拆解(并行/串行组合,视依赖而定)
 
 **1. 编排者是主 pi 的主 agent,不是无头守护进程**:编排流程(1 目标 → 2 recon → 3 plan → 4 dispatch → 5 核对 → 6 迭代 → 7 目标把关)由主 agent 借助 `workflow` 工具与 `/wf` 命令推进;插件只提供原语(落库、派发、监听、核对、合并),不抢主 agent 的决策权 —— 这保证"根据情况拆分并行/串行"的灵活性。
 **2. 子任务可见、可干预**:每个子任务是交互式子 pi 的 Ghostty tab(非无头进程),用户肉眼可见处理情况、可随时切过去 steer;标题统一 `wf <workflow>/<dotted>`(子 pi 扩展在 `session_start` 调 `ctx.ui.setTitle`),供监听匹配。
-**3. 任务 markdown 存库,子 agent 自主发挥(用户决策 2/11)**:子 pi 是**全新会话**;编排者把渲染好的任务 markdown 写入 `workflow_steps.task_md`(模板注入依赖结果),`--input` 只注入**短指引**(长文本经终端粘贴易错乱,故存库自取);子 agent 在 worktree 内自主探索、自己发挥。
+**3. 任务 markdown 存库,子 agent 自主发挥(用户决策 2/11)**:子 pi 是**全新会话**;编排者把渲染好的任务 markdown 写入 `workflow_steps.task_md`(模板注入依赖结果),pointer 只带**短指引**(长文本经终端粘贴易错乱,故存库自取),经 pi 位置参数交付;子 agent 在 worktree 内自主探索、自己发挥。
 
 ```text
 派发一个子任务(dispatch.ts):
@@ -456,12 +456,16 @@ wave N 拆解(并行/串行组合,视依赖而定)
   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
      → 写入 workflow_steps.task_md;事件 step_dispatched
   3. 组装短指引 pointer(身份 + 指向 /wf context + 回报方式)→ 写入 workflow_attempts.pointer
-  4. ghostctl new-tab --window-id <绑定窗口> --cwd <worktree> \
-        --command "env PI_WF_WORKFLOW=<workflowId> PI_WF_STEP=<dotted> pi" \
-        --input "<短指引>"
+  4. 专属窗口:首次派发 ghostctl new-window --cwd <repo> --no-focus(后台创建,不抢焦点),
+     窗口 id 存 workflow_metadata.ghostty_window_id;之后固定复用(绝不借用用户焦点窗口)
+  5. ghostctl new-tab --window-id <专属窗口> --at-end --no-focus --cwd <worktree> \
+        --command "env PI_WF_WORKFLOW=<workflowId> PI_WF_STEP=<dotted> pi '<pointer>'"
+     (--at-end:先切到窗口末尾再建,子任务 tab 按派发顺序排尾,不乱插;
+      --no-focus:创建后恢复原终端焦点,不打扰当前开发;
+      pointer 为 pi 位置参数,由 pi 自身在 UI 就绪后自动发送,无 --input 注入/盲等/补回车)
      (事件 step_tab_opened,记录 tab_id)
-  5. 子 pi 扩展读环境变量绑定身份,session_start 时 setTitle = "wf <workflow>/<dotted>"
-  6. 子 agent 运行 /wf context → 读 DB(workflow_steps.task_md / 本次派发 workflow_attempts.task_md 冻结版)
+  6. 子 pi 扩展读环境变量绑定身份,session_start 时 setTitle = "wf <workflow>/<dotted>"
+  7. 子 agent 运行 /wf context → 读 DB(workflow_steps.task_md / 本次派发 workflow_attempts.task_md 冻结版)
 ```
 
 **4. gate = 执行前设定、执行后更新(用户决策 1)**:派发时把 `expectations`(验收标准)写进任务 markdown;子任务回报 `/wf done <JSON>`;编排者(或人工 `/wf verify`)对照期望核对 → `done` / `needs-fix`;`gate=1` 的步骤 reported 后必须人工 `/wf verify` 才能进入 merge。
@@ -487,7 +491,7 @@ monitor.ts 后台任务(编排者扩展内):
 ### 6.1 任务存库,子 pi 自取(用户决策 11)
 
 - 编排者派发时把渲染好的任务 markdown 写入 `workflow_steps.task_md`(模板注入依赖结果),每次派发在 `workflow_attempts.task_md` 留冻结副本(版本可追溯);
-- 子 pi 首条消息(`--input`)只注入**短指引**,不做长文本传输:
+- 子 pi 首条消息(pi 位置参数)只带**短指引**,不做长文本传输:
 
 ```text
 [wf] 任务已就绪
@@ -532,8 +536,10 @@ workflow: add-redis-cache | step: 1.1 | wave: 2
 
 ```text
 dispatch:gittree create wf-<workflow>-<dotted>(基于 base_sha,事件 worktree_created)
-        task_md 渲染入库 + 短指引注入 + ghostctl new-tab 到绑定窗口(事件 step_dispatched / step_tab_opened)
+        task_md 渲染入库 + pointer 位置参数交付 + ghostctl new-tab 到专属窗口(事件 step_dispatched / step_tab_opened)
 成功:子 pi 内 git commit → 编排者侧 /wf merge(事件 worktree_merged)
+        merge --delete 已删 worktree+分支;wave 合并后对全部步骤兜底清扫残留
+        (skipped 步骤不合并,同样 gittree clean --branch --force 清理,事件 worktree_cleaned)
 失败/重派:gittree clean <name> --branch --force 重建(事件 worktree_cleaned)
 清理:/wf clean → gittree clean all --yes(仅 gittree- 前缀,占用中自动跳过)
 ```
@@ -671,7 +677,7 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 8. **目标把关**:workflow 结束前必须核对最初目标全部达成(verifying → completed / gap wave),否则不允许结束;
 9. 看板已实现(§8.1/8.2):终端 5 列 + HTML 导出;思源同步规划中;
 10. **不参考 pi-dynamic-workflows**:不符合要求,自研初版完成后再看生态;
-11. **任务传递**:任务 markdown 写入数据库(`workflow_steps.task_md` 当前版 + `workflow_attempts.task_md` 冻结版),`--input` 只注入短指引,子 agent 经 `/wf context` 自取任务;
+11. **任务传递**:任务 markdown 写入数据库(`workflow_steps.task_md` 当前版 + `workflow_attempts.task_md` 冻结版),pointer 只带短指引,经 pi 位置参数 `pi '<pointer>'` 交付(pi 启动即自动发送),子 agent 经 `/wf context` 自取任务;
 12. **监听轮询间隔**:5s(可配);
 13. **tab 生命周期**:子任务完成不自动关 tab(留给人看);`wf cleanup` 统一关终态 tab + 清 .pi-glla(合并前置);
 14. **headless 模式**:设计保留(§5 决策 8),尚未实现;当前子任务形态为可见 tab。

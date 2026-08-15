@@ -21,6 +21,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { StepRow } from "../src/core/db.ts";
+import type { NotifyItem } from "../src/observe/monitor.ts";
 
 // 必须在 import core/db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -390,7 +391,7 @@ async function main(): Promise<void> {
 	);
 	fs.writeFileSync(
 		fakeGhostctl,
-		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-test-1","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-xyz)"\nfi\n`,
+		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccddeeff","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbccddeeff)"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-xyz)"\n    ;;\nesac\n`,
 		{ mode: 0o755 },
 	);
 	fs.writeFileSync(ghostctlLog, "");
@@ -402,16 +403,28 @@ async function main(): Promise<void> {
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
 	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
-	assert(boundWin === "win-test-1", "workflow 绑定焦点窗口(meta)");
+	assert(
+		boundWin === "tab-group-aabbccddeeff",
+		"未绑定 → new-window 创建专属窗口并绑定(meta)",
+	);
 	const ghostctlCalls = fs
 		.readFileSync(ghostctlLog, "utf-8")
 		.split("\n")
 		.filter(Boolean);
+	const ghostctlRaw = fs.readFileSync(ghostctlLog, "utf-8");
 	assert(
-		ghostctlCalls.some(
-			(l) => l.includes("new-tab") && l.includes("--window-id win-test-1"),
-		),
-		`new-tab 按窗口 id 定位(${ghostctlCalls.join(" | ")})`,
+		ghostctlRaw.includes("new-window") &&
+			ghostctlRaw.includes("--no-focus") &&
+			ghostctlRaw.includes(`--cwd ${scratchRepo}`),
+		`new-window 后台创建(--no-focus + --cwd 仓库:${ghostctlCalls.join(" | ")})`,
+	);
+	// 用整段日志断言(pointer 位置参数内含换行,按行切分会拆开参数)
+	assert(
+		ghostctlRaw.includes("new-tab") &&
+			ghostctlRaw.includes("--window-id tab-group-aabbccddeeff") &&
+			ghostctlRaw.includes("--at-end") &&
+			ghostctlRaw.includes("--no-focus"),
+		`new-tab 按窗口 id 定位 + 末尾顺序 + 不抢焦点(${ghostctlCalls.join(" | ")})`,
 	);
 	assert(
 		!ghostctlCalls.some((l) => l.includes("--window ")),
@@ -505,6 +518,10 @@ async function main(): Promise<void> {
 	assert(
 		!lockCalls.some((l) => l.includes("--window ")),
 		"锁定窗口不传 --window 序号",
+	);
+	assert(
+		!lockCalls.some((l) => l.includes("new-window")),
+		"已绑定窗口不重复创建(无 new-window)",
 	);
 
 	console.log("== T6c 绑定窗口已关闭 → 报错,绝不静默回退焦点窗口 =");
@@ -786,7 +803,7 @@ async function main(): Promise<void> {
 	const fakeGone = path.join(tmpDir, "fake-ghostctl-gone.sh");
 	fs.writeFileSync(
 		fakeGone,
-		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\necho '{"windows":[{"id":"win-test-1","tabs":[{"terminals":[]}]}]}'\n`,
+		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\necho '{"windows":[{"id":"tab-group-aabbccddeeff","tabs":[{"terminals":[]}]}]}'\n`,
 		{ mode: 0o755 },
 	);
 	const gone1 = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
@@ -1017,6 +1034,64 @@ async function main(): Promise<void> {
 		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
 		"merge --delete 清理 worktree",
 	);
+	// skipped 步骤:不合并但 worktree/分支一并清理(合并主线后不留 gittree 残留)
+	const sweepWf = orchMod.importPlan(
+		db2,
+		{
+			name: "sweep-wf",
+			title: "清理",
+			goal: "测试 skipped 清理",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "跳过", agent: "worker", task: "skip" },
+				{ id: "2", title: "合并", agent: "worker", task: "merge" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(sweepWf.ok, "sweep-wf 导入");
+	const swWf = dbMod.getWorkflow(db2, "sweep-wf")!;
+	// 步骤 1 派发后人工 skip(worktree 真实存在)
+	const sw1 = dbMod.getStep(db2, "sweep-wf-1")!;
+	const sw1Res = await dispatchMod.dispatchStep(db2, swWf, sw1, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeGhostctl,
+	});
+	assert(sw1Res.ok, "sweep-wf-1 派发(worktree 创建)");
+	const sw1Wt = path.join(
+		scratchRepo,
+		".worktrees",
+		"gittree-wf-sweep-wf-1",
+	);
+	assert(fs.existsSync(sw1Wt), "sweep-wf-1 worktree 目录存在");
+	dbMod.updateStepStatus(db2, "sweep-wf-1", dbMod.STEP_STATUS.skipped);
+	// 步骤 2 派发 + 真实提交 + done
+	const sw2 = dbMod.getStep(db2, "sweep-wf-2")!;
+	const sw2Res = await dispatchMod.dispatchStep(db2, swWf, sw2, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeGhostctl,
+	});
+	assert(sw2Res.ok, "sweep-wf-2 派发");
+	const sw2Wt = path.join(
+		scratchRepo,
+		".worktrees",
+		"gittree-wf-sweep-wf-2",
+	);
+	fs.writeFileSync(path.join(sw2Wt, "merge.txt"), "m\n");
+	execFileSync("git", ["-C", sw2Wt, "add", "-A"]);
+	execFileSync("git", ["-C", sw2Wt, "commit", "-q", "-m", "merge 2"]);
+	dbMod.updateStepStatus(db2, "sweep-wf-2", dbMod.STEP_STATUS.done);
+	const swept = await monitorMod.mergeWave(db2, swWf, 1);
+	assert(swept.ok && swept.merged.length === 1, "sweep-wf 合并完成(仅步骤 2)");
+	assert(
+		!fs.existsSync(sw1Wt) && !fs.existsSync(sw2Wt),
+		"skipped 步骤 worktree 已清理 + 合并步骤已清理",
+	);
+	const sweepEvt = dbMod
+		.getEvents(db2, { stepId: "sweep-wf-1", limit: 20 })
+		.some((e) => e.type === "worktree_cleaned");
+	assert(sweepEvt, "skipped 清理触发 worktree_cleaned 事件");
 
 	console.log("== T13 retry 上下文注入 / max_retries ==");
 	// ready-wf-2 依赖 1.1/1.2(已 done),标 failed 后重派
@@ -1309,7 +1384,7 @@ async function main(): Promise<void> {
 	dbMod.updateStepStatus(db2, "notify-wf-1.5", dbMod.STEP_STATUS.needsFix, {
 		error: "x",
 	});
-	const notifyFilter = (arr: monitorMod.NotifyItem[]) =>
+	const notifyFilter = (arr: NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-wf");
 	const items1 = notifyFilter(monitorMod.detectStateChanges(db2));
 	assert(
@@ -1325,7 +1400,7 @@ async function main(): Promise<void> {
 		"conflict",
 		"needs-fix",
 	]) {
-		assert(stepKinds.includes(k), `检测到 ${k} 事件`);
+		assert((stepKinds as string[]).includes(k), `检测到 ${k} 事件`);
 	}
 	assert(
 		items1.every((i) => i.text.includes("/wf ")),
@@ -1385,7 +1460,7 @@ async function main(): Promise<void> {
 	assert(doneWf.ok, "notify-done-wf 导入");
 	dbMod.updateStepStatus(db2, "notify-done-wf-1", dbMod.STEP_STATUS.done);
 	dbMod.updateStepStatus(db2, "notify-done-wf-2", dbMod.STEP_STATUS.done);
-	const doneFilter = (arr: monitorMod.NotifyItem[]) =>
+	const doneFilter = (arr: NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-done-wf");
 	const wd = doneFilter(monitorMod.detectStateChanges(db2));
 	assert(
@@ -1459,7 +1534,7 @@ async function main(): Promise<void> {
 			dbMod.STEP_STATUS.reported,
 		);
 	}
-	const overFilter = (arr: monitorMod.NotifyItem[]) =>
+	const overFilter = (arr: NotifyItem[]) =>
 		arr.filter((i) => i.workflowId === "notify-over-wf");
 	const overItems = overFilter(monitorMod.detectStateChanges(db2));
 	assert(overItems.length === 7, `7 个事件待通知(${overItems.length})`);
@@ -2014,8 +2089,11 @@ async function main(): Promise<void> {
 	);
 	const openLogRaw = fs.readFileSync(openLog, "utf-8");
 	assert(
-		openLogRaw.includes("new-tab") && openLogRaw.includes("--window-id win-9"),
-		"openStepTab 复用绑定窗口(--window-id)",
+		openLogRaw.includes("new-tab") &&
+			openLogRaw.includes("--window-id win-9") &&
+			openLogRaw.includes("--at-end") &&
+			openLogRaw.includes("--no-focus"),
+		"openStepTab 复用绑定窗口 + 末尾顺序 + 不抢焦点",
 	);
 	// pointer 改为 pi 位置参数交付:--command 内嵌单引号指引;不再 --input 注入、不再补回车
 	assert(

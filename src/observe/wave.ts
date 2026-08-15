@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import {
 	EVT,
 	STEP_STATUS,
+	type StepRow,
 	type WorkflowRow,
 	addEvent,
 	buildUpdate,
@@ -83,8 +84,40 @@ export async function mergeWave(
 	const merged: string[] = [];
 	const conflicts: string[] = [];
 
+	/** 兜底清理:目录仍在则 gittree clean --branch --force(删 worktree+分支);失败仅记事件不阻断 */
+	const sweepWorktree = async (s: StepRow): Promise<void> => {
+		if (!s.worktree) return;
+		const wtDir = worktreePath(
+			workflow.repo_path,
+			workflow.id,
+			s.id.slice(workflow.id.length + 1),
+		);
+		if (!fs.existsSync(wtDir)) return; // 已清理,无需处理
+		const res = await run(
+			gittreeBin,
+			["clean", s.worktree, "--branch", "--force"],
+			workflow.repo_path,
+		);
+		addEvent(db, {
+			workflowId: workflow.id,
+			stepId: s.id,
+			type: EVT.worktreeCleaned,
+			payload:
+				res.code === 0
+					? { worktree: s.worktree, mergeSweep: true }
+					: {
+							worktree: s.worktree,
+							mergeSweep: true,
+							error: (res.stderr || res.stdout).slice(0, 300),
+						},
+		});
+	};
+
 	for (const s of ordered) {
-		if (s.status === STEP_STATUS.skipped || !s.worktree) {
+		if (!s.worktree) continue;
+		if (s.status === STEP_STATUS.skipped) {
+			// skipped:不合并,但 worktree/分支一并清掉(合并主线后不留 gittree 残留)
+			await sweepWorktree(s);
 			continue;
 		}
 		// 幂等:worktree 目录已不存在(上次 merge --delete 已清理)→ 视为已合并跳过
@@ -144,6 +177,11 @@ export async function mergeWave(
 	}
 
 	if (conflicts.length === 0) {
+		// 合并全部成功:对 wave 内所有步骤做目录残留兜底清理
+		// (覆盖 merge --delete 未删干净 / 已合并但目录残留等场景)
+		for (const s of ordered) {
+			await sweepWorktree(s);
+		}
 		buildUpdate(
 			db,
 			"workflow_waves",

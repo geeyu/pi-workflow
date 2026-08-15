@@ -83,7 +83,17 @@ export async function openStepTab(
 	const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
 
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()} ${shellQuote(pointer)}`;
-	const tabArgs = ["new-tab", "--cwd", wtPath, "--command", cmd];
+	const tabArgs = [
+		"new-tab",
+		"--cwd",
+		wtPath,
+		"--command",
+		cmd,
+		// 顺序开 tab(先切到窗口末尾再创建,插在末尾,不乱插)
+		"--at-end",
+		// 后台创建,不抢焦点(恢复原终端焦点,不打扰当前开发)
+		"--no-focus",
+	];
 	const win = await resolveWorkflowWindow(
 		db,
 		ghostctlBin,
@@ -172,12 +182,16 @@ function parseLayout(raw: string): WfWindowInfo[] | null {
 	}
 }
 
+/** new-window 输出的窗口 id(与 new-tab 同构,稳定) */
+const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
+
 /**
- * workflow 绑定窗口(设计:一次 workflow 一个完整窗口流程):
- * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata.ghostty_window_id),
- * 之后所有子任务 tab 固定开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),
- * 不依赖窗口序号/焦点,窗口开合不会漂移;
- * 绑定窗口已关闭则返回错误,绝不静默回退焦点窗口。
+ * workflow 绑定窗口(设计:一次 workflow 一个专属窗口):
+ * 首次派发 ghostctl new-window --no-focus 创建专属窗口(绝不借用用户的焦点窗口),
+ * 创建所得窗口 id 存 workflow_metadata.ghostty_window_id;之后所有子任务 tab 固定
+ * 开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),不依赖窗口序号/焦点,
+ * 窗口开合不会漂移;
+ * 绑定窗口已关闭则返回错误,绝不静默回退(重建由 /wf rebind-window 或清 meta 重试)。
  */
 async function resolveWorkflowWindow(
 	db: DatabaseSync,
@@ -185,34 +199,49 @@ async function resolveWorkflowWindow(
 	cwd: string,
 	workflowId: string,
 ): Promise<{ ok: true; winId: string } | { ok: false; error: string }> {
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) {
-		return {
-			ok: false,
-			error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
-		};
-	}
-	const windows = parseLayout(res.stdout);
-	if (!windows || windows.length === 0) {
-		return { ok: false, error: "ghostctl layout 无窗口信息" };
-	}
-
 	const bound = getWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY) as
 		| string
 		| undefined;
 	if (bound) {
-		// 已锁定 → 直接按 id 返回(不再查焦点);窗口已关闭 → 报错,绝不静默回退
-		if (windows.some((w) => w.id === bound)) return { ok: true, winId: bound };
+		// 已绑定 → 查 layout 验证窗口仍存在;已关闭 → 报错,绝不静默回退
+		const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+		if (res.code !== 0) {
+			return {
+				ok: false,
+				error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
+			};
+		}
+		const windows = parseLayout(res.stdout);
+		if (windows && windows.some((w) => w.id === bound)) {
+			return { ok: true, winId: bound };
+		}
 		return {
 			ok: false,
 			error: `绑定窗口 ${bound} 已关闭,无法定位;请 /wf rebind-window 重新绑定当前焦点窗口,或清除 workflow_metadata.ghostty_window_id 后重试(绝不回退焦点窗口)`,
 		};
 	}
 
-	// 未绑定 → 锁定当前焦点窗口(首次派发语义)
-	const target = windows.find((w) => w.front) ?? windows[0];
-	setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, target.id);
-	return { ok: true, winId: target.id };
+	// 未绑定 → 创建 workflow 专属窗口(后台创建,不抢焦点,不打扰当前开发)
+	const res = await run(
+		ghostctlBin,
+		["new-window", "--cwd", cwd, "--no-focus"],
+		cwd,
+	);
+	if (res.code !== 0) {
+		return {
+			ok: false,
+			error: `ghostctl new-window 失败: ${res.stderr || res.stdout}`,
+		};
+	}
+	const m = WINDOW_ID_RE.exec(res.stdout);
+	if (!m) {
+		return {
+			ok: false,
+			error: `new-window 输出无法解析窗口 id: ${res.stdout.slice(0, 200)}`,
+		};
+	}
+	setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, m[1]);
+	return { ok: true, winId: m[1] };
 }
 
 /**
