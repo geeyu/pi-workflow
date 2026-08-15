@@ -83,7 +83,7 @@ workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 │   └── references/     # 按需加载:命令参考/编排流程/数据模型/排查手册
 ├── test/
 │   └── workflow.test.ts # 验收测试(T1-T25b,276 断言)
-├── docs/               # 设计/评审记录(arch-review/arch-refactor/review-arch 等)
+├── docs/               # 有效文档(arch-refactor 实现契约 / ux-research 调研);历史过程产物在 docs/archive/
 ├── DESIGN.md           # 本设计文档
 ├── README.md           # 使用说明
 └── package.json        # pi.extensions 入口声明 + npm test
