@@ -376,13 +376,51 @@ export function run(
 	});
 }
 
-/** 与官方 subagent 示例一致:优先复用当前进程的 node + pi 脚本(绝对路径),退化到 PATH 上的 pi */
+/**
+ * 子 pi 启动命令(绝对路径,子 tab 的非交互 shell PATH 不可靠):
+ * - 运行在 pi 插件内(argv[1] 为 pi 入口,如 dist/cli.js):复用当前进程的 node + pi 脚本;
+ * - 运行在 wf CLI 下(argv[1] 为 src/cli.ts):解析真实 pi 二进制
+ *   (env PI_BIN → PATH → ~/.local/bin),否则子 tab 会启动 wf CLI 自身(打印用法即退出,tab 秒关)。
+ */
 export function piInvocation(): string {
 	const script = process.argv[1];
 	if (script && !script.startsWith("/$bunfs/") && fs.existsSync(script)) {
-		return `"${process.execPath}" "${script}"`;
+		const isWfCli =
+			path.basename(script) === "cli.ts" &&
+			script.includes(`${path.sep}extensions${path.sep}workflow${path.sep}`);
+		if (!isWfCli) {
+			return `"${process.execPath}" "${script}"`;
+		}
 	}
-	return "pi";
+	const found =
+		process.env.PI_BIN ??
+		resolveOnPath("pi") ??
+		path.join(os.homedir(), ".local", "bin", "pi");
+	if (process.env.PI_BIN) {
+		// 显式覆盖:信任调用方,不做存在性校验
+		return `"${found}"`;
+	}
+	try {
+		fs.accessSync(found, fs.constants.X_OK);
+		return `"${found}"`;
+	} catch {
+		return "pi";
+	}
+}
+
+/** 在 PATH 上找可执行文件(返回绝对路径;找不到返回 null) */
+function resolveOnPath(name: string): string | null {
+	for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+		if (!dir) continue;
+		const candidate = path.join(dir, name);
+		try {
+			fs.accessSync(candidate, fs.constants.X_OK);
+			return candidate;
+		} catch {
+			/* 尝试下一个 */
+		}
+	}
+	return null;
 }
 
 /**

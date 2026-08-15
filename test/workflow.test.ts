@@ -254,6 +254,30 @@ async function main(): Promise<void> {
 
 	console.log("== T4 renderTaskMd + injectDeps ==");
 	const dispatchMod = await import("../src/dispatch.ts");
+	// piInvocation:pi 插件上下文复用当前 node + 脚本;wf CLI 上下文解析真实 pi 二进制
+	const savedArgv = process.argv[1];
+	const savedPiBin = process.env.PI_BIN;
+	process.argv[1] = "/x/pi/dist/cli.js";
+	delete process.env.PI_BIN;
+	const inPlugin = dispatchMod.piInvocation();
+	assert(
+		inPlugin.includes("node") && inPlugin.includes("dist/cli.js"),
+		`pi 插件上下文复用 node+pi 入口(${inPlugin})`,
+	);
+	process.argv[1] = "/x/workflow/src/cli.ts";
+	const cliNoPiBin = dispatchMod.piInvocation();
+	assert(
+		cliNoPiBin === "pi" || cliNoPiBin.includes("/bin/pi"),
+		`wf CLI 上下文不启动自身(${cliNoPiBin})`,
+	);
+	process.env.PI_BIN = "/custom/pi";
+	assert(
+		dispatchMod.piInvocation() === '"/custom/pi"',
+		"PI_BIN 显式覆盖",
+	);
+	if (savedPiBin === undefined) delete process.env.PI_BIN;
+	else process.env.PI_BIN = savedPiBin;
+	process.argv[1] = savedArgv;
 	// 先让步骤 1 完成(供 1.1 注入)
 	dbMod.updateStepReport(db2, "demo-wf-1", {
 		summary: "方案已确认:Redis 直连",
