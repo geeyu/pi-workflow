@@ -1,0 +1,43 @@
+{
+	"name": "wf-fix-window",
+	"title": "修复:窗口锁定按 id 定位 + skill 路径注册错误",
+	"goal": "修复 workflow 插件的两个问题:① 子任务 tab 窗口锁定必须用窗口 id 定位(不依赖焦点窗口,ghostctl 已支持 --window-id);② skill 路径注册错误(当前注册到不存在的 src/skill,应为 ../skill)",
+	"repoPath": "/Users/geeyu/.pi/agent/extensions/workflow",
+	"wave": 1,
+	"waveNote": "第一波:方案 + 两个并行实现 + gate 评审",
+	"steps": [
+		{
+			"id": "1",
+			"title": "输出修复方案",
+			"agent": "planner",
+			"task": "阅读 {{root}}/src/dispatch.ts 的 resolveWorkflowWindow 与 new-tab 调用、{{root}}/src/index.ts 的 skillPaths 注册与 EXT_DIR 定义、{{root}}/src/pi-types.d.ts 与 {{root}}/DESIGN.md §5.5,输出修复方案:窗口锁定如何按 id 定位(ghostctl new-tab 已支持 --window-id 参数,可执行 ghostctl new-tab --help 确认);列出将改动的文件与关键代码点"
+		},
+		{
+			"id": "1.1",
+			"title": "实现窗口锁定按 id 定位",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 改造 src/dispatch.ts:① resolveWorkflowWindow 不再返回窗口序号,改为返回/锁定窗口 id(workflow_metadata.ghostty_window_id);② 已锁定窗口 id 存在时直接按 id 返回(不再查焦点);③ 绑定窗口关闭时报错(提示 /wf rebind-window 或清除锁定),绝不静默回退焦点窗口;④ new-tab 调用改为传 --window-id <id>;⑤ 首次派发时锁定当前焦点窗口 id。确保 git 提交。",
+			"expectations": ["resolveWorkflowWindow 返回窗口 id 而非序号", "new-tab 参数含 --window-id 而非 --window", "绑定窗口消失时报错而非回退焦点", "workflow_metadata.ghostty_window_id 首次派发时写入"],
+			"maxRetries": 1
+		},
+		{
+			"id": "1.2",
+			"title": "修复 skill 路径注册",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "修复 {{root}}/src/index.ts 的 resources_discover 中 skillPaths 注册:EXT_DIR 指向 src/ 目录,skill 实际在仓库根的 skill/ 目录,应注册为 path.resolve(EXT_DIR, '..', 'skill')。改完运行测试 node --experimental-strip-types test/workflow.test.ts 确认 129 条全过。确保 git 提交。",
+			"expectations": ["skillPaths 指向仓库根 skill/ 目录(非 src/skill)", "测试全绿"],
+			"maxRetries": 1
+		},
+		{
+			"id": "2",
+			"title": "整体评审",
+			"agent": "reviewer",
+			"deps": ["1.1", "1.2"],
+			"gate": true,
+			"task": "评审 {{steps.1.1.summary}} 与 {{steps.1.2.summary}} 的实现:① 窗口锁定是否彻底移除焦点依赖(检查 resolveWorkflowWindow 与 new-tab 调用);② skill 路径是否指向存在的目录;③ 测试是否通过。逐条核对期望,输出结论。",
+			"expectations": ["窗口锁定不再依赖焦点窗口", "skill 路径有效", "测试通过"]
+		}
+	]
+}
