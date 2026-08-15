@@ -609,7 +609,14 @@ export async function dispatchStep(
 	);
 	if (!win.ok) {
 		// 绑定窗口不可用(含已关闭)→ 中止派发,绝不无窗口参数裸开 tab
-		abortDispatch(db, attempt.id, step, workflow.id, "绑定窗口不可用", win.error);
+		abortDispatch(
+			db,
+			attempt.id,
+			step,
+			workflow.id,
+			"绑定窗口不可用",
+			win.error,
+		);
 		return { ok: false, stepId: step.id, worktree: wtName, error: win.error };
 	}
 	tabArgs.splice(1, 0, "--window-id", win.winId);

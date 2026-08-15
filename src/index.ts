@@ -1049,10 +1049,10 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	// ── /wf goal-check [approve|reject <原因>] ────────────
 	function cmdGoalCheck(ctx: ExtensionCommandContext, args: string[]): void {
 		const wfFlagIdx = args.indexOf("--workflow");
-		const explicitWf =
-			wfFlagIdx !== -1 ? args[wfFlagIdx + 1] : undefined;
+		const explicitWf = wfFlagIdx !== -1 ? args[wfFlagIdx + 1] : undefined;
 		const filtered = args.filter(
-			(a, i) => !(a === "--workflow" || (wfFlagIdx !== -1 && i === wfFlagIdx + 1)),
+			(a, i) =>
+				!(a === "--workflow" || (wfFlagIdx !== -1 && i === wfFlagIdx + 1)),
 		);
 		const [action, ...rest] = filtered;
 		const wfId = resolveWorkflowId(ctx, explicitWf);
@@ -1151,8 +1151,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	// ── /wf resume(暂停后恢复)─────────────────────────────
 	function cmdResume(ctx: ExtensionCommandContext, args: string[]): void {
 		const wfFlagIdx = args.indexOf("--workflow");
-		const explicitWf =
-			wfFlagIdx !== -1 ? args[wfFlagIdx + 1] : undefined;
+		const explicitWf = wfFlagIdx !== -1 ? args[wfFlagIdx + 1] : undefined;
 		const wfId = resolveWorkflowId(
 			ctx,
 			explicitWf ?? args.find((a) => a !== "--workflow"),
