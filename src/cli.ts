@@ -1071,25 +1071,30 @@ async function cmdPoll(args: string[]): Promise<void> {
 	const wfId = resolveWorkflowId(wfArg);
 	if (!wfId) {
 		console.error("✗ 无法确定 workflow(传 id 或在仓库根目录运行)");
-		process.exit(3);
+		process.exitCode = 3;
+		return;
 	}
 	if (!getWorkflow(db, wfId)) {
 		console.error(`✗ workflow 不存在: ${wfId}`);
-		process.exit(3);
+		process.exitCode = 3;
+		return;
 	}
 	if (!POLL_TARGETS.has(until)) {
 		console.error(
 			`✗ --until 非法: ${until}(合法取值: ${[...POLL_TARGETS].join("/")})`,
 		);
-		process.exit(3);
+		process.exitCode = 3;
+		return;
 	}
 	if (!Number.isFinite(timeout) || timeout <= 0) {
 		console.error("✗ --timeout 必须为正数秒");
-		process.exit(3);
+		process.exitCode = 3;
+		return;
 	}
 	if (!Number.isFinite(interval) || interval <= 0) {
 		console.error("✗ --interval 必须为正数秒");
-		process.exit(3);
+		process.exitCode = 3;
+		return;
 	}
 
 	const start = Date.now();
@@ -1102,10 +1107,12 @@ async function cmdPoll(args: string[]): Promise<void> {
 			.join("/");
 	};
 	let timer: ReturnType<typeof setInterval> | undefined;
+	// 用 exitCode + 自然退出而非 process.exit:pipe 下 exit 会截断未刷新的
+	// stdout/stderr 缓冲(最后写入的 "wf retry" 提示行间歇性丢失,测试偶发失败)
 	const finish = (code: number, text: string): void => {
 		if (timer) clearInterval(timer);
 		console.log(text);
-		process.exit(code);
+		process.exitCode = code;
 	};
 	const tick = (): void => {
 		const steps = getStepsByWorkflow(db, wfId);

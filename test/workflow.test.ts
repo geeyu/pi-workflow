@@ -689,7 +689,40 @@ async function main(): Promise<void> {
 
 console.log("== T9 resolveIdentity ==");
 const idxMod = await import("../src/index.ts");
-// 先清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
+// 状态段渲染:紧凑单行、着色、running 步骤、待核对/异常计数
+const segWf = dbMod.getWorkflow(db2, "demo-wf")!;
+const segSteps = dbMod.getStepsByWorkflow(db2, "demo-wf");
+const segAll = idxMod.workflowStatusSegment(
+	segWf,
+	dbMod.stepStatusCounts(db2, "demo-wf"),
+	segSteps,
+	null,
+);
+const segVisible = segAll.replace(/\x1b\[[0-9;]*m/g, "");
+assert(
+	segVisible.startsWith("demo-wf") && segVisible.includes("/"),
+	`状态段含 id 与进度(${segVisible})`,
+);
+assert(
+	!segAll.startsWith("["),
+	"状态段不以 [ 开头(powerline 不当通知过滤)",
+);
+// running 步骤显示 ▶+点号 id
+const runSteps = segSteps.map((s) => ({ ...s }));
+for (const s of runSteps) {
+	if (s.id.endsWith(".1")) s.status = "running";
+}
+const segRun = idxMod.workflowStatusSegment(
+	segWf,
+	dbMod.stepStatusCounts(db2, "demo-wf"),
+	runSteps,
+	null,
+);
+assert(
+	segRun.replace(/\x1b\[[0-9;]*m/g, "").includes("▶"),
+	"running 步骤以 ▶+点号 id 展示",
+);
+// 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
 delete process.env.PI_WF_WORKFLOW;
 delete process.env.PI_WF_STEP;
 const fromEnv = idxMod.resolveIdentity("/whatever");

@@ -169,7 +169,7 @@ function statusCountsLine(
 	return `进度 ${done}/${total}  ✓${done} 运行${running} 待核对${verify} 异常${abnormal}`;
 }
 
-function renderWorkflowStatus(
+export function renderWorkflowStatus(
 	ctx: ExtensionCommandContext,
 	db: ReturnType<typeof getDb>,
 ): void {
@@ -194,7 +194,7 @@ function renderWorkflowStatus(
 }
 
 /** 单个 workflow 的紧凑状态段:⛭ wf-demo 3/4 ▶1.2 ◐1 ✗1 $0.42 */
-function workflowStatusSegment(
+export function workflowStatusSegment(
 	w: WorkflowRow,
 	counts: Record<string, number>,
 	steps: StepRow[],
