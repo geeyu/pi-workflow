@@ -727,22 +727,21 @@ assert(
 	!segRunVisible.includes("▶"),
 	"不再用 ▶+点号 id 列表(footer 语义化)",
 );
-// 计划概览面板:表格形式(步骤/内容/状态),含标题进度与依赖
+// 计划概览面板:rpiv-todo 式列表(标题 + 逐条状态字形行,完成行删除线)
 const statusUiMod = await import("../src/ui/status.ts");
 const planLines = statusUiMod.buildPlanLines(db2, [segWf]);
 const planText = planLines.join("\n");
+const planVisible = planText.replace(/\x1b\[[0-9;]*m/g, "");
 assert(
-	planText.includes("计划概览") &&
-		planText.includes("┌") &&
-		planText.includes("└") &&
-		planText.includes("│步骤") &&
-		planText.includes("│内容") &&
-		planText.includes("│状态"),
-	`面板为表格形式(表头齐全:${planText.slice(0, 60)})`,
+	planVisible.includes("⛭") &&
+		planVisible.includes("/") &&
+		planVisible.includes("(") &&
+		!planVisible.includes("┌"),
+	`面板为列表式标题(进度计数,非表格:${planVisible.slice(0, 60)})`,
 );
 assert(
-	/│\d+\s+│.+│.+│/.test(planText),
-	"面板含数据行(步骤|内容|状态)",
+	/^\s{2}[🔄◐○✗✓⚠↻–]/m.test(planVisible),
+	`面板逐条渲染(状态字形 + 内容:${planVisible.slice(0, 120)})`,
 );
 // 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
 delete process.env.PI_WF_WORKFLOW;

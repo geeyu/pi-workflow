@@ -94,12 +94,13 @@ export function workflowStatusSegment(
 }
 
 // ────────────────────────────────────────────────────────────
-// 计划概览面板(编辑区上方 widget,表格形式,monitor tick 实时刷新)
+// 计划概览面板(编辑区上方 widget,rpiv-todo 式列表,monitor tick 实时刷新)
 // ────────────────────────────────────────────────────────────
 
 export const PLAN_ICON = {
 	running: "🔄",
 	todo: "⏳",
+	pending: "○",
 	verify: "◐",
 	abnormal: "✗",
 	done: "✓",
@@ -111,43 +112,10 @@ export const PLAN_ICON = {
 /** 每个 workflow 面板最大行数(超出折叠已完成行) */
 export const PLAN_MAX_ROWS = 10;
 
-/** 状态列文案(含依赖信息) */
-function stepStatusText(step: StepRow, deps: string[]): string {
-	switch (step.status) {
-		case "running":
-		case "dispatched":
-			return `${PLAN_ICON.running} running`;
-		case "reported":
-		case "waiting-verify":
-			return `${PLAN_ICON.verify} 待核对`;
-		case "done":
-			return `${PLAN_ICON.done} done`;
-		case "skipped":
-			return `${PLAN_ICON.skipped} skipped`;
-		case "failed":
-			return `${PLAN_ICON.abnormal} failed`;
-		case "aborted":
-			return `${PLAN_ICON.abnormal} aborted`;
-		case "conflict":
-			return `${PLAN_ICON.conflict} 冲突`;
-		case "needs-fix":
-			return `${PLAN_ICON.needsFix} 待修复`;
-		default:
-			// pending / ready:显示依赖(如“依赖 1,2”),无依赖显示待办
-			return deps.length > 0
-				? `${PLAN_ICON.todo} 依赖 ${deps.join(",")}`
-				: `${PLAN_ICON.todo} 待办`;
-	}
-}
-
 function visibleWidth(s: string): number {
 	let n = 0;
 	for (const c of s) n += c.charCodeAt(0) > 0xff ? 2 : 1;
 	return n;
-}
-
-function padWidth(s: string, n: number): string {
-	return s + " ".repeat(Math.max(0, n - visibleWidth(s)));
 }
 
 function truncWidth(s: string, n: number): string {
@@ -163,14 +131,44 @@ function truncWidth(s: string, n: number): string {
 	return out + "…";
 }
 
+/** 单条任务行:状态字形 + 内容(+ 状态标签/依赖标注);完成行删除线。 */
+function planStepLine(s: StepRow, deps: string[]): string {
+	const title = truncWidth(s.title, 64);
+	const depText =
+		deps.length > 0
+			? ` ${WF_ANSI.dim}[依赖 ${deps.join(",")}]${WF_ANSI.reset}`
+			: "";
+	switch (s.status) {
+		case "running":
+		case "dispatched":
+			return `  ${WF_ANSI.yellow}${PLAN_ICON.running}${WF_ANSI.reset} ${title} ${WF_ANSI.dim}(running)${WF_ANSI.reset}`;
+		case "reported":
+		case "waiting-verify":
+			return `  ${WF_ANSI.cyan}${PLAN_ICON.verify}${WF_ANSI.reset} ${title} ${WF_ANSI.cyan}(待核对)${WF_ANSI.reset}`;
+		case "failed":
+		case "aborted":
+			return `  ${WF_ANSI.red}${PLAN_ICON.abnormal}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(${s.status})${WF_ANSI.reset}`;
+		case "conflict":
+			return `  ${WF_ANSI.red}${PLAN_ICON.conflict}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(冲突)${WF_ANSI.reset}`;
+		case "needs-fix":
+			return `  ${WF_ANSI.red}${PLAN_ICON.needsFix}${WF_ANSI.reset} ${title} ${WF_ANSI.red}(待修复)${WF_ANSI.reset}`;
+		case "done":
+			return `  ${WF_ANSI.dim}${PLAN_ICON.done}${WF_ANSI.reset} ${WF_ANSI.dim}\x1b[9m${title}\x1b[0m${WF_ANSI.reset}`;
+		case "skipped":
+			return `  ${WF_ANSI.dim}${PLAN_ICON.skipped}${WF_ANSI.reset} ${WF_ANSI.dim}${title}(skipped)${WF_ANSI.reset}`;
+		default:
+			return `  ${PLAN_ICON.pending} ${title}${depText}`;
+	}
+}
+
 /**
- * 计划概览面板行(纯函数,可测):每个活动 workflow 一个表格。
- * 列:步骤 | 内容(截断) | 状态(含依赖)。标题带进度与运行计数。
+ * 计划概览面板行(rpiv-todo 式列表,纯函数可测):每个活动 workflow 一段。
+ * 标题(进度 + 计数)→ 逐条任务行(进行中/待核对/待办/完成,完成行删除线)。
  * 示例:
- *   ⛭ control-center 计划概览 2/8 · 🔄2
- *   ┌──────┬────────────────────────────┬────────────────┐
- *   │ 1    │ sources.lua 只读协议扫描器… │ 🔄 running     │
- *   ...
+ *   ⛭ wf-control-center (2/8) · 🔄2
+ *     🔄 api.lua:HTTP 路由(providers/open/close + 静态挂载) (running)
+ *     ○ views:聚合配置页(webview 卡片网格) [依赖 3]
+ *     ✓ sources.lua:只读协议扫描器(name/cards/pages + 单测)
  */
 export function buildPlanLines(
 	db: ReturnType<typeof getDb>,
@@ -191,11 +189,14 @@ export function buildPlanLines(
 			(counts["needs-fix"] ?? 0);
 		const title =
 			`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}⛭ ${w.id}${WF_ANSI.reset} ` +
-			`计划概览 ${done}/${steps.length} · ${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}` +
+			`${WF_ANSI.dim}(${done}/${steps.length})${WF_ANSI.reset}` +
+			(running > 0
+				? ` ${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`
+				: "") +
 			(verify > 0 ? ` ${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}` : "") +
 			(abnormal > 0 ? ` ${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}` : "");
 		lines.push(title);
-		// 行预算:先取未完成(非 done/skipped)行,再补已完成行(最多 PLAN_MAX_ROWS 行)
+		// 行预算:未完成行优先,完成行补足(折叠时先收完成行)
 		const unfinished = steps.filter(
 			(s) => s.status !== "done" && s.status !== "skipped",
 		);
@@ -208,29 +209,16 @@ export function buildPlanLines(
 			Math.max(0, PLAN_MAX_ROWS - shownUnfinished.length),
 		);
 		const hidden = finished.length - shownFinished.length;
-		const rows = [...shownUnfinished, ...shownFinished];
-		const cwStep = 6;
-		const cwContent = 34;
-		const cwStatus = 16;
-		const sepTop = "─".repeat(cwStep) + "┬" + "─".repeat(cwContent) + "┬" + "─".repeat(cwStatus);
-		const sepMid = "─".repeat(cwStep) + "┼" + "─".repeat(cwContent) + "┼" + "─".repeat(cwStatus);
-		lines.push(`┌${sepTop}┐`);
-		lines.push(
-			`│${padWidth("步骤", cwStep)}│${padWidth("内容", cwContent)}│${padWidth("状态", cwStatus)}│`,
-		);
-		lines.push(`├${sepMid}┤`);
-		for (const s of rows) {
-			const dotted = s.id.slice(w.id.length + 1);
+		for (const s of [...shownUnfinished, ...shownFinished]) {
 			const deps = getStepDeps(db, s.id)
 				.map((d) => d.slice(w.id.length + 1))
 				.filter((d) => /^[0-9.]+$/.test(d));
-			lines.push(
-				`│${padWidth(dotted, cwStep)}│${padWidth(truncWidth(s.title, cwContent), cwContent)}│${padWidth(stepStatusText(s, deps), cwStatus)}│`,
-			);
+			lines.push(planStepLine(s, deps));
 		}
-		lines.push(`└${sepTop}┘`);
 		if (hidden > 0) {
-			lines.push(`  ${WF_ANSI.dim}… 另有 ${hidden} 步已完成,${PLAN_ICON.done} 折叠${WF_ANSI.reset}`);
+			lines.push(
+				`  ${WF_ANSI.dim}+${hidden} 已完成(${PLAN_ICON.done} 折叠)${WF_ANSI.reset}`,
+			);
 		}
 	}
 	return lines;
