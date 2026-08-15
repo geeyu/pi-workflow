@@ -1,0 +1,42 @@
+{
+	"name": "wf-arch",
+	"title": "架构整理:命令注册表 + 模块拆分 + 常量收敛(行为零变化)",
+	"goal": "按 docs/arch-review.md 对 pi-workflow 插件做架构整理:① 命令注册表化(双入口 /wf 与 wf CLI 共享 CommandDef,统一参数解析/错误处理/退出码,消除 74 处裸 process.exit);② 模块拆分(dispatch→shell/window/template,monitor→wave,index→ui/status+ui/notify+core/state);③ 常量收敛(STATUS_ICON 单一来源)。全部为纯重构:命令语义、DB schema、事件类型、输出文案(除统一错误格式)一律不变,测试必须全绿。",
+	"repoPath": "/Users/geeyu/.pi/agent/extensions/workflow",
+	"wave": 1,
+	"waveNote": "架构重构(行为零变化)",
+	"steps": [
+		{
+			"id": "1",
+			"title": "输出重构细化设计",
+			"agent": "planner",
+			"task": "阅读 {{root}}/docs/arch-review.md(主控已通读全库输出的问题清单与目标布局)、{{root}}/src/command.ts(若不存在则读 src/cli.ts 与 src/index.ts 的命令结构)、{{root}}/src/dispatch.ts、{{root}}/src/monitor.ts。输出细化设计到 {{root}}/docs/arch-refactor.md,必须包含:① src/command.ts 的完整接口签名(CommandDef/CmdEnv/UsageError/registry/register/getCommand/listCommands/parseArgs 的 flag 定义方式),CLI 适配器与 pi 适配器的伪代码;② 每个新文件(src/exec/shell.ts、src/exec/window.ts、src/exec/template.ts、src/observe/wave.ts、src/ui/status.ts、src/ui/notify.ts、src/core/state.ts)的函数级迁移清单:原文件/函数名 → 新文件/函数名(允许改名,但须列对照表),明确哪些函数留在原地;③ 1.1 与 1.2 的文件边界划分(哪些文件归 1.1 改、哪些归 1.2 改,避免重叠或仅 import 行重叠);④ STATUS_ICON/stepIcon 收敛方案(state.ts 单一导出,index.ts/cli.ts/board.ts 如何引用);⑤ 74 处 process.exit 的处理策略(哪些改 exitCode+return、哪些保留、main 尾部统一兜底);⑥ 验收清单。git commit。",
+			"expectations": ["接口签名完整可照抄实现", "函数级迁移清单无遗漏(覆盖全部被拆函数)", "1.1/1.2 文件边界明确不重叠", "process.exit 收敛策略明确", "已 git commit"]
+		},
+		{
+			"id": "1.1",
+			"title": "命令注册表化(CLI + 插件双入口)",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 与 {{root}}/docs/arch-refactor.md 实现:① 新建 src/command.ts(CommandDef/CmdEnv/UsageError/registry/register/getCommand/listCommands/parseArgs);② 改 src/cli.ts:main() 改查注册表分发;全部 cmd* 迁移为注册表 CommandDef(函数体逻辑不变,错误处理改:用法错误抛 UsageError、业务错误 notify(err)+return、不再裸 process.exit);③ 改 src/index.ts:handler 改查注册表,命令注册改为 register 调用,finally 保留状态条刷新;④ resolveWorkflowId/resolveStepId 等共享解析收敛到 command.ts(或 core/identity.ts,按设计);⑤ help 输出与 /wf 补全列表必须与重构前等价。行为零变化:命令语义、输出文案(除统一错误格式)、退出码语义(0/1/2/3 契约不变)一律保持。实现后运行 node --experimental-strip-types test/workflow.test.ts 全绿(需 PATH 含 ~/.local/bin)并补充注册表相关测试(命令注册/查表/parseArgs 边界/UsageError 退出码)。git commit。",
+			"expectations": ["双入口共用注册表,无重复命令定义", "cli.ts 无裸 process.exit 残留(允许 exitCode 或 main 统一)", "用法错误 → 退出码 3 语义不变;业务错误 → 1;成功 → 0", "help 与补全列表等价", "测试全绿含新用例", "已 git commit"]
+		},
+		{
+			"id": "1.2",
+			"title": "模块拆分与常量收敛(纯移动)",
+			"agent": "worker",
+			"deps": ["1"],
+			"task": "按 {{steps.1.summary}} 与 {{root}}/docs/arch-refactor.md 实现纯移动拆分(禁止改任何行为):① 自 src/dispatch.ts 拆出 src/exec/shell.ts(run/resolveBin/resolveOnPath/piInvocation)、src/exec/window.ts(parseLayout/resolveWorkflowWindow/findTerminalId/sendTextToTerminal/openStepTab)、src/exec/template.ts(renderTaskMd/injectDeps/getDepSummaries/parseExpectations/truncate),dispatch.ts 保留 dispatchStep/ensureBaseSha/depsDone/worktreeName/worktreePath/buildPointer;② 自 src/monitor.ts 拆出 src/observe/wave.ts(mergeWave/mergePreview),monitor.ts 保留轮询与事件检测;③ 自 src/index.ts 拆出 src/ui/status.ts(STATUS_ICON/stepIcon/statusCountsLine/renderWorkflowStatus/workflowStatusSegment/WF_ANSI/WF_STATUS_COLOR)与 src/ui/notify.ts(sendWorkflowNotifications/WorkflowNotifySender/NOTIFY_MAX_LINES),index.ts 引用之;④ 新建 src/core/state.ts 作为状态常量与图标单一来源,index.ts/cli.ts/board.ts 全部改为引用(兼容导出名保留);⑤ 修正所有 import 与调用点(含 test 的 import 路径),不改变任何函数签名与行为;⑥ 检查无循环依赖(import 图:core ← exec/observe ← ui ← 入口)。实现后 node --experimental-strip-types test/workflow.test.ts 全绿(需 PATH 含 ~/.local/bin)。git commit。",
+			"expectations": ["每个新文件职责单一(按设计清单)", "函数签名与行为零变化(仅移动)", "STATUS_ICON 单一来源,无重复定义", "无循环依赖", "测试全绿", "已 git commit"]
+		},
+		{
+			"id": "2",
+			"title": "整体评审",
+			"agent": "reviewer",
+			"deps": ["1.1", "1.2"],
+			"gate": true,
+			"task": "评审 {{steps.1.1.summary}} 与 {{steps.1.2.summary}} 的实现:① 命令注册表:双入口是否真正共用(无重复命令定义)、parseArgs 边界、UsageError/退出码契约(0/1/2/3)、cli.ts 是否还有裸 process.exit 残留(grep 'process.exit(' 应仅剩合法豁免并在报告中说明);② 模块拆分:新文件职责是否单一、函数迁移是否完整(对照 arch-refactor.md 清单逐条核对)、import 图是否无环(检查 src/ 下是否存在循环 import);③ 常量收敛:STATUS_ICON/stepIcon 是否单一来源;④ 行为零变化:git diff 对比重构前后关键命令输出(可选抽查 wf status/wf help),测试全绿;⑤ 输出评审结论与遗留问题清单到 {{root}}/docs/review-arch.md 并 git commit。",
+			"expectations": ["注册表双入口共用且契约一致", "模块边界符合设计,迁移无遗漏", "无循环依赖", "测试全绿", "评审记录已提交"]
+		}
+	]
+}

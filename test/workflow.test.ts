@@ -771,7 +771,7 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	const fakeGone = path.join(tmpDir, "fake-ghostctl-gone.sh");
 	fs.writeFileSync(
 		fakeGone,
-		`#!/bin/bash\necho '{"windows":[{"tabs":[{"terminals":[]}]}]}'\n`,
+		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\necho '{"windows":[{"id":"win-test-1","tabs":[{"terminals":[]}]}]}'\n`,
 		{ mode: 0o755 },
 	);
 	const gone1 = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
@@ -814,6 +814,61 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
 		"清零后仍 running",
+	);
+	// 去重复用:tab 仍存活时 retry → 不重开新 tab,恢复 running,retries 不消耗
+	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
+		error: "模拟 monitor 误判",
+	});
+	const logBefore = fs.readFileSync(ghostctlLog, "utf-8").split("\n").filter(Boolean).length;
+	const retriesBefore = dbMod.getStep(db2, "scratch-wf-1")!.retries_done;
+	const reuse = await dispatchMod.dispatchStep(
+		db2,
+		sWf2,
+		dbMod.getStep(db2, "scratch-wf-1")!,
+		{ gittreeBin: "gittree", ghostctlBin: fakeGhostctl },
+	);
+	assert(reuse.ok && reuse.reused === true, `tab 存活 → 复用不重开(${reuse.error ?? ""})`);
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
+		"复用后恢复 running",
+	);
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.tab_id === "abcdef0123456789",
+		"复用保留原 tab_id",
+	);
+	assert(
+		dbMod.getStep(db2, "scratch-wf-1")?.retries_done === retriesBefore,
+		"复用不消耗 retries_done",
+	);
+	const logAfterReuse = fs
+		.readFileSync(ghostctlLog, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.slice(logBefore);
+	assert(
+		!logAfterReuse.some((l) => l.includes("new-tab")),
+		`复用未调用 new-tab(${logAfterReuse.join(" | ")})`,
+	);
+	// 对照:tab 已死时 retry → 正常重开(new-tab 被调用)
+	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
+		error: "tab 已关闭",
+	});
+	const logBefore2 = fs.readFileSync(ghostctlLog, "utf-8").split("\n").filter(Boolean).length;
+	const reopen = await dispatchMod.dispatchStep(
+		db2,
+		sWf2,
+		dbMod.getStep(db2, "scratch-wf-1")!,
+		{ gittreeBin: "gittree", ghostctlBin: fakeGone },
+	);
+	assert(reopen.ok && reopen.reused !== true, "tab 已死 → 正常重开");
+	const logAfterReopen = fs
+		.readFileSync(ghostctlLog, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.slice(logBefore2);
+	assert(
+		logAfterReopen.some((l) => l.includes("new-tab")),
+		`重开调用 new-tab(log=${logAfterReopen.join(" | ") || "(空)"})`,
 	);
 
 	console.log("== T11 就绪集 getReadySteps ==");

@@ -327,11 +327,17 @@ async function cmdDispatch(args: string[]): Promise<void> {
 		}
 		const res = await dispatchStep(db, workflow, step, { dryRun });
 		if (res.ok) {
-			console.log(
-				res.dryRun
-					? `◦ ${token}: [dry-run] worktree=${res.worktree}\n${res.pointer}`
-					: `✓ ${token}: running tab=${res.tabId ? res.tabId.slice(0, 8) : "?"} worktree=${res.worktree}`,
-			);
+			if (res.reused) {
+				console.log(
+					`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
+				);
+			} else {
+				console.log(
+					res.dryRun
+						? `◦ ${token}: [dry-run] worktree=${res.worktree}\n${res.pointer}`
+						: `✓ ${token}: running tab=${res.tabId ? res.tabId.slice(0, 8) : "?"} worktree=${res.worktree}`,
+				);
+			}
 		} else {
 			console.error(`✗ ${token}: ${res.error}`);
 		}
@@ -455,9 +461,15 @@ async function cmdRetry(args: string[]): Promise<void> {
 	}
 	const res = await dispatchStep(db, workflow, step, { fresh });
 	if (res.ok) {
-		console.log(
-			`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
-		);
+		if (res.reused) {
+			console.log(
+				`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
+			);
+		} else {
+			console.log(
+				`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
+			);
+		}
 	} else {
 		console.error(`✗ 重派失败: ${res.error}`);
 		process.exit(1);

@@ -935,10 +935,17 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		}
 		const res = await dispatchStep(db, workflow, step, { fresh });
 		if (res.ok) {
-			notify(
-				ctx,
-				`已重派 ${step.id}${fresh ? "(--fresh 重建 worktree)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
-			);
+			if (res.reused) {
+				notify(
+					ctx,
+					`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
+				);
+			} else {
+				notify(
+					ctx,
+					`已重派 ${step.id}${fresh ? "(--fresh 重建 worktree)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
+				);
+			}
 		} else {
 			notify(ctx, `重派失败: ${res.error}`, "warning");
 		}

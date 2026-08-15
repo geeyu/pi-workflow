@@ -42,6 +42,7 @@ export const EVT = {
 	stepDecomposed: "step_decomposed",
 	stepDispatched: "step_dispatched",
 	stepTabOpened: "step_tab_opened",
+	stepTabReused: "step_tab_reused",
 	stepTabClosed: "step_tab_closed",
 	stepTabFixed: "step_tab_fixed", // fix-tab:DB tab 状态对齐(只改状态,不验证进程)
 	stepReported: "step_reported",

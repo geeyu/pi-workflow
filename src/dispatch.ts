@@ -41,6 +41,8 @@ export interface DispatchResult {
 	pointer?: string;
 	error?: string;
 	dryRun?: boolean;
+	/** 去重复用:重派时原 tab 仍存活,未开新 tab,已恢复 running */
+	reused?: boolean;
 }
 
 /**
@@ -368,6 +370,34 @@ function parseLayout(raw: string): WfWindowInfo[] | null {
 }
 
 /**
+ * 实时判断指定 terminal 是否存活(ghostctl layout 一次查询)。
+ * 返回 true/false;查询失败或无法解析返回 undefined(调用方按需处理)。
+ */
+export async function isTerminalAlive(
+	ghostctlBin: string,
+	cwd: string,
+	terminalId: string,
+): Promise<boolean | undefined> {
+	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+	if (res.code !== 0) return undefined;
+	try {
+		const layout = JSON.parse(res.stdout) as {
+			windows: Array<{ tabs: Array<{ terminals: Array<{ id: string }> }> }>;
+		};
+		for (const w of layout.windows) {
+			for (const t of w.tabs) {
+				for (const term of t.terminals) {
+					if (term.id === terminalId) return true;
+				}
+			}
+		}
+		return false;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * workflow 绑定窗口(设计:一次 workflow 一个完整窗口流程):
  * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata.ghostty_window_id),
  * 之后所有子任务 tab 固定开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),
@@ -643,8 +673,41 @@ export async function dispatchStep(
 		};
 	}
 
-	// 重试上限(设计 P3:超过 max_retries 拒绝,提示人工处理)
+	// 去重复用:重派(failed/aborted/needs-fix)时原 tab 仍存活(monitor 误判、
+	// 状态回退等场景)→ 实时查一次 layout,存活则恢复 running,绝不重开新 tab。
+	// 复用不消耗 retries_done(未真正重派);--fresh 语义为重建,跳过此检查。
 	const isRetry = ["failed", "aborted", "needs-fix"].includes(step.status);
+	if (isRetry && step.tab_id && !opts.fresh) {
+		const alive = await isTerminalAlive(
+			opts.ghostctlBin ?? resolveBin("ghostctl"),
+			workflow.repo_path,
+			step.tab_id,
+		);
+		if (alive === true) {
+			buildUpdate(
+				db,
+				"workflow_steps",
+				{ status: "running", error: null, updated_at: Date.now() },
+				{ id: step.id },
+			);
+			addEvent(db, {
+				workflowId: workflow.id,
+				stepId: step.id,
+				type: EVT.stepTabReused,
+				payload: { tabId: step.tab_id, dotted },
+			});
+			return {
+				ok: true,
+				stepId: step.id,
+				worktree: wtName,
+				worktreePath: wtPath,
+				tabId: step.tab_id,
+				reused: true,
+			};
+		}
+	}
+
+	// 重试上限(设计 P3:超过 max_retries 拒绝,提示人工处理)
 	if (isRetry && step.retries_done >= step.max_retries) {
 		return {
 			ok: false,
