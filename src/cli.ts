@@ -9,19 +9,24 @@
  *   wf dispatch <dotted...> [--workflow <id>] [--dry-run]
  *   wf rebind-window [wfId] | wf verify <id> approve|reject [原因] | wf done <id> '<JSON>' | wf fail <id> <原因>
  *   wf tabs [wf] [--json] | wf cleanup [wf] [--dry-run] [--no-fix]
+ *   wf inject <target> <text...> | wf poll [wf] [--until S] [--timeout T] [--interval I]
+ *   wf session [wf|--last] [-n N] [--json] | wf open-tab <stepId> | wf fix-tab <stepId> <tid|auto>
  *   wf clean | wf doctor | wf debug
  *
  * 运行:node --experimental-strip-types src/cli.ts(入口 bin/wf)
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import type { DatabaseSync } from "node:sqlite";
 import {
 	DB_PATH,
 	EVT,
 	WORKFLOW_STATUS,
 	addEvent,
 	buildUpdate,
+	createAttempt,
 	createWave,
 	getEvents,
 	getRunningSteps,
@@ -39,6 +44,7 @@ import {
 	getDb,
 	getAttemptsByStep,
 } from "./db.ts";
+import type { StepRow } from "./db.ts";
 import {
 	appendSteps,
 	importPlan,
@@ -46,10 +52,20 @@ import {
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
-import { dispatchStep, resolveBin, run, worktreePath } from "./dispatch.ts";
-import { fetchLiveTabIds, mergeWave } from "./monitor.ts";
+import {
+	buildPointer,
+	dispatchStep,
+	findTerminalId,
+	openStepTab,
+	resolveBin,
+	run,
+	sendTextToTerminal,
+	worktreePath,
+} from "./dispatch.ts";
+import { fetchLiveTabIds, mergeWave, pollTargetReached } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
 import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
+import { encodeSessionDir, findLatestSessionFile, parseSessionLine } from "./session.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
 import { resolveIdentity } from "./index.ts";
 import type { PlanInput } from "./validate.ts";
@@ -70,6 +86,38 @@ function resolveWorkflowId(explicit?: string): string | null {
 	});
 	if (matches.length === 1) return matches[0].id;
 	return null;
+}
+
+/**
+ * 步骤解析(与 /wf steer 同规则):完整 id 直接命中 → 点号 id 按身份/活动 workflow 兜底。
+ */
+function resolveStepId(db: DatabaseSync, token: string): StepRow | null {
+	const direct = getStep(db, token);
+	if (direct) return direct;
+	const wfId = resolveWorkflowId();
+	if (!wfId) return null;
+	return getStep(db, `${wfId}-${token}`) ?? null;
+}
+
+/** 取带值 flag 的值(--until done / -n 20),缺省返回默认 */
+function flagValue(
+	args: string[],
+	name: string,
+	def?: string,
+): string | undefined {
+	const idx = args.indexOf(name);
+	if (idx === -1) return def;
+	return args[idx + 1];
+}
+
+const VALUE_FLAGS = new Set(["--until", "--timeout", "--interval", "-n"]);
+
+/** 过滤出位置参数(跳过 flag 名与其取值,如 --until done 的 done) */
+function positionalArgs(args: string[]): string[] {
+	return args.filter((a, i) => {
+		if (a.startsWith("--") || a === "-n") return false;
+		return !VALUE_FLAGS.has(args[i - 1]);
+	});
 }
 
 const STATUS_ICON: Record<string, string> = {
@@ -946,6 +994,385 @@ async function cmdCleanup(args: string[]): Promise<void> {
 	console.log("现在可 /wf merge");
 }
 
+// ────────────────────────────────────────────────────────────
+// wf-enhance2:无头编排命令(inject / poll / session / open-tab / fix-tab)
+// 退出码约定:0 成功/达成;1 运行失败;2 状态不可达(仅 poll);3 用法/参数错误
+// 进度打 stderr,结论打 stdout;--json 输出纯 JSON。
+// ────────────────────────────────────────────────────────────
+
+/**
+ * wf inject <target> <text...> — 向指定步骤 tab/终端注入指令(自动回车)
+ * target 解析(先步骤后终端):完整 step id → 点号 step id → terminal id 前缀。
+ */
+async function cmdInject(args: string[]): Promise<void> {
+	const [target, ...text] = args;
+	if (!target || text.length === 0) {
+		console.error("用法: wf inject <target> <text...>");
+		process.exit(3);
+	}
+	const msg = text.join(" ");
+	const ghostctl = resolveBin("ghostctl");
+	const step = resolveStepId(db, target);
+	if (step) {
+		if (!step.tab_id) {
+			console.error(
+				`✗ 步骤 ${step.id} 无 tab(tab_id 为空);请 wf open-tab ${step.id} 或 wf fix-tab ${step.id} auto`,
+			);
+			process.exit(1);
+		}
+		const workflow = getWorkflow(db, step.workflow_id);
+		const res = await sendTextToTerminal(
+			ghostctl,
+			step.tab_id,
+			msg,
+			workflow?.repo_path ?? process.cwd(),
+		);
+		if (res.code !== 0) {
+			console.error(`✗ 注入失败: ${res.stderr || res.stdout}`);
+			process.exit(1);
+		}
+		console.log(`✓ 已向 ${step.id} 的 tab 注入 ${msg.length} 字符`);
+		return;
+	}
+	// 未命中任何步骤 → 按 terminal id 前缀直接注入(不查 DB,ghostctl 负责前缀匹配)
+	const res = await sendTextToTerminal(ghostctl, target, msg, process.cwd());
+	if (res.code !== 0) {
+		console.error(`✗ 注入失败: ${res.stderr || res.stdout}`);
+		process.exit(1);
+	}
+	console.log(`✓ 已向 terminal ${target} 注入 ${msg.length} 字符`);
+}
+
+const POLL_TARGETS = new Set([
+	"pending",
+	"ready",
+	"dispatched",
+	"running",
+	"reported",
+	"waiting-verify",
+	"done",
+	"skipped",
+	"failed",
+	"aborted",
+	"conflict",
+	"needs-fix",
+]);
+
+/**
+ * wf poll [workflowId] [--until <status>] [--timeout <sec>] [--interval <sec>]
+ * 轮询直到达成或超时;达成集 = {until} ∪ {skipped},pending/ready 不计入达成。
+ * 退出码:0 达成 / 1 超时 / 2 失败中止冲突待修复(不可达)/ 3 用法或 workflow 不存在。
+ */
+async function cmdPoll(args: string[]): Promise<void> {
+	const until = flagValue(args, "--until", "done")!;
+	const timeout = Number(flagValue(args, "--timeout", "600"));
+	const interval = Number(flagValue(args, "--interval", "5"));
+	const wfArg = positionalArgs(args)[0];
+	const wfId = resolveWorkflowId(wfArg);
+	if (!wfId) {
+		console.error("✗ 无法确定 workflow(传 id 或在仓库根目录运行)");
+		process.exit(3);
+	}
+	if (!getWorkflow(db, wfId)) {
+		console.error(`✗ workflow 不存在: ${wfId}`);
+		process.exit(3);
+	}
+	if (!POLL_TARGETS.has(until)) {
+		console.error(
+			`✗ --until 非法: ${until}(合法取值: ${[...POLL_TARGETS].join("/")})`,
+		);
+		process.exit(3);
+	}
+	if (!Number.isFinite(timeout) || timeout <= 0) {
+		console.error("✗ --timeout 必须为正数秒");
+		process.exit(3);
+	}
+	if (!Number.isFinite(interval) || interval <= 0) {
+		console.error("✗ --interval 必须为正数秒");
+		process.exit(3);
+	}
+
+	const start = Date.now();
+	const deadline = start + timeout * 1000;
+	const fmtCounts = (): string => {
+		const counts = stepStatusCounts(db, wfId);
+		return Object.entries(counts)
+			.filter(([, n]) => n > 0)
+			.map(([s, n]) => `${s} ${n}`)
+			.join("/");
+	};
+	let timer: ReturnType<typeof setInterval> | undefined;
+	const finish = (code: number, text: string): void => {
+		if (timer) clearInterval(timer);
+		console.log(text);
+		process.exit(code);
+	};
+	const tick = (): void => {
+		const steps = getStepsByWorkflow(db, wfId);
+		const { reached, unreachable, notStarted } = pollTargetReached(steps, until);
+		const elapsed = Math.round((Date.now() - start) / 1000);
+		console.error(
+			`t=${elapsed}s 状态=${fmtCounts() || "(无)"} 未派发 ${notStarted}`,
+		);
+		if (unreachable.length > 0) {
+			console.error("不可达步骤(需人工介入):");
+			for (const id of unreachable) {
+				console.error(`  ✗ ${id} → wf step ${id} 看原因 → wf retry ${id}`);
+			}
+			finish(2, `不可达: ${unreachable.join(", ")}`);
+			return;
+		}
+		if (reached) {
+			const summary =
+				`达成(${until}${until !== "skipped" ? " 或 skipped" : ""}): ` +
+				`${fmtCounts() || "(无步骤)"}`;
+			finish(0, summary);
+			return;
+		}
+		if (Date.now() >= deadline) {
+			const pendingSteps = steps
+				.filter((s) => !["done", "skipped"].includes(s.status))
+				.map((s) => `${s.id}[${s.status}]`);
+			finish(
+				1,
+				`超时(${timeout}s): 未达成 ${pendingSteps.length} 步: ${pendingSteps.join(", ") || "(无)"}`,
+			);
+			return;
+		}
+	};
+	tick();
+	timer = setInterval(tick, interval * 1000);
+	process.on("SIGINT", () => {
+		if (timer) clearInterval(timer);
+		console.error(
+			`已中断(t=${Math.round((Date.now() - start) / 1000)}s),当前状态: ${fmtCounts() || "(无)"}`,
+		);
+		process.exit(130);
+	});
+}
+
+/**
+ * wf session [workflowId|--last] [-n <N>] [--json] — 打印主控 pi 会话最近文本
+ * 会话目录按 cwd 编码定位;默认取最新 jsonl 末尾 N 条消息。
+ */
+async function cmdSession(args: string[]): Promise<void> {
+	const json = args.includes("--json");
+	const n = Number(flagValue(args, "-n", "20"));
+	if (!Number.isFinite(n) || n < 0) {
+		console.error("✗ -n 必须为非负整数");
+		process.exit(3);
+	}
+	const wfArg = positionalArgs(args)[0];
+	let cwd: string;
+	if (wfArg && wfArg !== "--last") {
+		const wf = getWorkflow(db, wfArg);
+		if (!wf) {
+			console.error(`✗ workflow 不存在: ${wfArg}`);
+			process.exit(3);
+		}
+		cwd = wf.repo_path;
+	} else if (wfArg === "--last") {
+		// --last:强制按当前 cwd 定位,不解析 workflow
+		cwd = process.cwd();
+	} else {
+		// 无参数:先按 cwd 推断 workflow → repo_path;推断不出用 cwd 本身
+		const wfId = resolveWorkflowId();
+		const wf = wfId ? getWorkflow(db, wfId) : undefined;
+		cwd = wf?.repo_path ?? process.cwd();
+	}
+
+	const sessionsRoot =
+		process.env.WF_SESSIONS_DIR ??
+		path.join(os.homedir(), ".pi", "agent", "sessions");
+	const file = findLatestSessionFile(sessionsRoot, cwd);
+	if (!file) {
+		console.error(
+			`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`,
+		);
+		process.exit(1);
+	}
+	const messages: Array<{ ts: string; role: string; text: string }> = [];
+	for (const raw of fs.readFileSync(file, "utf-8").split("\n")) {
+		const m = parseSessionLine(raw);
+		if (m) messages.push(m);
+	}
+	const recent = messages.slice(-n);
+	const truncate = (t: string): string =>
+		t.length > 500 ? `${t.slice(0, 500)}…(截断)` : t;
+	if (json) {
+		console.log(
+			JSON.stringify(
+				recent.map((m) => ({ ts: m.ts, role: m.role, text: truncate(m.text) })),
+				null,
+				2,
+			),
+		);
+		return;
+	}
+	if (recent.length === 0) {
+		console.log("(无消息)");
+		return;
+	}
+	for (const m of recent) {
+		const time = new Date(m.ts);
+		const hhmmss = Number.isNaN(time.getTime())
+			? "--:--:--"
+			: time.toTimeString().slice(0, 8);
+		const label = m.role === "notify" ? "[notify]" : `${m.role}:`;
+		console.log(`[${hhmmss}] ${label} ${truncate(m.text)}`);
+	}
+}
+
+/**
+ * wf open-tab <stepId> — 手动为步骤开子任务 tab 并绑定状态(派发兜底)
+ * 前置:步骤存在、worktree 目录存在、无存活 tab、绑定窗口可用。
+ */
+async function cmdOpenTab(args: string[]): Promise<void> {
+	const token = args[0];
+	if (!token) {
+		console.error("用法: wf open-tab <stepId>");
+		process.exit(3);
+	}
+	const step = resolveStepId(db, token);
+	if (!step) {
+		console.error(`✗ 步骤不存在: ${token}(wf step ${token} 核对 id)`);
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, step.workflow_id);
+	if (!workflow) {
+		console.error(`✗ workflow 不存在: ${step.workflow_id}`);
+		process.exit(1);
+	}
+	const dotted = step.id.slice(workflow.id.length + 1);
+	const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
+	if (!step.worktree || !fs.existsSync(wtPath)) {
+		console.error(
+			`✗ 步骤 ${step.id} 无 worktree 或目录不存在(${wtPath});先 /wf dispatch ${step.id} 或 /wf retry ${step.id}(open-tab 只补 tab 层,不重建 worktree)`,
+		);
+		process.exit(1);
+	}
+	// 已绑定且 tab 存活 → 无需重开(layout 查询失败时保守重开并提示)
+	if (step.tab_id) {
+		const live = await fetchLiveTabIds(
+			resolveBin("ghostctl"),
+			workflow.repo_path,
+		);
+		if (live === null) {
+			console.error(
+				"⚠ ghostctl layout 查询失败,无法确认旧 tab 是否存活;仍尝试重开(旧 tab 若还活着请手动关闭)",
+			);
+		} else if (live.has(step.tab_id)) {
+			console.error(
+				`✗ 步骤 ${step.id} 已绑定 tab ${step.tab_id.slice(0, 8)} 且存活,无需重开;若状态不对用 wf fix-tab ${step.id} <terminalId>`,
+			);
+			process.exit(1);
+		}
+	}
+	// 新 attempt 行(冻结 task_md + pointer),成功后由 openStepTab 回写 tab_id
+	const pointer = buildPointer(
+		workflow.id,
+		dotted,
+		workflow.current_wave || 1,
+	);
+	const attempt = createAttempt(db, step.id, {
+		taskMd: step.task_md,
+		pointer,
+	});
+	const res = await openStepTab(db, workflow, step, {
+		ghostctlBin: resolveBin("ghostctl"),
+		attemptId: attempt.id,
+		manual: true,
+	});
+	if (!res.ok) {
+		buildUpdate(
+			db,
+			"workflow_attempts",
+			{ status: "aborted", error: res.error, finished_at: Date.now() },
+			{ id: attempt.id },
+		);
+		console.error(`✗ open-tab 失败: ${res.error}`);
+		process.exit(1);
+	}
+	console.log(`✓ ${step.id} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"} manual`);
+}
+
+/**
+ * wf fix-tab <stepId> <terminalId|auto> — 修复步骤 tab 状态(排查用)
+ * 只改 DB 状态:step → running + tab_id;不验证子 pi 进程。
+ * 显式 id 必须通过 layout 存活校验(前缀匹配且唯一),auto 按 worktree 反查。
+ */
+async function cmdFixTab(args: string[]): Promise<void> {
+	const [token, tid] = args;
+	if (!token || !tid) {
+		console.error("用法: wf fix-tab <stepId> <terminalId|auto>");
+		process.exit(3);
+	}
+	const step = resolveStepId(db, token);
+	if (!step) {
+		console.error(`✗ 步骤不存在: ${token}`);
+		process.exit(1);
+	}
+	const workflow = getWorkflow(db, step.workflow_id);
+	if (!workflow) {
+		console.error(`✗ workflow 不存在: ${step.workflow_id}`);
+		process.exit(1);
+	}
+	const ghostctl = resolveBin("ghostctl");
+	const dotted = step.id.slice(workflow.id.length + 1);
+	const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
+	let fullId: string | null = null;
+	let mode: "auto" | "explicit" = "auto";
+	if (tid === "auto") {
+		fullId = await findTerminalId(ghostctl, workflow.repo_path, null, wtPath);
+		if (!fullId) {
+			console.error(
+				`✗ layout 中无该 worktree 对应终端(${wtPath});请用 wf open-tab ${step.id} 重开`,
+			);
+			process.exit(1);
+		}
+	} else {
+		mode = "explicit";
+		const live = await fetchLiveTabIds(ghostctl, workflow.repo_path);
+		if (live === null) {
+			console.error(
+				"✗ ghostctl layout 查询失败,无法校验 terminal id;请用 auto 或 wf open-tab 重开",
+			);
+			process.exit(1);
+		}
+		const matches = [...live].filter((id) => id.startsWith(tid));
+		if (matches.length === 0) {
+			console.error(
+				`✗ layout 中无 terminal 前缀 ${tid};请用 auto 或 wf open-tab ${step.id} 重开`,
+			);
+			process.exit(1);
+		}
+		if (matches.length > 1) {
+			console.error(
+				`✗ terminal 前缀 ${tid} 不唯一(${matches.join(", ")});请用完整 id 或 auto`,
+			);
+			process.exit(1);
+		}
+		fullId = matches[0];
+	}
+	const from = `${step.status}/${step.tab_id ? step.tab_id.slice(0, 8) : "-"}`;
+	buildUpdate(
+		db,
+		"workflow_steps",
+		{ tab_id: fullId, status: "running", updated_at: Date.now() },
+		{ id: step.id },
+	);
+	addEvent(db, {
+		workflowId: workflow.id,
+		stepId: step.id,
+		type: EVT.stepTabFixed,
+		payload: { from: step.tab_id, to: fullId, mode },
+	});
+	console.log(`修复前 ${from} → 修复后 running/${fullId}(mode=${mode})`);
+	console.log(
+		"提示:fix-tab 仅对齐 DB 状态,请人工确认该终端里子 pi 实际在运行;若终端已关闭请 wf open-tab 重开",
+	);
+}
+
 function cmdDoctor(): void {
 	const checks: Array<[string, boolean, string]> = [];
 	checks.push([
@@ -1087,6 +1514,21 @@ async function main(): Promise<void> {
 		case "tabs":
 			await cmdTabs(args);
 			break;
+		case "inject":
+			await cmdInject(args);
+			break;
+		case "poll":
+			await cmdPoll(args);
+			break;
+		case "session":
+			await cmdSession(args);
+			break;
+		case "open-tab":
+			await cmdOpenTab(args);
+			break;
+		case "fix-tab":
+			await cmdFixTab(args);
+			break;
 		case "cleanup":
 			await cmdCleanup(args);
 			break;
@@ -1117,6 +1559,11 @@ async function main(): Promise<void> {
   wf goal-check [approve|reject <原因>]                        目标把关(verifying→completed/gap wave)
   wf next [--note <说明>]                                      滚动到下一 wave
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
+  wf inject <target> <text...>                              向步骤 tab/终端注入指令+自动回车(target=完整id/点号id/terminal前缀)
+  wf poll [wf] [--until S] [--timeout T] [--interval I]     轮询直到达成/超时(0达成/1超时/2不可达/3用法)
+  wf session [wf|--last] [-n N] [--json]                    读主控 pi 会话最近文本(按 cwd 编码定位)
+  wf open-tab <stepId>                                      手动补开子任务 tab(绑 worktree/窗口,恢复 running)
+  wf fix-tab <stepId> <tid|auto>                            修复步骤 tab 状态(排查用,只改 DB 状态)
   wf tabs [workflowId] [--json]                              子任务 tab 状态(存活判定)
   wf cleanup [workflowId] [--dry-run] [--no-fix]             关终态 tab + 清 .pi-glla + 合并前置修复
   wf clean                                                   清理残留 worktree

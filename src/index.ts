@@ -63,6 +63,7 @@ import {
 	parseExpectations,
 	resolveBin,
 	run,
+	sendTextToTerminal,
 	WF_WINDOW_META_KEY,
 } from "./dispatch.ts";
 import {
@@ -969,12 +970,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 		}
 		const ghostctl = resolveBin("ghostctl");
 		const msg = text.join(" ");
-		const res = await run(
-			ghostctl,
-			["input", msg, "--to", step.tab_id],
-			ctx.cwd,
-		);
-		await run(ghostctl, ["key", "enter", "--to", step.tab_id], ctx.cwd);
+		const res = await sendTextToTerminal(ghostctl, step.tab_id, msg, ctx.cwd);
 		if (res.code === 0) {
 			notify(ctx, `已向 ${step.id} 的 tab 发送指令`);
 		} else {
