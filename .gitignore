@@ -13,3 +13,10 @@ node_modules/
 # 系统
 .DS_Store
 .pi-glla/
+
+# 编辑器与临时文件
+.vscode/
+.idea/
+*.swp
+*~
+*.log
