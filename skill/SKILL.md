@@ -59,19 +59,99 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 
 `task` 支持模板注入:`{{steps.<dotted>.summary}}` / `{{steps.<dotted>.files}}` / `{{steps.<dotted>.status}}` / `{{root}}`。
 
-## 2. 执行(顺序语义,按依赖推进)
+## 2. 派发 workflow(完整操作流程)
+
+### 2.1 前置:计划就绪
 
 ```
-/wf dispatch 1 --workflow <id>            # 先生成顶层任务
-/wf dispatch 1.1 1.2 --workflow <id>      # 依赖完成后,并行派发
+/wf plan "<目标>" [--repo <path>]            # 推荐:一句话自动拆解(§1.0)
+/wf plan-init <name> "<目标>" --steps N     # 或模板手编 plan.json(§1.1)
+/wf import plan.json                        # 校验 + 落库
+```
+
+校验通过提示「已导入 N 个步骤(wave M)」;校验失败对照 §1.2 规则排查。
+
+### 2.2 首次派发(顶层步骤)
+
+```
+/wf dispatch 1 [--workflow <id>]
+```
+
+预期行为:冻结 base_sha → `gittree create wf-<wf>-<dotted>` → 渲染 task_md 写库 → 绑定窗口新 tab 开子 pi(按窗口 id 定位,不受焦点/窗口开合影响)→ pointer 注入并自动回车提交。
+验证:`/wf status` 出现 running + tab;失败对照 §5(如「绑定窗口已关闭」→ `/wf rebind-window` 后 `/wf retry <id>`)。`--dry-run` 预览不落库不开窗。
+
+### 2.3 依赖推进(并行)
+
+```
+/wf dispatch 1.1 1.2 --workflow <id>      # 依赖 done 后,同 wave 并行派发
 /wf dispatch 2 --workflow <id>            # 1.1/1.2 全部完成后,发起 2
 ```
 
-派发动作:冻结 base_sha → `gittree create wf-<wf>-<dotted>` → 渲染 task_md 写库 → 新 tab 开子 pi(固定开进 workflow 绑定窗口,按窗口 id 定位,不受焦点/窗口开合影响)→ pointer 注入并自动回车提交。
+依赖未完成会被拒绝(提示「依赖未完成,先完成:…」),按依赖顺序推进即可。
+状态机:pending → ready → dispatched → running → reported → done;gate 步骤 reported → waiting-verify → done;失败 → failed/needs-fix 可重派。
 
-- **依赖未完成会被拒绝**(提示"依赖未完成,先完成:…")
-- `--dry-run` 预览不落库不开窗
-- 状态机:pending → ready → dispatched → running → reported → done;gate 步骤 reported → waiting-verify → done;失败 → failed/needs-fix 可重派
+### 2.4 子任务回报(子 pi 侧)
+
+```
+/wf context                       # 读任务详情(目标/任务/期望/输出契约)
+/wf done 1.1 '{"summary":"...","filesChanged":["a.ts"],"issues":[],"tests":"passed"}'
+/wf fail 1.1 <原因>
+```
+
+完成后**必须在 worktree 内 git commit**(合并前强制);输出契约 JSON:`summary`(必填)/ `filesChanged` / `issues` / `tests`(passed|failed|none)。
+
+### 2.5 核对(gate 步骤)
+
+主控收到 monitor 自动通知(§2.9)或 `/wf status` 发现 `waiting-verify` 后:
+
+```
+/wf verify <id> approve|reject <原因>      # 期望 vs 回报对照
+```
+
+approve → done;reject → needs-fix → `/wf retry <id>` 回炉(重派上下文自动注入上次失败原因)。
+
+### 2.6 合并 wave
+
+前置:先 `wf cleanup`(关终态 tab + 清 .pi-glla + 修 .gitignore)+ `wf tabs` 确认(命令见 §6),再:
+
+```
+/wf merge [--wave N]                  # wave 全部终态后串行 gittree merge --delete
+```
+
+冲突 → 步骤 conflict(worktree 保留现场)→ `wf step <id>` 看现场,人工解决 → `/wf resolve-conflict <id>` → 重新 `/wf merge`。
+
+### 2.7 目标把关与下一 wave
+
+```
+/wf goal-check [approve|reject <原因>]   # 全部合并后:approve=completed / reject=回 running 拆 gap wave
+/wf next [--note <说明>]                 # 滚动到下一 wave
+/wf plan "<目标>" --workflow <id>        # 追加 gap wave 步骤 → 回到 §2.2
+```
+
+### 2.8 端到端示例(4 步:1 planner → 1.1/1.2 并行 workers → 2 reviewer gate)
+
+```
+$ /wf plan "给 session store 加 Redis 缓存"
+✓ 已导入 4 个步骤(wave 1)
+$ /wf dispatch 1
+✓ wf-add-redis-cache-1 dispatched(tab=…)
+$ /wf dispatch 1.1 1.2            # 1 done 后并行
+✓ 依赖完成,已派发 1.1 / 1.2
+$ /wf verify 2 approve           # 1.1/1.2 回报后核对 gate
+✓ 2 → done
+$ wf cleanup --dry-run            # 合并前置检查(§6)
+[dry-run] 关闭 tab 1 | 清理 .pi-glla 2 | .gitignore 追加(否) | 警告 0
+$ wf merge
+✓ wave 1 merged
+$ /wf goal-check approve
+✓ wf-add-redis-cache completed
+```
+
+### 2.9 主控自主编排(monitor 自动通知)
+
+monitor 每 5s 检测关键状态(步骤回报/gate 待核对/失败/中止/冲突/待修复/wave 完成/全流程完成),经 `pi.sendMessage`(followUp 不打断当前工作)推给主控,主控空闲时自动执行对应 `/wf verify|retry|merge|goal-check`,实现自主推进。
+
+去重:每种事件每步骤每 attempt 只通知一次(重试后 attempt 变化会重新通知,不丢提醒);手动 `/wf status` 不受影响。
 
 ## 3. 子任务侧(子 pi tab 内)
 
@@ -103,7 +183,7 @@ wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo /path/t
 /wf retry <id> [--fresh]                  # 重派(默认复用 worktree,--fresh 重建)
 /wf rebind-window [wfId]                  # 重新绑定窗口(绑定窗口已关闭时,把当前焦点窗口设为绑定窗口)
 /wf skip <id> <原因>                      # 人工终态
-/wf clean                                 # 清理残留 worktree / 归档
+wf clean                                 # 清理残留 worktree(CLI,§6;残留 tab 用 wf cleanup)
 ```
 
 ## 4.5 看板
@@ -141,7 +221,9 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | 派发被拒「预算已用尽」 | 累计 usage_cost_cents ≥ budget_cents | 调整预算或人工处理;`/wf resume` 恢复 |
 | 派发被拒「已重试 N/M 次,超过上限」 | retries_done ≥ max_retries | 人工介入;`/wf skip` 或调大 max_retries 后重派 |
 | 需要向运行中的子任务补充指令 | — | `/wf steer <dotted> <文本>`(进子 pi 输入框并回车) |
-| merge 冲突「untracked working tree files would be overwritten: .pi-glla/…」 | 子 pi 在 worktree 里运行生成的运行时状态被跟踪 | 仓库 .gitignore 加 `.pi-glla/`;已误提交则 `git rm -r --cached .pi-glla` 后在各 worktree 提交 |
+| merge 冲突「untracked working tree files would be overwritten: .pi-glla/…」 | 子 pi 在 worktree 里运行生成的运行时状态被跟踪 | 先 `wf cleanup`(自动清 .pi-glla + 补 .gitignore);已误提交则 `git rm -r --cached .pi-glla` 后在各 worktree 提交 |
+| 终态步骤 tab 未关 | 子 pi 完成后未自行关闭 tab | `wf cleanup`(自动 close-terminal 并清 tab_id;运行中的步骤不会被动) |
+| 子任务 tab 开了一堆 / 想查 tab 是否还活着 | 多轮派发累积 | `wf tabs [workflowId]`(每步 tab + 存活状态,`--json` 供脚本);对已终态 tab 用 `wf cleanup` |
 | merge 报 conflict 但 worktree 已删/分支不存在 | 重复 merge 或评审类步骤无提交(已修复:自动跳过) | 重新 `/wf merge` 即可;或 `/wf resolve-conflict <id>` 后重试 |
 | worktree 堆积 | 失败/中止的 worktree 保留现场 | `gittree list` 查看;`/wf clean` 或 `gittree clean <name> --branch --force` |
 
@@ -179,7 +261,9 @@ wf merge [--wave N]                                         # 合并 wave 回主
 wf retry <id> [--fresh]                                     # 重派失败/中止/待修步骤
 wf rebind-window [wfId]                                    # 重新绑定窗口(绑定窗口已关闭时)
 wf done <id> '<JSON>' | wf fail <id> <原因>                # 回报(子任务侧)
-wf clean                                                   # 清理 worktree
+wf tabs [workflowId] [--json]                               # 子任务 tab 状态(存活判定)
+wf cleanup [workflowId] [--dry-run] [--no-fix]              # 关终态 tab + 清 .pi-glla + 修 .gitignore(合并前置)
+wf clean                                                   # 清理残留 worktree
 wf doctor                                                  # 环境自检
 wf debug                                                   # 诊断信息
 ```
