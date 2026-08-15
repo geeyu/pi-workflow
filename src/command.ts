@@ -2279,27 +2279,34 @@ register({
 // ── context(pi 独有,子 pi 内)───────────────────────────────
 register({
 	name: "context",
-	description: "读当前任务详情(子 pi)",
-	usage: "/wf context",
-	entry: "pi",
+	description: "读任务详情(子 pi 或显式 stepId)",
+	usage: "wf context [stepId]",
 	widget: "workflow-task",
-	run: (_args, env) => {
-		const ident = resolveIdentity(env.cwd);
-		if (!ident) {
-			env.fail(
-				"无法确定任务身份:未设置 PI_WF_WORKFLOW/PI_WF_STEP,且 cwd 不在 wf worktree 内",
-			);
-			return;
-		}
-		const step = getStep(env.db, ident.stepId!);
-		if (!step) {
-			env.fail(`步骤不存在: ${ident.stepId}`);
-			return;
-		}
-		const workflow = getWorkflow(env.db, ident.workflowId);
-		if (!workflow) {
-			env.fail(`workflow 不存在: ${ident.workflowId}`);
-			return;
+	run: (args, env) => {
+		// 显式 stepId(CLI 场景)→ 身份解析(子 pi 场景)
+		let step: StepRow | null = null;
+		let stepLabel = "";
+		if (args[0]) {
+			step = resolveStepId(env, args[0]);
+			if (!step) {
+				env.fail(`步骤不存在: ${args[0]}`);
+				return;
+			}
+			stepLabel = step.id;
+		} else {
+			const ident = resolveIdentity(env.cwd);
+			if (!ident) {
+				env.fail(
+					"无法确定任务身份:传 stepId,或设置 PI_WF_WORKFLOW/PI_WF_STEP,或在 wf worktree 内运行",
+				);
+				return;
+			}
+			step = getStep(env.db, ident.stepId!);
+			if (!step) {
+				env.fail(`步骤不存在: ${ident.stepId}`);
+				return;
+			}
+			stepLabel = step.id;
 		}
 		// 优先最新 attempt 的冻结任务正文
 		const attempt = getLatestAttempt(env.db, step.id);
@@ -2309,7 +2316,7 @@ register({
 				: null) ?? step.task_md;
 		env.show(taskMd.split("\n"));
 		env.notifyPi(
-			`[wf] 任务详情已显示: ${ident.stepId}(worktree: ${step.worktree ?? "-"})`,
+			`[wf] 任务详情已显示: ${stepLabel}(worktree: ${step.worktree ?? "-"})`,
 		);
 	},
 });
@@ -2346,12 +2353,11 @@ register({
 	},
 });
 
-// ── resolve-conflict(pi 独有)───────────────────────────────
+// ── resolve-conflict(双入口)──────────────────────────────
 register({
 	name: "resolve-conflict",
 	description: "确认解决冲突步骤",
-	usage: "/wf resolve-conflict <dotted>",
-	entry: "pi",
+	usage: "wf resolve-conflict <stepId>",
 	run: (args, env) => {
 		const token = args[0];
 		if (!token) {
@@ -2377,12 +2383,45 @@ register({
 	},
 });
 
-// ── resume(pi 独有)─────────────────────────────────────────
+// ── skip(双入口:人工终态)──────────────────────────────────
+register({
+	name: "skip",
+	description: "人工终态:非终态步骤 → skipped(依赖视为 done)",
+	usage: "wf skip <stepId> <原因>",
+	run: (args, env) => {
+		const [token, ...rest] = args;
+		if (!token) {
+			env.warn("用法: wf skip <stepId> <原因>");
+			return;
+		}
+		const step = resolveStepId(env, token);
+		if (!step) {
+			env.fail(`步骤不存在: ${token}`);
+			return;
+		}
+		if (["done", "skipped"].includes(step.status)) {
+			env.warn(`状态 ${step.status} 已是终态,无需 skip`);
+			return;
+		}
+		const reason = rest.join(" ") || "(未说明)";
+		updateStepStatus(env.db, step.id, STEP_STATUS.skipped, {
+			error: reason,
+		});
+		addEvent(env.db, {
+			workflowId: step.workflow_id,
+			stepId: step.id,
+			type: EVT.stepSkipped,
+			payload: { reason },
+		});
+		env.info(`已人工终态 ${step.id} → skipped(${reason})`);
+	},
+});
+
+// ── resume(双入口:暂停后恢复)─────────────────────────────
 register({
 	name: "resume",
 	description: "暂停后恢复",
-	usage: "/wf resume [--workflow <id>]",
-	entry: "pi",
+	usage: "wf resume [--workflow <id>]",
 	run: (args, env) => {
 		const parsed = parseArgs(args, [{ name: "--workflow", value: true }]);
 		const explicitWf = parsed.value("--workflow");

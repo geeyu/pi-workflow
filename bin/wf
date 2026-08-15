@@ -10,4 +10,23 @@ if [ -L "$SELF" ]; then
 	esac
 fi
 DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
-exec node --experimental-strip-types "$DIR/src/cli.ts" "$@"
+
+# node 解析:WF_NODE 显式指定 → PATH → fnm 各版本目录 → Homebrew。
+# 逐个试运行验证(需 ≥22.13 支持 --experimental-strip-types),取第一个可用的。
+# 子 tab / 非交互 shell 的 PATH 常缺 fnm/brew 目录,必须兜底绝对路径。
+find_node() {
+	[ -n "${WF_NODE:-}" ] && [ -x "$WF_NODE" ] && { echo "$WF_NODE"; return 0; }
+	local c
+	for c in $(command -v node 2>/dev/null) \
+		$(ls -d "$HOME"/.local/share/fnm/node-versions/*/installation/bin 2>/dev/null | sed 's|$|/node|') \
+		/opt/homebrew/bin/node; do
+		[ -n "$c" ] && [ -x "$c" ] && \
+			"$c" --experimental-strip-types -e '1' >/dev/null 2>&1 && { echo "$c"; return 0; }
+	done
+	return 1
+}
+NODE_BIN="$(find_node)" || {
+	echo "未找到 node:请安装 node ≥ 22.13,或设置 WF_NODE 指向 node 绝对路径" >&2
+	exit 127
+}
+exec "$NODE_BIN" --experimental-strip-types "$DIR/src/cli.ts" "$@"

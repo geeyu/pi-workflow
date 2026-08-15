@@ -1975,8 +1975,9 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	assert(
 		cmdMod.getCommand("poll")?.entry === "cli" &&
-			cmdMod.getCommand("context")?.entry === "pi",
-		"入口标记:poll=cli / context=pi",
+			cmdMod.getCommand("context")?.entry === undefined &&
+			cmdMod.getCommand("skip") !== undefined,
+		"入口标记:poll=cli / context+skip=both",
 	);
 	assert(
 		cmdMod.getCommand("merge")?.entry === undefined,
@@ -1984,29 +1985,85 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 	);
 	const cliNames = cmdMod.listCommands("cli").map((d) => d.name);
 	assert(
-		cliNames.length === 27 &&
+		cliNames.length === 31 &&
 			cliNames.includes("plan-init") &&
-			!cliNames.includes("context") &&
+			cliNames.includes("context") &&
+			cliNames.includes("skip") &&
+			cliNames.includes("resolve-conflict") &&
 			cliNames.includes("board") &&
 			cliNames.includes("fix-tab"),
-		`listCommands(cli) = 27 条(${cliNames.length})且无 pi 独有命令`,
-	);
+		`listCommands(cli) = 31 条(${cliNames.length})含 context/skip/resolve-conflict`, 	);
 	const piNames = cmdMod.listCommands("pi").map((d) => d.name);
 	assert(
-		piNames.length === 20 &&
+		piNames.length === 21 &&
 			piNames.includes("steer") &&
 			piNames.includes("resume") &&
 			piNames.includes("resolve-conflict") &&
 			!piNames.includes("poll"),
-		`listCommands(pi) = 20 条(${piNames.length})且无 cli 独有命令`,
-	);
+		`listCommands(pi) = 21 条(${piNames.length})含 both 共享命令`, 	);
 	assert(
-		cmdMod.listCommands().length === 31,
-		`注册表共 31 条(${cmdMod.listCommands().length})`,
+		cmdMod.listCommands().length === 32,
+		`注册表共 32 条(${cmdMod.listCommands().length})`,
 	);
 	assert(
 		[...cliNames].sort().join(",") === cliNames.join(","),
 		"listCommands 按 name 排序",
+	);
+	console.log("== T25b CLI context/skip/resolve-conflict 可用性 ==");
+	// CLI 子进程:context 可读任务正文(此前被 entry=pi 拒绝;scratch-wf-1 已 dispatch,task_md 为渲染版)
+	const ctxOut = runCli(["context", "scratch-wf-1"]);
+	assert(
+		ctxOut.code === 0 && ctxOut.stdout.includes("## 需求目标"),
+		`CLI context 可读任务(${ctxOut.code} ${ctxOut.stdout.slice(0, 40)})`,
+	);
+	// 直接调 run(捕获 warn):skip 终态拒绝 / 非终态 → skipped + 事件;resolve-conflict 非冲突拒绝
+	const warns: string[] = [];
+	const fakeCliEnv = {
+		kind: "cli",
+		cwd: tmpDir,
+		db: db2,
+		show: () => {},
+		info: () => {},
+		warn: (l: string) => warns.push(l),
+		fail: () => {},
+		notifyPi: () => {},
+		setExitCode: () => {},
+	};
+	cmdMod.getCommand("skip")!.run(["merge-wf-1"], fakeCliEnv as never);
+	assert(
+		warns.some((w) => w.includes("终态")),
+		`skip 终态步骤拒绝(warns=${warns.join(" | ") || "空"}, status=${dbMod.getStep(db2, "merge-wf-1")?.status})`,
+	);
+	warns.length = 0;
+	cmdMod.getCommand("resolve-conflict")!.run(["merge-wf-1"], fakeCliEnv as never);
+	assert(
+		warns.some((w) => w.includes("不是 conflict")),
+		`resolve-conflict 非冲突拒绝(${warns.join(" | ")})`,
+	);
+	// skip 非终态步骤 → skipped + 事件
+	const skipImp = orchMod.importPlan(
+		db2,
+		{
+			name: "skip-wf",
+			title: "skip",
+			goal: "g",
+			repoPath: scratchRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(skipImp.ok, "skip-wf 导入");
+	cmdMod.getCommand("skip")!.run(["skip-wf-1", "不做了"], fakeCliEnv as never);
+	assert(
+		dbMod.getStep(db2, "skip-wf-1")?.status === "skipped",
+		"skip 非终态 → skipped",
+	);
+	assert(
+		dbMod
+			.getEvents(db2, { workflowId: "skip-wf", limit: 10 })
+			.some((e) => e.type === "step_skipped"),
+		"step_skipped 事件",
 	);
 	let dupErr = "";
 	try {
@@ -2092,10 +2149,10 @@ assert(fromEnv === null, "无 env/cwd 无身份");
 		pr.code === 1 && pr.stderr.includes("未知命令"),
 		`未知命令 → 退出 1(${pr.code})`,
 	);
-	pr = runCli(["context"], { cwd: tmpDir });
+	pr = runCli(["steer", "x"], { cwd: tmpDir });
 	assert(
 		pr.code === 1 && pr.stderr.includes("未知命令"),
-		`pi 独有命令在 CLI 视为未知(${pr.code})`,
+		`pi 独有命令在 CLI 视为未知(${pr.code} ${pr.stderr.trim()})`,
 	);
 	// help 与注册表命令齐全
 	pr = runCli(["help"], { cwd: tmpDir });

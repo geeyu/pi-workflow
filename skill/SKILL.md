@@ -120,13 +120,32 @@ approve → done;reject → needs-fix → `/wf retry <id>` 回炉(重派上下�
 
 冲突 → 步骤 conflict(worktree 保留现场)→ `wf step <id>` 看现场,人工解决 → `/wf resolve-conflict <id>` → 重新 `/wf merge`。
 
+冲突解决完整序列(CLI):
+
+```bash
+wf step <wf>-<id>          # 看冲突步骤与错误
+# 人工解决 git 冲突(编辑冲突文件,或保留一侧:git checkout --ours/--theirs <file>)
+git add -A && git commit -m "merge: 解决 <wf>-<id> 冲突"   # 完成 git 合并(git 会提示 still merging)
+# 若残留分支被 worktree 占用:
+git worktree remove --force .worktrees/gittree-wf-<wf>-<id>   # 必须先移 worktree,才能删分支
+git branch -D gittree-wf-<wf>-<id>
+wf resolve-conflict <wf>-<id>   # DB:conflict → done
+wf merge --wave N               # 重新合并
+```
+
+注意顺序:**先 `git worktree remove --force` 再 `git branch -D`**(反过来会报 `cannot delete branch ... used by worktree`)。
+
 ### 2.7 目标把关与下一 wave
 
 ```
-/wf goal-check [approve|reject <原因>]   # 全部合并后:approve=completed / reject=回 running 拆 gap wave
+/wf goal-check [approve|reject <原因>]      # 全部合并后:approve=completed / reject=回 running 拆 gap wave
+/wf goal-check --workflow <id> ...          # 不在仓库根目录/多 workflow 时显式指定
+wf goal-check --workflow <id> [approve|reject <原因>]   # CLI 同款(CLI 无法用 cwd 身份时务必加 --workflow)
 /wf next [--note <说明>]                 # 滚动到下一 wave
 /wf plan "<目标>" --workflow <id>        # 追加 gap wave 步骤 → 回到 §2.2
 ```
+
+CLI 的 workflow 解析顺序:显式 `--workflow <id>` → `PI_WF_WORKFLOW + PI_WF_STEP`(两变量需同时设置)→ cwd 位于唯一活动 workflow 的仓库内。多 workflow 同仓库时,显式传 id 或 `--workflow` 最可靠。
 
 ### 2.8 端到端示例(4 步:1 planner → 1.1/1.2 并行 workers → 2 reviewer gate)
 
@@ -196,6 +215,16 @@ wf clean                                 # 清理残留 worktree(CLI,§6;残留 
 wf board [workflowId] [--wave N] [--html out.html]
 ```
 
+### 4.6 双入口命令矩阵(哪些命令只能在哪个入口用)
+
+| 入口 | 命令 |
+| --- | --- |
+| 双入口共享(32 条中的 20 条) | import / dispatch / verify / retry / merge / goal-check / next / resume / rebind-window / status / board / tree / step / events / done / fail / context / skip / resolve-conflict / plan |
+| 仅 CLI | plan-init / poll / session / open-tab / fix-tab / inject / tabs / cleanup / clean / doctor / debug |
+| 仅 /wf(插件内) | steer(CLI 用 `wf inject <target> <text...>` 等价) |
+
+`wf context [stepId]` 与 `/wf context` 等价:无参时按身份(PI_WF_* / worktree cwd)解析,CLI 可显式传 stepId。
+
 ## 5. 排查手册(重要)
 
 ### 5.1 先跑环境自检
@@ -211,6 +240,7 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | --- | --- | --- |
 | `gittree create 失败: invalid reference: HEAD` | 仓库无提交(空 HEAD) | 仓库先做初始提交 |
 | `gittree: command not found` | 非交互 shell PATH 缺 `~/.local/bin` | 已内置兜底绝对路径;手动则 `export PATH="$HOME/.local/bin:$PATH"` |
+| `bin/wf: exec: node: not found` | PATH 缺 node(fnm/brew 目录不在非交互 shell PATH) | 已修复:bin/wf 自动兜底 WF_NODE → PATH → fnm 各版本(取最新)→ /opt/homebrew/bin;仍失败则 `WF_NODE=<node绝对路径> wf ...` |
 | ghostctl 报 `TypeError: ... | 'type' and 'NoneType'` | python3 < 3.10(系统 3.9 不支持 `str \| None`) | PATH 优先 brew python3;`wf doctor` 可查 |
 | 子 tab 中文乱码 | AppleScript input text 编码 | pointer 已改纯 ASCII;任务详情(中文)走 `/wf context` |
 | 子任务 tab 开错窗口 | 依赖焦点窗口 | 已改为 workflow 绑定窗口(首次派发锁定焦点窗口 id 存 `workflow_metadata.ghostty_window_id`,之后按 id 定位);查看:`wf debug` |
@@ -243,6 +273,21 @@ sqlite3 ~/.pi/agent/workflows/workflow.db "SELECT * FROM v_workflow_kanban WHERE
 ```
 
 表清单:workflow / workflow_goal_items / workflow_waves / workflow_steps / workflow_step_deps / workflow_attempts / workflow_events / workflow_agents / workflow_metadata / workflow_step_metadata;视图:v_workflow_kanban / v_workflow_cost。
+
+**workflow_steps 常用列名速查**(查库前先看这里,别猜列名):
+
+| 用途 | 列名 | 说明 |
+| --- | --- | --- |
+| 步骤 id | `id` | 完整 id,如 `wf-demo-1.2`(不是 step_id) |
+| 任务正文 | `task_md` | 派发时渲染的 markdown(不是 task;读取用 `wf context <id>` 更省事) |
+| 期望/验收 | `expectations` | JSON 数组字符串 |
+| 状态 | `status` | pending/ready/dispatched/running/reported/waiting-verify/done/skipped/failed/aborted/conflict/needs-fix |
+| 回报 | `report` / `summary` / `files_changed` / `issues` / `tests` | /wf done 的 JSON 契约拆分列(无 output_contract 列,契约见 §6.1) |
+| 时间 | `started_at` / `updated_at` | 毫秒时间戳 |
+| 护栏 | `timeout_min` / `max_retries` / `retries_done` | 超时/重试上限/已重试次数 |
+| 派发信息 | `worktree` / `tab_id` / `task_md` | worktree 名 / terminal id / 冻结任务 |
+| 依赖 | `workflow_step_deps(step_id, dep_id)` | 依赖边表 |
+| 尝试史 | `workflow_attempts(step_id, attempt_no, status, error, task_md, pointer)` | 每次派发的冻结副本与错误 |
 
 ### 5.4 重置/清理
 

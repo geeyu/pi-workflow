@@ -31,10 +31,14 @@ const HELP_TEXT = `pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手
   wf merge [--wave N]                                        合并 wave 回主分支
   wf retry <id> [--fresh]                                     重派失败/中止/待修步骤(--fresh 重建 worktree)
   wf rebind-window [wfId]                                    重新绑定窗口(绑定窗口已关闭时,把当前焦点窗口设为绑定窗口)
-  wf goal-check [approve|reject <原因>]                        目标把关(verifying→completed/gap wave)
+  wf goal-check [--workflow <id>] [approve|reject <原因>]     目标把关(verifying→completed/gap wave)
   wf next [--note <说明>]                                      滚动到下一 wave
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
-  wf inject <target> <text...>                              向步骤 tab/终端注入指令+自动回车(target=完整id/点号id/terminal前缀)
+  wf context [stepId]                                        读任务详情(无参=身份解析,子 pi 用)
+  wf skip <id> <原因>                                         人工终态:非终态步骤 → skipped(依赖视为 done)
+  wf resolve-conflict <stepId>                                确认解决冲突步骤(→done,继续 merge)
+  wf resume [--workflow <id>]                                 暂停(预算超限)后恢复
+  wf inject <target> <text...>                              向步骤 tab/终端注入指令+自动回车(target=完整id/点号id/terminal前缀;等价 /wf steer)
   wf poll [wf] [--until S] [--timeout T] [--interval I]     轮询直到达成/超时(0达成/1超时/2不可达/3用法)
   wf session [wf|--last] [-n N] [--json]                    读主控 pi 会话最近文本(按 cwd 编码定位)
   wf open-tab <stepId>                                      手动补开子任务 tab(绑 worktree/窗口,恢复 running)
