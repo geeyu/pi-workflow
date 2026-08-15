@@ -294,7 +294,10 @@ export function resolveIdentity(cwd: string): WfIdentity | null {
 }
 
 /** workflow 解析:显式参数 → 身份 env → cwd 所在仓库的活动 workflow(自两入口收敛) */
-export function resolveWorkflowId(env: CmdEnv, explicit?: string): string | null {
+export function resolveWorkflowId(
+	env: CmdEnv,
+	explicit?: string,
+): string | null {
 	if (explicit) return explicit;
 	const ident = resolveIdentity(env.cwd);
 	if (ident) return ident.workflowId;
@@ -389,9 +392,7 @@ function printStatusText(env: CmdEnv, wfId?: string): void {
 			(counts.conflict ?? 0) +
 			(counts["needs-fix"] ?? 0);
 		const costText =
-			cost && cost.cost_cents > 0
-				? ` $${(cost.cost_cents / 100).toFixed(2)}`
-				: "";
+			cost && cost.cost_cents > 0 ? ` $${(cost.cost_cents / 100).toFixed(2)}` : "";
 		env.info(
 			`[${w.id}] ${sanitizeTerminalText(w.title)} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
 		);
@@ -519,10 +520,7 @@ register({
 	usage: "wf status [--json] [wfId]",
 	widget: "workflow-status",
 	run: (args, env) => {
-		const parsed = parseArgs(args, [
-			{ name: "--json" },
-			{ name: "--all" },
-		]);
+		const parsed = parseArgs(args, [{ name: "--json" }, { name: "--all" }]);
 		const explicit = parsed.positionals[0];
 		if (env.kind === "cli") {
 			if (parsed.bool("--json")) {
@@ -536,8 +534,8 @@ register({
 		const showAll = parsed.bool("--all");
 		const lines: string[] = [];
 		const workflows = explicit
-			? [getWorkflow(env.db, explicit)].filter(
-					(w): w is NonNullable<typeof w> => Boolean(w),
+			? [getWorkflow(env.db, explicit)].filter((w): w is NonNullable<typeof w> =>
+					Boolean(w),
 				)
 			: showAll
 				? listWorkflows(env.db)
@@ -688,9 +686,7 @@ register({
 		const step = resolveStepId(env, token);
 		if (!step) {
 			env.fail(
-				env.kind === "cli"
-					? `✗ 步骤不存在: ${token}`
-					: `步骤不存在: ${token}`,
+				env.kind === "cli" ? `✗ 步骤不存在: ${token}` : `步骤不存在: ${token}`,
 			);
 			return;
 		}
@@ -791,8 +787,7 @@ register({
 			return;
 		}
 		// pi:widget 渲染(无 follow)
-		const limit =
-			args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
+		const limit = args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
 		const wfId =
 			args[0] && !/^\d+$/.test(args[0])
 				? resolveWorkflowId(env, args[0])
@@ -851,9 +846,7 @@ register({
 				const res = await dispatchStep(env.db, workflow, step, { dryRun });
 				if (res.ok) {
 					if (res.reused) {
-						env.info(
-							`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
-						);
+						env.info(`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
 					} else {
 						env.info(
 							res.dryRun
@@ -886,9 +879,7 @@ register({
 				? getReadySteps(env.db, wfId).map((s) => s.id.slice(wfId.length + 1))
 				: tokens;
 		if (readyTokens.length === 0) {
-			env.info(
-				`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`,
-			);
+			env.info(`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`);
 			return;
 		}
 		const results: string[] = [];
@@ -933,9 +924,7 @@ register({
 		const step = resolveStepId(env, token);
 		if (!step) {
 			env.fail(
-				env.kind === "cli"
-					? `✗ 步骤不存在: ${token}`
-					: `步骤不存在: ${token}`,
+				env.kind === "cli" ? `✗ 步骤不存在: ${token}` : `步骤不存在: ${token}`,
 			);
 			return;
 		}
@@ -1034,17 +1023,13 @@ register({
 		const step = resolveStepId(env, token);
 		if (!step) {
 			env.fail(
-				env.kind === "cli"
-					? `✗ 步骤不存在: ${token}`
-					: `步骤不存在: ${token}`,
+				env.kind === "cli" ? `✗ 步骤不存在: ${token}` : `步骤不存在: ${token}`,
 			);
 			return;
 		}
 		if (!["failed", "aborted", "needs-fix"].includes(step.status)) {
 			if (env.kind === "cli") {
-				env.fail(
-					`✗ 状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`,
-				);
+				env.fail(`✗ 状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`);
 				return;
 			}
 			env.warn(`状态 ${step.status} 无需重试(仅 failed/aborted/needs-fix)`);
@@ -1062,9 +1047,7 @@ register({
 		const res = await dispatchStep(env.db, workflow, step, { fresh });
 		if (res.ok) {
 			if (res.reused) {
-				env.info(
-					`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
-				);
+				env.info(`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
 			} else if (env.kind === "cli") {
 				env.info(
 					`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
@@ -1457,24 +1440,18 @@ register({
 		const step = resolveStepId(env, token);
 		if (!step) {
 			env.fail(
-				env.kind === "cli"
-					? `✗ 步骤不存在: ${token}`
-					: `步骤不存在: ${token}`,
+				env.kind === "cli" ? `✗ 步骤不存在: ${token}` : `步骤不存在: ${token}`,
 			);
 			return;
 		}
 		const parsed = parseJsonArg(rest.join(" "));
 		if (!parsed.ok) {
-			env.fail(
-				env.kind === "cli" ? `✗ ${parsed.error}` : parsed.error!,
-			);
+			env.fail(env.kind === "cli" ? `✗ ${parsed.error}` : parsed.error!);
 			return;
 		}
 		const res = reportDone(env.db, step.id, parsed.value);
 		if (!res.ok) {
-			env.fail(
-				env.kind === "cli" ? `✗ ${res.error}` : res.error!,
-			);
+			env.fail(env.kind === "cli" ? `✗ ${res.error}` : res.error!);
 			return;
 		}
 		if (env.kind === "cli") {
@@ -1504,17 +1481,13 @@ register({
 		const step = resolveStepId(env, token);
 		if (!step) {
 			env.fail(
-				env.kind === "cli"
-					? `✗ 步骤不存在: ${token}`
-					: `步骤不存在: ${token}`,
+				env.kind === "cli" ? `✗ 步骤不存在: ${token}` : `步骤不存在: ${token}`,
 			);
 			return;
 		}
 		const res = reportFail(env.db, step.id, rest.join(" ") || "(未说明)");
 		if (!res.ok) {
-			env.fail(
-				env.kind === "cli" ? `✗ ${res.error}` : res.error!,
-			);
+			env.fail(env.kind === "cli" ? `✗ ${res.error}` : res.error!);
 			return;
 		}
 		if (env.kind === "cli") {
@@ -1587,11 +1560,7 @@ register({
 		};
 		if (json) {
 			env.info(
-				JSON.stringify(
-					{ workflowId: workflow.id, steps: rows, summary },
-					null,
-					2,
-				),
+				JSON.stringify({ workflowId: workflow.id, steps: rows, summary }, null, 2),
 			);
 			return;
 		}
@@ -1686,7 +1655,8 @@ register({
 		const interval = Number(parsed.value("--interval", "5"));
 		const wfArg = parsed.positionals[0];
 		const wfId = resolveWorkflowId(env, wfArg);
-		if (!wfId) throw new UsageError("✗ 无法确定 workflow(传 id 或在仓库根目录运行)");
+		if (!wfId)
+			throw new UsageError("✗ 无法确定 workflow(传 id 或在仓库根目录运行)");
 		if (!getWorkflow(env.db, wfId)) {
 			throw new UsageError(`✗ workflow 不存在: ${wfId}`);
 		}
@@ -1728,7 +1698,9 @@ register({
 					until,
 				);
 				const elapsed = Math.round((Date.now() - start) / 1000);
-				env.warn(`t=${elapsed}s 状态=${fmtCounts() || "(无)"} 未派发 ${notStarted}`);
+				env.warn(
+					`t=${elapsed}s 状态=${fmtCounts() || "(无)"} 未派发 ${notStarted}`,
+				);
 				if (unreachable.length > 0) {
 					env.warn("不可达步骤(需人工介入):");
 					for (const id of unreachable) {
@@ -1816,9 +1788,7 @@ register({
 			path.join(os.homedir(), ".pi", "agent", "sessions");
 		const file = findLatestSessionFile(sessionsRoot, cwd);
 		if (!file) {
-			env.fail(
-				`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`,
-			);
+			env.fail(`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`);
 			return;
 		}
 		const messages: Array<{ ts: string; role: string; text: string }> = [];
@@ -1903,11 +1873,7 @@ register({
 			}
 		}
 		// 新 attempt 行(冻结 task_md + pointer),成功后由 openStepTab 回写 tab_id
-		const pointer = buildPointer(
-			workflow.id,
-			dotted,
-			workflow.current_wave || 1,
-		);
+		const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
 		const attempt = createAttempt(env.db, step.id, {
 			taskMd: step.task_md,
 			pointer,
@@ -1927,7 +1893,9 @@ register({
 			env.fail(`✗ open-tab 失败: ${res.error}`);
 			return;
 		}
-		env.info(`✓ ${step.id} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"} manual`);
+		env.info(
+			`✓ ${step.id} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"} manual`,
+		);
 	},
 });
 
@@ -2032,10 +2000,7 @@ register({
 	usage: "wf cleanup [workflowId] [--dry-run] [--no-fix]",
 	entry: "cli",
 	run: async (args, env) => {
-		const parsed = parseArgs(args, [
-			{ name: "--dry-run" },
-			{ name: "--no-fix" },
-		]);
+		const parsed = parseArgs(args, [{ name: "--dry-run" }, { name: "--no-fix" }]);
 		const dryRun = parsed.bool("--dry-run");
 		const noFix = parsed.bool("--no-fix");
 		const wfArg = parsed.positionals[0];
@@ -2068,7 +2033,9 @@ register({
 		// 查询失败:绝不关闭任何 tab(与 monitor 同口径:查询失败不算 tab 关闭),其余清理继续
 		const canJudgeTabs = live !== null;
 		if (!canJudgeTabs) {
-			warn("ghostctl layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续");
+			warn(
+				"ghostctl layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续",
+			);
 		}
 		for (const s of steps) {
 			if (!canJudgeTabs || !s.tab_id || !TERMINAL_OK.has(s.status)) continue;
@@ -2120,9 +2087,7 @@ register({
 		for (const s of steps) {
 			if (!s.worktree) continue;
 			if (ACTIVE_STATES.has(s.status)) {
-				env.info(
-					`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`,
-				);
+				env.info(`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`);
 				continue;
 			}
 			const dotted = s.id.slice(workflow.id.length + 1);
@@ -2140,11 +2105,9 @@ register({
 			// 跟踪检查:被误提交进 git 则只警告,不自动改索引
 			let tracked = false;
 			try {
-				const ls = execFileSync(
-					"git",
-					["-C", wtPath, "ls-files", ".pi-glla"],
-					{ encoding: "utf-8" },
-				).trim();
+				const ls = execFileSync("git", ["-C", wtPath, "ls-files", ".pi-glla"], {
+					encoding: "utf-8",
+				}).trim();
 				tracked = ls.length > 0;
 			} catch {
 				warn(`${s.id}: git ls-files 检查失败,跳过 .pi-glla`);
@@ -2202,11 +2165,9 @@ register({
 			const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
 			if (!fs.existsSync(wtPath)) continue;
 			try {
-				const out = execFileSync(
-					"git",
-					["-C", wtPath, "status", "--porcelain"],
-					{ encoding: "utf-8" },
-				).trim();
+				const out = execFileSync("git", ["-C", wtPath, "status", "--porcelain"], {
+					encoding: "utf-8",
+				}).trim();
 				const dirty = out
 					.split("\n")
 					.filter(Boolean)
@@ -2266,20 +2227,12 @@ register({
 			const ok = /3\.(1[0-9]|[2-9])/.test(py);
 			checks.push(["python3 ≥ 3.10(ghostctl 语法)", ok, py]);
 		} catch {
-			checks.push([
-				"python3 ≥ 3.10(ghostctl 语法)",
-				false,
-				"python3 不可用",
-			]);
+			checks.push(["python3 ≥ 3.10(ghostctl 语法)", false, "python3 不可用"]);
 		}
 		const ver = (
 			env.db.prepare("PRAGMA user_version").get() as { user_version: number }
 		).user_version;
-		checks.push([
-			"数据库可打开(user_version)",
-			ver >= 1,
-			`v${ver} @ ${DB_PATH}`,
-		]);
+		checks.push(["数据库可打开(user_version)", ver >= 1, `v${ver} @ ${DB_PATH}`]);
 		let okAll = true;
 		for (const [name, ok, detail] of checks) {
 			env.info(`${ok ? "✓" : "✗"} ${name}${ok ? "" : " ← 需修复"}`);
@@ -2320,9 +2273,7 @@ register({
 		if (running.length > 0) {
 			env.info(`运行中(${running.length}):`);
 			for (const s of running) {
-				env.info(
-					`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`,
-				);
+				env.info(`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`);
 			}
 		}
 		const evtTotal = (

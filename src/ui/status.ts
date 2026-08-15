@@ -3,7 +3,11 @@
  *
  * 依赖方向:ui → db / core(无反向 import,见 docs/arch-refactor.md §3.10)。
  */
-import type { ExtensionCommandContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionCommandContext,
+	Theme,
+	ThemeColor,
+} from "@earendil-works/pi-coding-agent";
 import {
 	listActiveWorkflows,
 	getStepsByWorkflow,
@@ -16,7 +20,11 @@ import {
 } from "../core/db.ts";
 import { STATUS_ICON } from "../core/state.ts";
 import { sanitizeTerminalText } from "../sanitize.ts";
-import { COLLAPSE_KEY_OFF, getMaxWidgetLines, resolveCollapseKey } from "../config.ts";
+import {
+	COLLAPSE_KEY_OFF,
+	getMaxWidgetLines,
+	resolveCollapseKey,
+} from "../config.ts";
 export function statusCountsLine(
 	counts: Record<string, number>,
 	total: number,
@@ -53,10 +61,7 @@ export function renderWorkflowStatus(
 		const cost = workflowCost(db, w.id);
 		return workflowStatusSegment(w, counts, steps, cost);
 	});
-	ctx.ui.setStatus(
-		"wf",
-		segments.join(` ${WF_ANSI.dim}·${WF_ANSI.reset} `),
-	);
+	ctx.ui.setStatus("wf", segments.join(` ${WF_ANSI.dim}·${WF_ANSI.reset} `));
 	// factory 形式:每帧拿 theme(主题语义色,跟随用户主题)与 width(截断)
 	ctx.ui.setWidget("workflow-plan", (_tui, theme) => ({
 		render: (width: number) =>
@@ -143,10 +148,14 @@ export function workflowStatusSegment(
 		`${WF_STATUS_COLOR[w.status] ?? WF_ANSI.dim}${w.id}${WF_ANSI.reset}`,
 		`${WF_ANSI.dim}${done}/${total}${WF_ANSI.reset}`,
 	];
-	if (running > 0) parts.push(`${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`);
-	if (todo > 0) parts.push(`${WF_ANSI.dim}${PLAN_ICON.todo}${todo}${WF_ANSI.reset}`);
-	if (verify > 0) parts.push(`${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}`);
-	if (abnormal > 0) parts.push(`${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}`);
+	if (running > 0)
+		parts.push(`${WF_ANSI.yellow}${PLAN_ICON.running}${running}${WF_ANSI.reset}`);
+	if (todo > 0)
+		parts.push(`${WF_ANSI.dim}${PLAN_ICON.todo}${todo}${WF_ANSI.reset}`);
+	if (verify > 0)
+		parts.push(`${WF_ANSI.cyan}${PLAN_ICON.verify}${verify}${WF_ANSI.reset}`);
+	if (abnormal > 0)
+		parts.push(`${WF_ANSI.red}${PLAN_ICON.abnormal}${abnormal}${WF_ANSI.reset}`);
 	return parts.join(" ") + costText;
 }
 
@@ -209,7 +218,10 @@ function planStepLine(
 ): string {
 	const id = theme.fg("dim", padEnd(dotted, 6));
 	// 模型可控标题渲染前净化(P0-1):防 CSI/OSC/双向符污染面板布局(truncWidth 不防转义)
-	const title = truncWidth(sanitizeTerminalText(s.title), Math.max(20, 56 - conn.length));
+	const title = truncWidth(
+		sanitizeTerminalText(s.title),
+		Math.max(20, 56 - conn.length),
+	);
 	const dur = durText(s.started_at, s.finished_at);
 	const durText_ = dur ? ` ${theme.fg("muted", `(${dur})`)}` : "";
 	const depText =
@@ -343,9 +355,15 @@ export function buildPlanLines(
 		const head =
 			`${theme.fg(hc, hasActive ? "●" : "○")} ` +
 			`${theme.fg(hc, `${w.id} (${done}/${steps.length})`)}` +
-			(running > 0 ? ` ${theme.fg("warning", `${PLAN_ICON.running}${running}`)}` : "") +
-			(verify > 0 ? ` ${theme.fg("warning", `${PLAN_ICON.verify}${verify}`)}` : "") +
-			(abnormal > 0 ? ` ${theme.fg("error", `${PLAN_ICON.abnormal}${abnormal}`)}` : "");
+			(running > 0
+				? ` ${theme.fg("warning", `${PLAN_ICON.running}${running}`)}`
+				: "") +
+			(verify > 0
+				? ` ${theme.fg("warning", `${PLAN_ICON.verify}${verify}`)}`
+				: "") +
+			(abnormal > 0
+				? ` ${theme.fg("error", `${PLAN_ICON.abnormal}${abnormal}`)}`
+				: "");
 		lines.push(fit(head));
 
 		// 折叠态:标题 + 展开提示行(参考 rpiv-todo 折叠渲染;折叠时不渲染任务行
