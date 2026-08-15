@@ -1180,8 +1180,9 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	}
 
 	// ── 注册本插件 skill(使用与排查手册)──────────────────
+	// skill 目录在仓库根 skill/,而 EXT_DIR 指向 src/,故需回退一级
 	pi.on("resources_discover", async (_event, _ctx) => {
-		return { skillPaths: [path.join(EXT_DIR, "skill")] };
+		return { skillPaths: [path.resolve(EXT_DIR, "..", "skill")] };
 	});
 
 	// ── 存活轮询句柄(编排者侧)────────────────────────────
