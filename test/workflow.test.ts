@@ -274,7 +274,8 @@ async function main(): Promise<void> {
 	fs.writeFileSync(path.join(tmpDir, "extensions", "workflow", "src", "cli.ts"), "// cli\n");
 	const cliNoPiBin = dispatchMod.piInvocation();
 	assert(
-		cliNoPiBin === "pi" || cliNoPiBin.includes("/bin/pi"),
+		!cliNoPiBin.includes("cli.ts") &&
+			(cliNoPiBin === "pi" || cliNoPiBin.includes("node")),
 		`wf CLI 上下文不启动自身(${cliNoPiBin})`,
 	);
 	process.env.PI_BIN = "/custom/pi";
