@@ -1,3 +1,9 @@
+## 命令入口
+
+- CLI 本体随 skill 分发:`<skill目录>/bin/wf <cmd> [args]`(node 自动兜底,裸 PATH 可用);已安装环境可全局软链 `~/.local/bin/wf`(可选)
+- `/wf <cmd>`(pi 插件内)与 `wf <cmd>`(CLI)共享同一注册表,行为一致
+- 退出码契约:`0` 成功 / `1` 业务错误 / `2` 不可达(poll)/ `3` 用法错误
+
 # 命令参考(32 条)
 
 > 由 skill/SKILL.md 拆分,按需加载。

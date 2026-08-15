@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# pi-workflow CLI 入口(创建/执行/排查,与插件共享核心逻辑)
-# 用法见:wf help 或 skill/SKILL.md §6
+# pi-workflow CLI 入口(随 skill 分发:skill/bin/wf)
+# 用法见:skill/SKILL.md(命令参考在 references/commands.md)
+# 调用方式:
+#   <skill目录>/bin/wf <command> [args]     # 相对 skill 目录(Agent Skills 规范)
+#   ~/.local/bin/wf <command> [args]        # 可选全局软链(兼容已安装环境)
 SELF="${BASH_SOURCE[0]}"
 if [ -L "$SELF" ]; then
 	LINK="$(readlink "$SELF")"
@@ -9,7 +12,8 @@ if [ -L "$SELF" ]; then
 		*) SELF="$(dirname "$SELF")/$LINK" ;;
 	esac
 fi
-DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+# skill/bin/wf → skill/ → 扩展仓库根(命令实现 src/cli.ts 在仓库根)
+ROOT="$(cd "$(dirname "$SELF")/../.." && pwd)"
 
 # node 解析:WF_NODE 显式指定 → PATH → fnm 各版本目录 → Homebrew。
 # 逐个试运行验证(需 ≥22.13 支持 --experimental-strip-types),取第一个可用的。
@@ -29,4 +33,4 @@ NODE_BIN="$(find_node)" || {
 	echo "未找到 node:请安装 node ≥ 22.13,或设置 WF_NODE 指向 node 绝对路径" >&2
 	exit 127
 }
-exec "$NODE_BIN" --experimental-strip-types "$DIR/src/cli.ts" "$@"
+exec "$NODE_BIN" --experimental-strip-types "$ROOT/src/cli.ts" "$@"

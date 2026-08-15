@@ -13,6 +13,22 @@ description: >
 >
 > 权威层级:本手册 → `DESIGN.md`(设计)→ 代码(src/ 命令注册表,以代码为准)。
 
+## 命令入口(随 skill 分发,不依赖全局安装)
+
+所有命令双入口:`/wf <cmd>`(pi 插件命令)+ `wf <cmd>`(CLI)。
+
+**CLI 命令本体就在本 skill 内**(Agent Skills 规范:skill 自带脚本,按相对路径调用):
+
+```bash
+<skill目录>/bin/wf status          # 相对 skill 目录调用(克隆 skill 即得命令)
+~/.pi/agent/extensions/workflow/skill/bin/wf status
+# 可选:已安装环境做了全局软链(兼容旧用法)
+wf status
+```
+
+- 命令实现:`skill/bin/wf`(bash 包装,node 自动兜底:WF_NODE→PATH→fnm→brew,裸 PATH 可用)→ 仓库根 `src/cli.ts`(与插件共享同一命令注册表)
+- 无 `/wf` 插件环境(纯脚本/CI)也能用 CLI;`/wf` 与 `wf` 行为一致,退出码契约 0/1/2/3
+
 ## 何时使用
 
 - 编排者:拆分大任务、派发子 agent、核对回报、合并 wave、目标把关

@@ -55,7 +55,7 @@
 workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 ├── src/
 │   ├── index.ts        # 入口:/wf 命令查注册表 + footer 状态条 + 生命周期(monitor 启停)
-│   ├── cli.ts          # CLI 适配器:main 查注册表,统一退出码(0/1/2/3);bin/wf 入口
+│   ├── cli.ts          # CLI 适配器:main 查注册表,统一退出码(0/1/2/3);skill/bin/wf 入口
 │   ├── command.ts      # ★ 命令注册表:32 条 CommandDef 双入口共享(见 §9.1)
 │   ├── core/
 │   │   ├── db.ts           # node:sqlite 封装:schema 迁移、读写、事件写入
@@ -78,9 +78,9 @@ workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 │   ├── agents.ts       # agent 发现(零依赖,frontmatter 解析)
 │   └── session.ts      # 主控 pi 会话 jsonl 解析(供 wf session)
 ├── skill/
-│   └── SKILL.md        # 使用与排查手册(经 resources_discover 自动注册)
-├── bin/
-│   └── wf              # CLI 入口(node 自动兜底:WF_NODE→PATH→fnm→brew)
+│   ├── SKILL.md        # 使用与排查手册(经 resources_discover 自动注册,精炼入口)
+│   ├── bin/wf          # ★ CLI 命令本体(随 skill 分发,Agent Skills 规范;node 自动兜底)
+│   └── references/     # 按需加载:命令参考/编排流程/数据模型/排查手册
 ├── test/
 │   └── workflow.test.ts # 验收测试(T1-T25b,276 断言)
 ├── docs/               # 设计/评审记录(arch-review/arch-refactor/review-arch 等)
