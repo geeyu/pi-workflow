@@ -625,9 +625,9 @@ register({
 		]);
 		const htmlPath = parsed.value("--html");
 		const waveSeq =
-			parsed.value("--wave") !== undefined
-				? Number(parsed.value("--wave"))
-				: undefined;
+			parsed.value("--wave") === undefined
+				? undefined
+				: Number(parsed.value("--wave"));
 		const wfId = resolveWorkflowId(
 			env,
 			parsed.positionals.find((a) => !/^\d+$/.test(a)),
@@ -977,9 +977,9 @@ register({
 	run: async (args, env) => {
 		const parsed = parseArgs(args, [{ name: "--wave", value: true }]);
 		const explicitWave =
-			parsed.value("--wave") !== undefined
-				? Number(parsed.value("--wave"))
-				: undefined;
+			parsed.value("--wave") === undefined
+				? undefined
+				: Number(parsed.value("--wave"));
 		const explicitWf = parsed.positionals.find((a) => !/^\d+$/.test(a));
 		const wfId = resolveWorkflowId(env, explicitWf);
 		if (!wfId) {
@@ -1739,7 +1739,7 @@ register({
 				}
 				if (reached) {
 					const summary =
-						`达成(${until}${until !== "skipped" ? " 或 skipped" : ""}): ` +
+						`达成(${until}${until === "skipped" ? "" : " 或 skipped"}): ` +
 						`${fmtCounts() || "(无步骤)"}`;
 					finish(0, summary);
 					return true;
@@ -2180,14 +2180,14 @@ register({
 				warn(
 					`仓库根 .gitignore 缺 .pi-glla/(--no-fix 未修改);建议手动追加后再 /wf merge`,
 				);
-			} else if (!dryRun) {
-				const add = `${giContent && !giContent.endsWith("\n") ? "\n" : ""}# pi-workflow: 子 pi 运行时状态(防 merge 冲突)\n.pi-glla/\n`;
-				fs.appendFileSync(giPath, add);
+			} else if (dryRun) {
 				summary.gitignoreAppended = true;
 				env.info(
 					`${prefix}.gitignore 追加 .pi-glla/(${path.relative(workflow.repo_path, giPath)})`,
 				);
 			} else {
+				const add = `${giContent && !giContent.endsWith("\n") ? "\n" : ""}# pi-workflow: 子 pi 运行时状态(防 merge 冲突)\n.pi-glla/\n`;
+				fs.appendFileSync(giPath, add);
 				summary.gitignoreAppended = true;
 				env.info(
 					`${prefix}.gitignore 追加 .pi-glla/(${path.relative(workflow.repo_path, giPath)})`,
@@ -2367,7 +2367,7 @@ register({
 				);
 				return;
 			}
-			step = getStep(env.db, ident.stepId!);
+			step = getStep(env.db, ident.stepId!) ?? null;
 			if (!step) {
 				env.fail(`步骤不存在: ${ident.stepId}`);
 				return;

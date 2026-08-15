@@ -28,34 +28,27 @@ export function run(
 		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。
 		const env = {
 			...process.env,
-			PATH: [
-				"/opt/homebrew/bin",
-				"/usr/local/bin",
-				process.env.PATH ?? "",
-			].join(":"),
+			PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH ?? ""].join(
+				":",
+			),
 		};
-		execFile(
-			cmd,
-			args,
-			{ cwd, timeout: 120_000, env },
-			(err, stdout, stderr) => {
-				if (!err) {
-					resolve({
-						code: 0,
-						stdout: String(stdout ?? ""),
-						stderr: String(stderr ?? ""),
-					});
-					return;
-				}
-				const errCode = (err as NodeJS.ErrnoException).code;
-				const code = typeof errCode === "number" ? errCode : 1;
+		execFile(cmd, args, { cwd, timeout: 120_000, env }, (err, stdout, stderr) => {
+			if (!err) {
 				resolve({
-					code,
+					code: 0,
 					stdout: String(stdout ?? ""),
 					stderr: String(stderr ?? ""),
 				});
-			},
-		);
+				return;
+			}
+			const errCode = (err as NodeJS.ErrnoException).code;
+			const code = typeof errCode === "number" ? errCode : 1;
+			resolve({
+				code,
+				stdout: String(stdout ?? ""),
+				stderr: String(stderr ?? ""),
+			});
+		});
 	});
 }
 
@@ -82,13 +75,12 @@ export function piInvocation(): string {
 		// 显式覆盖:信任调用方,不做存在性校验
 		return `"${envBin}"`;
 	}
-	const found = resolveOnPath("pi") ?? path.join(os.homedir(), ".local", "bin", "pi");
+	const found =
+		resolveOnPath("pi") ?? path.join(os.homedir(), ".local", "bin", "pi");
 	try {
 		fs.accessSync(found, fs.constants.X_OK);
 		const real = fs.realpathSync(found);
-		return real.endsWith(".js")
-			? `"${process.execPath}" "${real}"`
-			: `"${real}"`;
+		return real.endsWith(".js") ? `"${process.execPath}" "${real}"` : `"${real}"`;
 	} catch {
 		return "pi";
 	}

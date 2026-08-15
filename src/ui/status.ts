@@ -3,14 +3,14 @@
  *
  * 依赖方向:ui → db / core(无反向 import,见 docs/arch-refactor.md §3.10)。
  */
-import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
 	listActiveWorkflows,
 	getStepsByWorkflow,
 	getStepDeps,
 	stepStatusCounts,
 	workflowCost,
-	getDb,
+	type getDb,
 	type WorkflowRow,
 	type StepRow,
 } from "../core/db.ts";
@@ -215,7 +215,7 @@ function planStepLine(
 	const depText =
 		deps.length > 0 ? ` ${theme.fg("muted", `⛓ ${deps.join(",")}`)}` : "";
 	// 连接线 dim + 空格 + 语义色字形(rpiv-todo 风格:├─ ✓ …)
-	const glyph = (g: string, c: string): string =>
+	const glyph = (g: string, c: ThemeColor): string =>
 		`${theme.fg("dim", conn)} ${theme.fg(c, g)}`;
 	switch (s.status) {
 		case "running":
