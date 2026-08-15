@@ -257,14 +257,21 @@ async function main(): Promise<void> {
 	// piInvocation:pi 插件上下文复用当前 node + 脚本;wf CLI 上下文解析真实 pi 二进制
 	const savedArgv = process.argv[1];
 	const savedPiBin = process.env.PI_BIN;
-	process.argv[1] = "/x/pi/dist/cli.js";
+	// 模拟 pi 插件上下文:argv[1] 为真实存在的 pi 入口(非 cli.ts)
+	const fakePiEntry = path.join(tmpDir, "pi-cli.js");
+	fs.writeFileSync(fakePiEntry, "#!/usr/bin/env node\n");
+	process.argv[1] = fakePiEntry;
 	delete process.env.PI_BIN;
 	const inPlugin = dispatchMod.piInvocation();
 	assert(
-		inPlugin.includes("node") && inPlugin.includes("dist/cli.js"),
+		inPlugin.includes("node") && inPlugin.includes(fakePiEntry),
 		`pi 插件上下文复用 node+pi 入口(${inPlugin})`,
 	);
-	process.argv[1] = "/x/workflow/src/cli.ts";
+	process.argv[1] = path.join(tmpDir, "extensions", "workflow", "src", "cli.ts");
+	fs.mkdirSync(path.join(tmpDir, "extensions", "workflow", "src"), {
+		recursive: true,
+	});
+	fs.writeFileSync(path.join(tmpDir, "extensions", "workflow", "src", "cli.ts"), "// cli\n");
 	const cliNoPiBin = dispatchMod.piInvocation();
 	assert(
 		cliNoPiBin === "pi" || cliNoPiBin.includes("/bin/pi"),
