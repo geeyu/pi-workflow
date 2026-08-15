@@ -10,6 +10,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import type { DatabaseSync } from "node:sqlite";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -66,9 +67,11 @@ import {
 } from "./dispatch.ts";
 import {
 	getReadySteps,
+	markNotified,
 	mergeWave,
 	recoverStaleSteps,
 	startMonitor,
+	type NotifyItem,
 } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
 import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
@@ -196,6 +199,66 @@ function notify(
 	type: "info" | "warning" | "error" = "info",
 ): void {
 	ctx.ui.notify(message, type);
+}
+
+// ────────────────────────────────────────────────────────────
+// 主控自主编排通知(设计增强①:monitor 状态事件 → sendMessage)
+// ────────────────────────────────────────────────────────────
+/** 通知发送通道的最小类型面(pi.sendMessage + ctx.ui.notify,便于测试注入) */
+export interface WorkflowNotifySender {
+	sendMessage: (
+		message: {
+			customType: string;
+			content: string;
+			display: boolean;
+		},
+		options: { deliverAs: "followUp"; triggerTurn: boolean },
+	) => Promise<unknown>;
+	ui: {
+		notify: (message: string, type?: "info" | "warning" | "error") => void;
+	};
+}
+
+/** 单次聚合通知的最大行数,超出留到下一轮 */
+export const NOTIFY_MAX_LINES = 5;
+
+/**
+ * 聚合发送状态事件通知(主控自主编排):
+ * - 同一 tick 多条合并为一条消息,最多 NOTIFY_MAX_LINES 行(超出不标记,下轮再发);
+ * - 通道:pi.sendMessage({customType:"workflow-notify",...},{deliverAs:"followUp",triggerTurn:true})
+ *   followUp 不打断主控进行中的对话;triggerTurn 在空闲时唤醒主控,自主执行 /wf verify/merge/下发;
+ * - 降级:sendMessage 抛错 → ctx.ui.notify(仅 TUI 提示);两条通道都失败 → 不标记,下轮重试;
+ * - 发送成功(含降级)的项才 markNotified,保证「每种事件每步骤每 attempt 只通知一次」。
+ */
+export async function sendWorkflowNotifications(
+	db: DatabaseSync,
+	sender: WorkflowNotifySender,
+	items: NotifyItem[],
+): Promise<void> {
+	const toSend = items.slice(0, NOTIFY_MAX_LINES);
+	if (toSend.length === 0) return;
+	const content = [
+		`[wf] ${toSend.length} 个关键事件(可依次执行):`,
+		...toSend.map((i) => `- ${i.text}`),
+	].join("\n");
+	let delivered = false;
+	try {
+		await sender.sendMessage(
+			{ customType: "workflow-notify", content, display: true },
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+		delivered = true;
+	} catch {
+		try {
+			sender.ui.notify(content, "info");
+			delivered = true;
+		} catch {
+			/* 两条通道都失败:不标记,下轮重试 */
+		}
+	}
+	if (delivered) {
+		for (const item of toSend) markNotified(db, item);
+	}
 }
 
 function parseJsonArg(raw: string): {
@@ -1205,12 +1268,18 @@ export default function workflowExtension(pi: ExtensionAPI) {
 			} catch {
 				/* 恢复失败不阻塞启动 */
 			}
-			// 存活轮询(5s,设计决策 12)
+			// 存活轮询(5s,设计决策 12)+ 状态事件通知(设计增强①)
 			monitorStop = startMonitor(db, {
 				onClosed: (closed) =>
 					ctx.ui.notify(
 						`[wf] tab 关闭未回报 → aborted: ${closed.join(", ")}`,
 						"warning",
+					),
+				onState: (items) =>
+					sendWorkflowNotifications(
+						db,
+						{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
+						items,
 					),
 				onTick: () => renderWidget(ctx, db),
 			});
