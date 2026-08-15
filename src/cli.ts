@@ -8,6 +8,7 @@
  *   wf status [--json] | wf tree [wf] | wf step <id> | wf events [wf] [N] [--follow]
  *   wf dispatch <dotted...> [--workflow <id>] [--dry-run]
  *   wf rebind-window [wfId] | wf verify <id> approve|reject [原因] | wf done <id> '<JSON>' | wf fail <id> <原因>
+ *   wf tabs [wf] [--json] | wf cleanup [wf] [--dry-run] [--no-fix]
  *   wf clean | wf doctor | wf debug
  *
  * 运行:node --experimental-strip-types src/cli.ts(入口 bin/wf)
@@ -45,8 +46,8 @@ import {
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
-import { dispatchStep, resolveBin } from "./dispatch.ts";
-import { mergeWave } from "./monitor.ts";
+import { dispatchStep, resolveBin, worktreePath } from "./dispatch.ts";
+import { fetchLiveTabIds, mergeWave } from "./monitor.ts";
 import { planFromGoal } from "./planner.ts";
 import { buildBoard, renderBoardHtml, renderBoardText } from "./board.ts";
 import { WF_WINDOW_META_KEY } from "./dispatch.ts";
@@ -707,6 +708,244 @@ function cmdClean(): void {
 	);
 }
 
+/** 终态步骤(done/skipped)判定 */
+const TERMINAL_OK = new Set(["done", "skipped"]);
+
+/**
+ * wf tabs [workflowId] [--json] — 子任务 tab 状态(存活判定)
+ *
+ * 按 workflow 仓库一次 ghostctl layout,以 terminal id 集合判存活
+ * (tab_id 存的就是 terminal id,与 monitor 存活检测同口径)。
+ */
+async function cmdTabs(args: string[]): Promise<void> {
+	const json = args.includes("--json");
+	const wfArg = args.find((a) => !a.startsWith("--"));
+	const workflowId = resolveWorkflowId(wfArg);
+	const workflow = workflowId ? getWorkflow(db, workflowId) : undefined;
+	if (!workflow) {
+		console.error(
+			`✗ 无法确定 workflow: ${wfArg ?? "(未传 id,且 cwd 不在任何 workflow 仓库内)"}`,
+		);
+		process.exit(1);
+	}
+	const steps = getStepsByWorkflow(db, workflow.id);
+	const live = await fetchLiveTabIds(resolveBin("ghostctl"), workflow.repo_path);
+	if (live === null) {
+		console.error(
+			"✗ ghostctl layout 查询失败,无法判定 tab 存活(与 monitor 同口径:查询失败不算 tab 关闭)",
+		);
+		console.error("  请用 wf doctor 检查 ghostctl/ghostty 环境后重试");
+		process.exit(1);
+	}
+	const rows = steps.map((s) => ({
+		id: s.id,
+		status: s.status,
+		tabId: s.tab_id,
+		alive: Boolean(s.tab_id && live.has(s.tab_id)),
+		worktree: s.worktree,
+	}));
+	const withTab = rows.filter((r) => r.tabId);
+	const summary = {
+		total: rows.length,
+		withTab: withTab.length,
+		alive: withTab.filter((r) => r.alive).length,
+		closed: withTab.filter((r) => !r.alive).length,
+	};
+	if (json) {
+		console.log(JSON.stringify({ workflowId: workflow.id, steps: rows, summary }, null, 2));
+		return;
+	}
+	for (const r of rows) {
+		console.log(
+			`${r.id} [${r.status}] tab=${r.tabId ? r.tabId.slice(0, 8) : "-"} 存活=${r.alive ? "yes" : "no"} worktree=${r.worktree ?? "-"}`,
+		);
+	}
+	console.log(
+		`共 ${summary.total} 步 | 有 tab ${summary.withTab} | 存活 ${summary.alive} | 已关 ${summary.closed}`,
+	);
+	if (summary.withTab > 0 && live.size === 0) {
+		console.error(
+			"(提示:ghostctl layout 无任何存活 terminal,存活判定可能不准 — 可用 wf doctor 检查环境)",
+		);
+	}
+}
+
+interface CleanupSummary {
+	closedTabs: number;
+	cleanedPiglla: number;
+	gitignoreAppended: boolean;
+	gitignoreMissing: boolean;
+	warnings: number;
+}
+
+/**
+ * wf cleanup [workflowId] [--dry-run] [--no-fix] — 合并前置自动处理
+ *
+ * 1. 关终态(done/skipped)步骤的存活 tab(ghostctl close-terminal,不切焦点),事件 step_tab_closed(reason=cleanup),清 tab_id;
+ * 2. 清各 worktree 的 .pi-glla(路径守卫 + 跟踪检查,被误提交则只警告);
+ * 3. 仓库根 .gitignore 缺 .pi-glla/ 自动追加(--no-fix 只提示);
+ * 4. 终态步骤 worktree 未提交改动检查(排除 .pi-glla,只警告不自动 commit)。
+ */
+async function cmdCleanup(args: string[]): Promise<void> {
+	const dryRun = args.includes("--dry-run");
+	const noFix = args.includes("--no-fix");
+	const wfArg = args.find((a) => !a.startsWith("--"));
+	const workflowId = resolveWorkflowId(wfArg);
+	const workflow = workflowId ? getWorkflow(db, workflowId) : undefined;
+	if (!workflow) {
+		console.error(
+			`✗ 无法确定 workflow: ${wfArg ?? "(未传 id,且 cwd 不在任何 workflow 仓库内)"}`,
+		);
+		process.exit(1);
+	}
+	const prefix = dryRun ? "[dry-run] " : "";
+	const steps = getStepsByWorkflow(db, workflow.id);
+	const summary: CleanupSummary = {
+		closedTabs: 0,
+		cleanedPiglla: 0,
+		gitignoreAppended: false,
+		gitignoreMissing: false,
+		warnings: 0,
+	};
+	const warn = (msg: string): void => {
+		summary.warnings++;
+		console.warn(`  ⚠ ${msg}`);
+	};
+
+	// 1. 关终态 tab
+	const ghostctlBin = resolveBin("ghostctl");
+	const ghostctlOk = fs.existsSync(ghostctlBin);
+	const live = await fetchLiveTabIds(ghostctlBin, workflow.repo_path);
+	// 查询失败:绝不关闭任何 tab(与 monitor 同口径:查询失败不算 tab 关闭),其余清理继续
+	const canJudgeTabs = live !== null;
+	if (!canJudgeTabs) {
+		warn("ghostctl layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续");
+	}
+	for (const s of steps) {
+		if (!canJudgeTabs || !s.tab_id || !TERMINAL_OK.has(s.status)) continue;
+		if (!live?.has(s.tab_id)) continue; // 已不在布局中,无需动作
+		if (!ghostctlOk) {
+			warn(`${s.id}: ghostctl 不可用,无法关闭 tab ${s.tab_id.slice(0, 8)}`);
+			continue;
+		}
+		if (dryRun) {
+			console.log(`${prefix}关闭终态 tab: ${s.id} (${s.tab_id.slice(0, 8)})`);
+			summary.closedTabs++;
+			continue;
+		}
+		const res = await run(ghostctlBin, ["close-terminal", s.tab_id], workflow.repo_path);
+		if (res.code !== 0) {
+			warn(`${s.id}: close-terminal 失败: ${res.stderr || res.stdout}`);
+			continue;
+		}
+		addEvent(db, {
+			workflowId: workflow.id,
+			stepId: s.id,
+			type: EVT.stepTabClosed,
+			payload: { tabId: s.tab_id, reason: "cleanup" },
+		});
+		buildUpdate(db, "workflow_steps", { tab_id: null, updated_at: Date.now() }, { id: s.id });
+		console.log(`${prefix}关闭终态 tab: ${s.id} (${s.tab_id.slice(0, 8)})`);
+		summary.closedTabs++;
+	}
+
+	// 2. 清 .pi-glla(路径守卫 + 跟踪检查;运行中/待核对的步骤跳过,不打扰在跑的会话)
+	const worktreesGuard = path.join(workflow.repo_path, ".worktrees");
+	const ACTIVE_STATES = new Set(["pending", "ready", "dispatched", "running", "reported", "waiting-verify"]);
+	for (const s of steps) {
+		if (!s.worktree) continue;
+		if (ACTIVE_STATES.has(s.status)) {
+			console.log(`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`);
+			continue;
+		}
+		const dotted = s.id.slice(workflow.id.length + 1);
+		const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
+		// 守卫:只处理 <repo>/.worktrees/gittree-* 下的目录,防误删
+		if (!wtPath.startsWith(worktreesGuard + path.sep) || !path.basename(wtPath).startsWith("gittree-")) {
+			warn(`${s.id}: worktree 路径不在守卫范围内,跳过: ${wtPath}`);
+			continue;
+		}
+		const piglla = path.join(wtPath, ".pi-glla");
+		if (!fs.existsSync(piglla)) continue;
+		// 跟踪检查:被误提交进 git 则只警告,不自动改索引
+		let tracked = false;
+		try {
+			const ls = execFileSync("git", ["-C", wtPath, "ls-files", ".pi-glla"], {
+				encoding: "utf-8",
+			}).trim();
+			tracked = ls.length > 0;
+		} catch {
+			warn(`${s.id}: git ls-files 检查失败,跳过 .pi-glla`);
+			continue;
+		}
+		if (tracked) {
+			warn(`${s.id}: ${wtPath} 的 .pi-glla 已被 git 跟踪,不自动删除;请 git rm -r --cached .pi-glla 后在各 worktree 提交`);
+			continue;
+		}
+		if (!dryRun) {
+			fs.rmSync(piglla, { recursive: true, force: true });
+		}
+		console.log(`${prefix}清理 .pi-glla: ${s.id} (${path.relative(workflow.repo_path, piglla)})`);
+		summary.cleanedPiglla++;
+	}
+
+	// 3. .gitignore 自动修复(合并前置,根治 untracked 冲突)
+	const giPath = path.join(workflow.repo_path, ".gitignore");
+	const giContent = fs.existsSync(giPath) ? fs.readFileSync(giPath, "utf-8") : "";
+	const giLines = giContent.split("\n");
+	const hasEntry = giLines.some((l) => l.trim() === ".pi-glla/" || l.trim() === ".pi-glla");
+	if (!hasEntry) {
+		summary.gitignoreMissing = true;
+		if (noFix) {
+			warn(`仓库根 .gitignore 缺 .pi-glla/(--no-fix 未修改);建议手动追加后再 /wf merge`);
+		} else if (!dryRun) {
+			const add = `${giContent && !giContent.endsWith("\n") ? "\n" : ""}# pi-workflow: 子 pi 运行时状态(防 merge 冲突)\n.pi-glla/\n`;
+			fs.appendFileSync(giPath, add);
+			summary.gitignoreAppended = true;
+			console.log(`${prefix}.gitignore 追加 .pi-glla/(${path.relative(workflow.repo_path, giPath)})`);
+		} else {
+			summary.gitignoreAppended = true;
+			console.log(`${prefix}.gitignore 追加 .pi-glla/(${path.relative(workflow.repo_path, giPath)})`);
+		}
+	}
+
+	// 4. 终态 worktree 未提交改动检查(排除 .pi-glla,不自动 commit)
+	for (const s of steps) {
+		if (!s.worktree || !TERMINAL_OK.has(s.status)) continue;
+		const dotted = s.id.slice(workflow.id.length + 1);
+		const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
+		if (!fs.existsSync(wtPath)) continue;
+		try {
+			const out = execFileSync("git", ["-C", wtPath, "status", "--porcelain"], {
+				encoding: "utf-8",
+			}).trim();
+			const dirty = out
+				.split("\n")
+				.filter(Boolean)
+				.filter((l) => {
+					const p = l.length > 3 ? l.slice(3) : l;
+					return !p.startsWith(".pi-glla") && !p.includes("/.pi-glla");
+				});
+			if (dirty.length > 0) {
+				warn(`${s.id}: worktree 有 ${dirty.length} 处未提交改动(合并前请自行 commit):`);
+				for (const l of dirty.slice(0, 10)) console.warn(`    ${l}`);
+			}
+		} catch {
+			warn(`${s.id}: git status 检查失败(worktree 可能已失效)`);
+		}
+	}
+
+	// 5. 摘要
+	let giState = "否";
+	if (summary.gitignoreAppended) giState = "是";
+	else if (summary.gitignoreMissing) giState = "缺,未改";
+	console.log(
+		`${prefix}关闭 tab ${summary.closedTabs} | 清理 .pi-glla ${summary.cleanedPiglla} | .gitignore 追加(${giState}) | 警告 ${summary.warnings}`,
+	);
+	if (summary.warnings > 0) console.log("  提示:警告项需人工确认;关闭的 tab 不影响重新派发(重派会开新 tab)");
+	console.log("现在可 /wf merge");
+}
+
 function cmdDoctor(): void {
 	const checks: Array<[string, boolean, string]> = [];
 	checks.push([
@@ -845,6 +1084,12 @@ async function main(): Promise<void> {
 		case "clean":
 			cmdClean();
 			break;
+		case "tabs":
+			await cmdTabs(args);
+			break;
+		case "cleanup":
+			await cmdCleanup(args);
+			break;
 		case "doctor":
 			cmdDoctor();
 			break;
@@ -872,7 +1117,9 @@ async function main(): Promise<void> {
   wf goal-check [approve|reject <原因>]                        目标把关(verifying→completed/gap wave)
   wf next [--note <说明>]                                      滚动到下一 wave
   wf done <id> '<JSON>' / wf fail <id> <原因>                回报(子任务侧)
-  wf clean                                                   清理 worktree
+  wf tabs [workflowId] [--json]                              子任务 tab 状态(存活判定)
+  wf cleanup [workflowId] [--dry-run] [--no-fix]             关终态 tab + 清 .pi-glla + 合并前置修复
+  wf clean                                                   清理残留 worktree
   wf doctor                                                  环境自检
   wf debug                                                   诊断信息`);
 			break;
