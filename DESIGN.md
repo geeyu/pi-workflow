@@ -79,7 +79,7 @@ workflow/(本仓库,pi 扩展自动发现 src/index.ts)
 │   └── session.ts      # 主控 pi 会话 jsonl 解析(供 wf session)
 ├── skill/
 │   ├── SKILL.md        # 使用与排查手册(经 resources_discover 自动注册,精炼入口)
-│   ├── bin/wf          # ★ CLI 命令本体(随 skill 分发,Agent Skills 规范;node 自动兜底)
+│   ├── bin/wf          # ★ CLI 命令本体(随 skill 分发,Agent Skills 规范;禁止全局软链,node 自动兜底)
 │   └── references/     # 按需加载:命令参考/编排流程/数据模型/排查手册
 ├── test/
 │   └── workflow.test.ts # 验收测试(T1-T25b,276 断言)

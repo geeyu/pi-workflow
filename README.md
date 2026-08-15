@@ -18,7 +18,7 @@ pi install git:github.com/geeyu/pi-workflow
 ## 技能与辅助脚本
 
 - **skill**:`skill/SKILL.md`(自动注册,`/skill:workflow` 或按需触发)—— 精炼入口 + 分模块 references(命令参考 / 编排流程 / 数据模型 / 排查手册),按需加载。
-- **CLI**:命令本体**随 skill 分发**(`skill/bin/wf`,Agent Skills 规范:skill 自带命令,克隆即用,不依赖全局安装);已安装环境可选全局软链 `~/.local/bin/wf`(兼容旧用法)。node 自动兑底(WF_NODE→PATH→fnm→brew),裸 PATH 可用:
+- **CLI**:命令本体**随 skill 分发**(`skill/bin/wf`,Agent Skills 规范:skill 自带命令,克隆即用,不依赖全局安装)。**只允许 skill 内二进制,禁止全局软链/全局安装**。node 自动兑底(WF_NODE→PATH→fnm→brew),裸 PATH 可用:
 
 ```bash
 wf doctor               # 环境自检(node/gittree/ghostctl/python3/DB)
@@ -54,7 +54,7 @@ src/
 ├── agents.ts       # agent 发现(~/.pi/agent/agents/*.md,frontmatter 格式,零依赖)
 └── session.ts      # 主控会话 jsonl 解析
 skill/SKILL.md      # 使用与排查手册(自动注册)
-skill/bin/wf       # CLI 命令本体(随 skill 分发;可选全局软链 ~/.local/bin/wf)
+skill/bin/wf       # CLI 命令本体(随 skill 分发;禁止全局软链)
 test/workflow.test.ts # 验收测试(T1-T25b,276 断言)
 ```
 

@@ -707,20 +707,42 @@ assert(
 	!segAll.startsWith("["),
 	"状态段不以 [ 开头(powerline 不当通知过滤)",
 );
-// running 步骤显示 ▶+点号 id
+// running 步骤 → 🔄N 计数(语义化);待办 → ⏳N
 const runSteps = segSteps.map((s) => ({ ...s }));
 for (const s of runSteps) {
 	if (s.id.endsWith(".1")) s.status = "running";
 }
 const segRun = idxMod.workflowStatusSegment(
 	segWf,
-	dbMod.stepStatusCounts(db2, "demo-wf"),
+	{ ...dbMod.stepStatusCounts(db2, "demo-wf"), running: 1, dispatched: 0 },
 	runSteps,
 	null,
 );
+const segRunVisible = segRun.replace(/\x1b\[[0-9;]*m/g, "");
 assert(
-	segRun.replace(/\x1b\[[0-9;]*m/g, "").includes("▶"),
-	"running 步骤以 ▶+点号 id 展示",
+	segRunVisible.includes("🔄1"),
+	`running 步骤以 🔄N 计数展示(${segRunVisible})`,
+);
+assert(
+	!segRunVisible.includes("▶"),
+	"不再用 ▶+点号 id 列表(footer 语义化)",
+);
+// 计划概览面板:表格形式(步骤/内容/状态),含标题进度与依赖
+const statusUiMod = await import("../src/ui/status.ts");
+const planLines = statusUiMod.buildPlanLines(db2, [segWf]);
+const planText = planLines.join("\n");
+assert(
+	planText.includes("计划概览") &&
+		planText.includes("┌") &&
+		planText.includes("└") &&
+		planText.includes("│步骤") &&
+		planText.includes("│内容") &&
+		planText.includes("│状态"),
+	`面板为表格形式(表头齐全:${planText.slice(0, 60)})`,
+);
+assert(
+	/│\d+\s+│.+│.+│/.test(planText),
+	"面板含数据行(步骤|内容|状态)",
 );
 // 清掉外部环境可能注入的 PI_WF_*(子 agent tab / 编排环境可能已设置),保证用例 hermetic
 delete process.env.PI_WF_WORKFLOW;

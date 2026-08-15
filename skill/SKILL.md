@@ -22,11 +22,10 @@ description: >
 ```bash
 <skill目录>/bin/wf status          # 相对 skill 目录调用(克隆 skill 即得命令)
 ~/.pi/agent/extensions/workflow/skill/bin/wf status
-# 可选:已安装环境做了全局软链(兼容旧用法)
-wf status
 ```
 
 - 命令实现:`skill/bin/wf`(bash 包装,node 自动兜底:WF_NODE→PATH→fnm→brew,裸 PATH 可用)→ 仓库根 `src/cli.ts`(与插件共享同一命令注册表)
+- **只允许 skill 内二进制,禁止全局软链/全局安装**(`~/.local/bin/wf` 已移除;PATH 里的 `wf` 一律视为错误用法)
 - 无 `/wf` 插件环境(纯脚本/CI)也能用 CLI;`/wf` 与 `wf` 行为一致,退出码契约 0/1/2/3
 
 ## 何时使用
