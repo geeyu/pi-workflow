@@ -139,6 +139,8 @@ wf debug         # 诊断信息:库版本/表规模/运行中任务/事件数/�
 | 派发被拒「预算已用尽」 | 累计 usage_cost_cents ≥ budget_cents | 调整预算或人工处理;`/wf resume` 恢复 |
 | 派发被拒「已重试 N/M 次,超过上限」 | retries_done ≥ max_retries | 人工介入;`/wf skip` 或调大 max_retries 后重派 |
 | 需要向运行中的子任务补充指令 | — | `/wf steer <dotted> <文本>`(进子 pi 输入框并回车) |
+| merge 冲突「untracked working tree files would be overwritten: .pi-glla/…」 | 子 pi 在 worktree 里运行生成的运行时状态被跟踪 | 仓库 .gitignore 加 `.pi-glla/`;已误提交则 `git rm -r --cached .pi-glla` 后在各 worktree 提交 |
+| merge 报 conflict 但 worktree 已删/分支不存在 | 重复 merge 或评审类步骤无提交(已修复:自动跳过) | 重新 `/wf merge` 即可;或 `/wf resolve-conflict <id>` 后重试 |
 | worktree 堆积 | 失败/中止的 worktree 保留现场 | `gittree list` 查看;`/wf clean` 或 `gittree clean <name> --branch --force` |
 
 ### 5.3 直接查库(SQLite,只读安全)
