@@ -216,15 +216,33 @@ export default function workflowExtension(pi: ExtensionAPI) {
 					{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
 					filterNotifyItems(db, items, sessionMasterId),
 				),
-			onTick: () => renderWorkflowStatus(ctx, db),
+			onTick: () => {
+				// 5s 自愈:后续 session_info_changed 等事件可能再次覆盖标题,每次轮询重断言
+				if (sessionMasterId) {
+					ctx.ui.setTitle(`wf-master ${sessionMasterId}`);
+				}
+				renderWorkflowStatus(ctx, db);
+			},
 		});
 		renderWorkflowStatus(ctx, db);
 	});
 
 	// ── agent_start:收起上一 turn 完成的面板行(P1-3,参考 rpiv completedTaskIdsPendingHide)
-	// 子会话已在上面的 session_start 提前 return,不会走到这里渲染
+	// 同时重断言会话标题:pi 在扩展绑定完成后会用 updateTerminalTitle() 覆盖
+	// session_start 里设的标题(实测 OSC 捕获 setTitle 已调用,但终端标题最终仍被
+	// 覆盖回「π - <cwd basename>」),故每个 turn 开始重断言(worker/master)。
+	// 子会话已在上面的 session_start 提前 return,不会走到这里渲染面板
 	pi.on("agent_start", async (_event, ctx) => {
-		if (resolveIdentity(ctx.cwd)?.stepId) return;
+		const ident = resolveIdentity(ctx.cwd, db);
+		if (ident?.stepId) {
+			// 子任务会话:只重设标题,不渲染编排者面板(与 session_start 一致)
+			ctx.ui.setTitle(`wf ${ident.workflowId}/${ident.dotted}`);
+			return;
+		}
+		if (ident?.master) {
+			// master-agent 会话:重断言 wf-master <id> 标题
+			ctx.ui.setTitle(`wf-master ${ident.workflowId}`);
+		}
 		hideCompletedFromPreviousTurn();
 		renderWorkflowStatus(ctx, db);
 	});
