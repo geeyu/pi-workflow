@@ -12,6 +12,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { getStepsByWorkflow, stepStatusCounts } from "../core/db.ts";
 import {
+	isNotifyItemFresh,
 	markNotified,
 	type NotifyItem,
 	type NotifyKind,
@@ -103,7 +104,9 @@ export async function sendWorkflowNotifications(
 	sender: WorkflowNotifySender,
 	items: NotifyItem[],
 ): Promise<void> {
-	const toSend = items.slice(0, NOTIFY_MAX_LINES);
+	// 发送前验证:状态已变化的旧事件丢弃(monitor 重启/长会话补发场景)
+	const fresh = items.filter((i) => isNotifyItemFresh(db, i));
+	const toSend = fresh.slice(0, NOTIFY_MAX_LINES);
 	if (toSend.length === 0) return;
 	// 进度摘要:按 workflow 去重,各取一段(如 ● demo-wf 3/8 ✓3 🔄1 ◐2 ✗1)
 	const wfIds = [...new Set(toSend.map((i) => i.workflowId))];
@@ -127,7 +130,7 @@ export async function sendWorkflowNotifications(
 	const progressLine =
 		progress.length > 0 ? `${progress.map((p) => p.text).join(" | ")} → ` : "";
 	const content = [
-		`[wf] ${progressLine}${toSend.length} 个关键事件(可依次执行):`,
+		`[wf ${new Date().toLocaleTimeString()}] ${progressLine}${toSend.length} 个关键事件(可依次执行):`,
 		...toSend.map((i) => `- ${NOTIFY_GLYPH[i.kind]} ${i.text}`),
 	].join("\n");
 	let delivered = false;

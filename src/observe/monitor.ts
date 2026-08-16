@@ -20,6 +20,7 @@ import {
 	EVT,
 	getLatestAttempt,
 	getRunningSteps,
+	getStep,
 	getStepMeta,
 	getStepsByWave,
 	getStepsByWorkflow,
@@ -566,6 +567,18 @@ export function detectStateChanges(
 		}
 	}
 	return items;
+}
+
+/**
+ * 发送前验证 item 是否仍然有效:步骤级事件检查步骤当前状态是否仍产生该
+ * kind(状态已变化 → 丢弃,防过期通知——如 monitor 重启/长会话后补发的
+ * 旧失败事件,此时步骤可能早已 done)。wave/workflow 级不验证。
+ */
+export function isNotifyItemFresh(db: DatabaseSync, item: NotifyItem): boolean {
+	if (!item.stepId) return true;
+	const step = getStep(db, item.stepId);
+	if (!step) return false;
+	return KIND_BY_STATUS[step.status] === item.kind;
 }
 
 /**
