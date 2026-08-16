@@ -2598,6 +2598,127 @@ async function main(): Promise<void> {
 		"poll 不存在 workflow → 退出 3(UsageError detail)",
 	);
 
+	console.log("== T25c CLI 无参 dispatch = 派发当前 wave 全部就绪步骤 ==");
+	// 独立仓库 + workflow:1/2 顶层就绪,1.1 依赖 1 被阻塞。此前 CLI 分支无参 = 空循环
+	// 静默无效果;修复后与 pi 分支一致:无参派发 getReadySteps 全部就绪步骤。
+	const cdRepo = path.join(tmpDir, "cdrepo");
+	fs.mkdirSync(cdRepo, { recursive: true });
+	execFileSync("git", ["init", "-q", cdRepo]);
+	execFileSync("git", ["-C", cdRepo, "config", "user.email", "test@test.local"]);
+	execFileSync("git", ["-C", cdRepo, "config", "user.name", "test"]);
+	fs.writeFileSync(path.join(cdRepo, "README.md"), "cd\n");
+	execFileSync("git", ["-C", cdRepo, "add", "-A"]);
+	execFileSync("git", ["-C", cdRepo, "commit", "-q", "-m", "init"]);
+	const cdImp = orchMod.importPlan(
+		db2,
+		{
+			name: "cd-wf",
+			title: "CLI 派发",
+			goal: "冒烟",
+			repoPath: cdRepo,
+			steps: [
+				{ id: "1", title: "A", agent: "worker", task: "A" },
+				{ id: "1.1", title: "A1", agent: "worker", deps: ["1"], task: "A1" },
+				{ id: "2", title: "B", agent: "worker", task: "B" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(cdImp.ok, "cd-wf 导入");
+	// fake ghostctl:new-window 输出可解析窗口 id;layout 按 worktree cwd 反查 terminal;
+	// new-tab 输出非 hex id(走 cwd 兜底,同 T6)。
+	const cdBin = path.join(tmpDir, "cd-bin");
+	fs.mkdirSync(cdBin, { recursive: true });
+	const cdLog = path.join(tmpDir, "cd-ghostctl.log");
+	const cdWt1 = path.join(cdRepo, ".worktrees", "gittree-wf-cd-wf-1");
+	const cdWt2 = path.join(cdRepo, ".worktrees", "gittree-wf-cd-wf-2");
+	fs.writeFileSync(
+		path.join(cdBin, "ghostctl"),
+		`#!/bin/bash
+case "$1" in
+  layout)
+    echo '{"windows":[{"id":"tab-group-aabbccddeeff","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${cdWt1}"}]},{"terminals":[{"id":"fedcba9876543210","cwd":"${cdWt2}"}]}]}]}'
+    ;;
+  new-window)
+    echo "已创建窗口 (id=tab-group-aabbccddeeff)"
+    ;;
+  *)
+    echo "已创建标签页 (id=tab-xyz)"
+    ;;
+esac
+echo "$@" >> "${cdLog}"
+`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(cdLog, "");
+	const cdEnv = { PATH: `${cdBin}:${process.env.PATH ?? ""}` };
+	// 无参 dispatch(显式 --workflow 定位;修复前此调用静默无输出无效果)。
+	// cwd 必须指向 fake 所在目录:resolveBin("ghostctl") 先按相对名在 cwd 找,
+	// 否则会落到真实 ~/.local/bin/ghostctl(T24 同款约定)。
+	const cdRes = runCli(["dispatch", "--workflow", "cd-wf"], {
+		cwd: cdBin,
+		env: cdEnv,
+	});
+	assert(
+		cdRes.code === 0 &&
+			cdRes.stdout.includes("✓ 1:") &&
+			cdRes.stdout.includes("✓ 2:"),
+		`CLI 无参 dispatch 派发就绪步骤 1/2(${cdRes.code} ${cdRes.stdout.split("\n").filter(Boolean).join(" | ")})`,
+	);
+	assert(
+		!cdRes.stdout.includes("1.1"),
+		`CLI 无参 dispatch 不派发依赖未完成步骤(${cdRes.stdout})`,
+	);
+	// 落库状态:1/2 → running + tab_id;1.1 保持 pending
+	const cdS1 = dbMod.getStep(db2, "cd-wf-1");
+	const cdS2 = dbMod.getStep(db2, "cd-wf-2");
+	const cdS11 = dbMod.getStep(db2, "cd-wf-1.1");
+	assert(
+		cdS1?.status === "running" &&
+			cdS1.tab_id === "abcdef0123456789" &&
+			cdS2?.status === "running" &&
+			cdS2.tab_id === "fedcba9876543210" &&
+			cdS11?.status === "pending",
+		`落库:1/2 running+tab_id,1.1 pending(${cdS1?.status}/${cdS2?.status}/${cdS11?.status})`,
+	);
+	assert(
+		fs.existsSync(cdWt1) && fs.existsSync(cdWt2),
+		"就绪步骤 worktree 已创建",
+	);
+	assert(
+		!fs.existsSync(path.join(cdRepo, ".worktrees", "gittree-wf-cd-wf-1.1")),
+		"依赖未完成步骤不建 worktree",
+	);
+	const cdEvts = dbMod
+		.getEvents(db2, { workflowId: "cd-wf", limit: 30 })
+		.filter((e) => e.type === "step_dispatched");
+	assert(
+		cdEvts.length === 2 &&
+			cdEvts.every((e) => ["cd-wf-1", "cd-wf-2"].includes(e.step_id ?? "")),
+		`step_dispatched × 2(${cdEvts.map((e) => e.step_id).join(",")})`,
+	);
+	// ghostctl 调用序列:new-window 仅首次;new-tab 两次均按窗口 id 定位
+	const cdCalls = fs.readFileSync(cdLog, "utf-8").trim().split("\n");
+	assert(
+		cdCalls.filter((l) => l.startsWith("new-window")).length === 1 &&
+			cdCalls.filter((l) => l.startsWith("new-tab")).length === 2 &&
+			cdCalls.filter((l) => l.startsWith("new-tab") && l.includes("--window-id tab-group-aabbccddeeff")).length === 2,
+		`new-window ×1 + new-tab ×2 按窗口 id(${cdCalls.join(" | ")})`,
+	);
+	// 二次无参 dispatch:无就绪步骤 → 提示且不重复派发(退出码 0)
+	fs.writeFileSync(cdLog, "");
+	const cdRes2 = runCli(["dispatch", "--workflow", "cd-wf"], {
+		cwd: cdBin,
+		env: cdEnv,
+	});
+	assert(
+		cdRes2.code === 0 &&
+			cdRes2.stdout.includes("无就绪步骤") &&
+			fs.readFileSync(cdLog, "utf-8").trim() === "",
+		`二次无参 dispatch 提示无就绪步骤且零副作用(${cdRes2.stdout.trim()})`,
+	);
+
 	console.log("== T26 状态机迁移校验接线(canTransition/strict/关键入口)= ");
 	const stateMod = await import("../src/core/state.ts");
 	assert(

@@ -1147,8 +1147,21 @@ register({
 			return;
 		}
 		if (env.kind === "cli") {
-			// CLI:逐 token 输出;无参数 = 空循环(现状);per-token 错误只打印不置退出码(现状)
-			for (const token of tokens) {
+			// CLI:逐 token 输出;无参数 = 派发当前 wave 全部就绪步骤(与 pi 分支一致);
+			// per-token 错误只打印不置退出码(现状)
+			const readyTokens =
+				tokens.length === 0
+					? getReadySteps(env.db, wfId).map((s) =>
+							s.id.slice(wfId.length + 1),
+						)
+					: tokens;
+			if (readyTokens.length === 0) {
+				env.info(
+					`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`,
+				);
+				return;
+			}
+			for (const token of readyTokens) {
 				const step =
 					getStep(env.db, token) ?? getStep(env.db, `${wfId}-${token}`);
 				if (!step) {
