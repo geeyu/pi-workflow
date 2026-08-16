@@ -1,11 +1,12 @@
 /**
- * exec/window.ts — Ghostty 窗口/终端操作层(arch-refactor §3.5,自 src/exec/dispatch.ts 同名迁移)
+ * exec/window.ts — workflow 窗口编排层(自 src/exec/dispatch.ts 同名迁移,
+ * 底层窗口操作已内化为 exec/ghostty.ts,不再依赖外部 ghostctl CLI)
  *
  * - sendTextToTerminal:注入文本并自动回车(与 /wf steer 同构的共享注入序列);
  * - openStepTab:开子任务 tab(构造 env 命令 + pointer 位置参数 → new-tab 到绑定窗口 →
  *   反查 terminal id → 写库);pointer 经 `pi '<msg>'` 位置参数交付,由 pi 自身在 UI
  *   就绪后自动发送,无需 --input 注入、盲等或补回车(设计 §0);
- * - resolveWorkflowWindow / parseLayout:workflow 绑定窗口解析(按 id 定位,绝不回退焦点窗口);
+ * - resolveWorkflowWindow / resolveMasterWindow:workflow 绑定窗口解析(按 id 定位,绝不回退焦点窗口);
  * - findTerminalId:反查 terminal id(优先 tab id,兜底 cwd / 终端名)。
  */
 
@@ -24,29 +25,47 @@ import {
 	type WorkflowRow,
 } from "../core/db.ts";
 import {
-	piInvocation,
-	type RunResult,
-	resolveBin,
-	run,
-	worktreePath,
-} from "./shell.ts";
+	closeTab,
+	collectTerminalIds,
+	GhosttyError,
+	inputText,
+	layoutJson,
+	newTab,
+	newWindow,
+	sendKey,
+	type GhosttyLayout,
+} from "./ghostty.ts";
+import { piInvocation, worktreePath } from "./shell.ts";
 import { buildPointer } from "./template.ts";
+
+/** 错误对象 → 可读消息 */
+function errMsg(e: unknown): string {
+	return e instanceof Error ? e.message : String(e);
+}
 
 /**
  * 向终端注入文本并自动回车(与 /wf steer 同构的共享注入序列,设计 §0):
- *   1. ghostctl input <text> --to <terminalId>
- *   2. ghostctl key enter --to <terminalId>
- * 返回 input 步骤的结果(inject/steer 均以它判定成败;enter 失败由调用方自行判断)。
+ *   input text → send key enter。
+ * 返回 {ok, error}:input 步骤判定成败;enter 失败由调用方自行判断。
  */
 export async function sendTextToTerminal(
-	ghostctlBin: string,
 	terminalId: string,
 	text: string,
-	cwd: string,
-): Promise<RunResult> {
-	const res = await run(ghostctlBin, ["input", text, "--to", terminalId], cwd);
-	await run(ghostctlBin, ["key", "enter", "--to", terminalId], cwd);
-	return res;
+): Promise<{ ok: boolean; error?: string }> {
+	let ok = true;
+	let error: string | undefined;
+	try {
+		await inputText(terminalId, text);
+	} catch (e) {
+		ok = false;
+		error = errMsg(e);
+	}
+	try {
+		await sendKey(terminalId, "enter");
+	} catch {
+		/* enter 失败不阻断(与 ghostctl 时代同口径) */
+	}
+	return { ok, error };
 }
 
 export interface OpenStepTabResult {
@@ -58,7 +77,6 @@ export interface OpenStepTabResult {
 }
 
 export interface OpenStepTabOptions {
-	ghostctlBin?: string;
 	/** 已创建的 attempt id(dispatchStep 传入;成功后回写 tab_id/running) */
 	attemptId?: number;
 	/** 事件 payload 标 manual=true(open-tab 命令传,自动派发不传) */
@@ -83,63 +101,44 @@ export async function openStepTab(
 ): Promise<OpenStepTabResult> {
 	const dotted = step.id.slice(workflow.id.length + 1);
 	const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
-	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
 	const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
 
 	const cmd = `env PI_WF_WORKFLOW=${workflow.id} PI_WF_STEP=${dotted} ${piInvocation()} ${shellQuote(pointer)}`;
-	const tabArgs = [
-		"new-tab",
-		"--cwd",
-		wtPath,
-		"--command",
-		cmd,
-		// 顺序开 tab(先切到窗口末尾再创建,插在末尾,不乱插)
-		"--at-end",
-		// 后台创建,不抢焦点(恢复原终端焦点,不打扰当前开发)
-		"--no-focus",
-	];
 	// master-agent 模式:子任务 tab 直接开在主控所在窗口(主控只需在自己窗口
 	// 创建 tab,无需专属窗口绑定);经典模式:workflow 专属窗口(首次 new-window 绑定)。
-	const win =
-		getWorkflowMeta(db, workflow.id, MASTER_MODE_KEY) === MASTER_MODE_VALUE
-			? await resolveMasterWindow(
-					db,
-					ghostctlBin,
-					workflow.repo_path,
-					workflow.id,
-				)
-			: await resolveWorkflowWindow(
-					db,
-					ghostctlBin,
-					workflow.repo_path,
-					workflow.id,
-				);
+	const isMaster =
+		getWorkflowMeta(db, workflow.id, MASTER_MODE_KEY) === MASTER_MODE_VALUE;
+	const win = isMaster
+		? await resolveMasterWindow(db, workflow.id)
+		: await resolveWorkflowWindow(db, workflow.repo_path, workflow.id);
 	if (!win.ok) return { ok: false, phase: "window", error: win.error };
-	tabArgs.splice(1, 0, "--window-id", win.winId);
 
-	const tabRes = await run(ghostctlBin, tabArgs, workflow.repo_path);
-	if (tabRes.code !== 0) {
+	let tabIdFromOutput: string;
+	try {
+		// 顺序开 tab(--at-end 插在窗口末尾)+ 后台创建(--no-focus 不抢焦点)
+		const res = await newTab({
+			windowId: win.winId,
+			cwd: wtPath,
+			command: cmd,
+			atEnd: true,
+			noFocus: true,
+		});
+		tabIdFromOutput = res.tabId;
+	} catch (e) {
 		return {
 			ok: false,
 			phase: "tab",
-			error: tabRes.stderr || tabRes.stdout,
+			error: `new-tab 失败: ${errMsg(e)}`,
 		};
 	}
 
 	// new-tab 输出稳定 tab id;反查 terminal id 存库(P2 监听用)
-	const tabMatch = TAB_ID_RE.exec(tabRes.stdout);
-	const tabIdFromOutput = tabMatch ? tabMatch[1] : null;
-	const tabId = await findTerminalId(
-		ghostctlBin,
-		workflow.repo_path,
-		tabIdFromOutput,
-		wtPath,
-	);
+	const tabId = await findTerminalId(tabIdFromOutput, wtPath);
 
 	// 本次新建窗口(经典模式首次派发,Ghostty new window 自带初始空白 tab)
 	// → 清理非业务 tab;master 模式无 created 标记(主控 tab 一步创建,无空白 tab)。
 	if (win.ok && "created" in win && win.created && tabId) {
-		await sweepInitialTabs(ghostctlBin, workflow.repo_path, win.winId, tabId);
+		await sweepInitialTabs(win.winId, tabId);
 	}
 
 	if (opts.attemptId !== undefined) {
@@ -171,9 +170,6 @@ export async function openStepTab(
 	return { ok: true, tabId };
 }
 
-/** new-tab 输出的 tab id(稳定,layout 中可定位) */
-const TAB_ID_RE = /id=(tab-[0-9a-f]+)/;
-
 /**
  * POSIX shell 单引号包裹(pointer 经 --command 进入 shell 解析):
  * 嵌入的 ' 转义为 '\''(关引号 + 转义引号 + 重开引号)。
@@ -186,25 +182,6 @@ export function shellQuote(s: string): string {
 /** workflow 绑定的 Ghostty 窗口 meta key */
 export const WF_WINDOW_META_KEY = "ghostty_window_id";
 
-interface WfWindowInfo {
-	id: string;
-	front: boolean;
-}
-
-function parseLayout(raw: string): WfWindowInfo[] | null {
-	try {
-		const l = JSON.parse(raw) as {
-			windows: Array<{ id: string; front?: boolean }>;
-		};
-		return l.windows.map((w) => ({ id: w.id, front: Boolean(w.front) }));
-	} catch {
-		return null;
-	}
-}
-
-/** new-window 输出的窗口 id(与 new-tab 同构,稳定) */
-const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
-
 /**
  * master-agent 模式:反查主控 tab 所在窗口(主控在自己所在窗口创建子任务 tab)。
  * 按 master_tab_id(主控 terminal id)在 layout 中定位;找不到 → 报错(主控
@@ -212,8 +189,6 @@ const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
  */
 export async function resolveMasterWindow(
 	db: DatabaseSync,
-	ghostctlBin: string,
-	cwd: string,
 	workflowId: string,
 ): Promise<{ ok: true; winId: string } | { ok: false; error: string }> {
 	const masterTab = getWorkflowMeta(db, workflowId, MASTER_TAB_KEY) as
@@ -225,29 +200,18 @@ export async function resolveMasterWindow(
 			error: `workflow ${workflowId} 未记录主控 tab(master_tab_id),无法定位窗口`,
 		};
 	}
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) {
-		return {
-			ok: false,
-			error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
-		};
-	}
+	let layout: GhosttyLayout;
 	try {
-		const layout = JSON.parse(res.stdout) as {
-			windows: Array<{
-				id: string;
-				tabs: Array<{ terminals: Array<{ id: string }> }>;
-			}>;
-		};
-		for (const w of layout.windows) {
-			for (const t of w.tabs) {
-				if (t.terminals.some((x) => x.id === masterTab)) {
-					return { ok: true, winId: w.id };
-				}
+		layout = await layoutJson();
+	} catch (e) {
+		return { ok: false, error: `Ghostty layout 查询失败: ${errMsg(e)}` };
+	}
+	for (const w of layout.windows) {
+		for (const t of w.tabs) {
+			if (t.terminals.some((x) => x.id === masterTab)) {
+				return { ok: true, winId: w.id };
 			}
 		}
-	} catch {
-		return { ok: false, error: "ghostctl layout 解析失败" };
 	}
 	return {
 		ok: false,
@@ -257,9 +221,9 @@ export async function resolveMasterWindow(
 
 /**
  * workflow 绑定窗口(设计:一次 workflow 一个专属窗口):
- * 首次派发 ghostctl new-window --no-focus 创建专属窗口(绝不借用用户的焦点窗口),
+ * 首次派发 new-window --no-focus 创建专属窗口(绝不借用用户的焦点窗口),
  * 创建所得窗口 id 存 workflow_metadata.ghostty_window_id;之后所有子任务 tab 固定
- * 开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),不依赖窗口序号/焦点,
+ * 开进该窗口 —— 按窗口 id 定位(new-tab --window-id),不依赖窗口序号/焦点,
  * 窗口开合不会漂移;
  * 绑定窗口已关闭则返回错误,绝不静默回退(重建由 /wf rebind-window 或清 meta 重试)。
  * created=true 表示本次新建窗口(含 Ghostty 自带的初始空白 tab,调用方开完业务
@@ -267,7 +231,6 @@ export async function resolveMasterWindow(
  */
 export async function resolveWorkflowWindow(
 	db: DatabaseSync,
-	ghostctlBin: string,
 	cwd: string,
 	workflowId: string,
 ): Promise<
@@ -278,15 +241,16 @@ export async function resolveWorkflowWindow(
 		| undefined;
 	if (bound) {
 		// 已绑定 → 查 layout 验证窗口仍存在;已关闭 → 报错,绝不静默回退
-		const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-		if (res.code !== 0) {
+		let layout: GhosttyLayout;
+		try {
+			layout = await layoutJson();
+		} catch (e) {
 			return {
 				ok: false,
-				error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
+				error: `Ghostty layout 查询失败: ${errMsg(e)}`,
 			};
 		}
-		const windows = parseLayout(res.stdout);
-		if (windows && windows.some((w) => w.id === bound)) {
+		if (layout.windows.some((w) => w.id === bound)) {
 			return { ok: true, winId: bound };
 		}
 		return {
@@ -296,26 +260,16 @@ export async function resolveWorkflowWindow(
 	}
 
 	// 未绑定 → 创建 workflow 专属窗口(后台创建,不抢焦点,不打扰当前开发)
-	const res = await run(
-		ghostctlBin,
-		["new-window", "--cwd", cwd, "--no-focus"],
-		cwd,
-	);
-	if (res.code !== 0) {
+	try {
+		const { windowId } = await newWindow({ cwd, noFocus: true });
+		setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, windowId);
+		return { ok: true, winId: windowId, created: true };
+	} catch (e) {
 		return {
 			ok: false,
-			error: `ghostctl new-window 失败: ${res.stderr || res.stdout}`,
+			error: `创建专属窗口失败: ${errMsg(e)}`,
 		};
 	}
-	const m = WINDOW_ID_RE.exec(res.stdout);
-	if (!m) {
-		return {
-			ok: false,
-			error: `new-window 输出无法解析窗口 id: ${res.stdout.slice(0, 200)}`,
-		};
-	}
-	setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, m[1]);
-	return { ok: true, winId: m[1], created: true };
 }
 
 /**
@@ -324,86 +278,71 @@ export async function resolveWorkflowWindow(
  * 不清理(无法定位业务 tab,宁留不误关)。清理失败不影响主流程。
  */
 export async function sweepInitialTabs(
-	ghostctlBin: string,
-	cwd: string,
 	winId: string,
 	keepTerminalId: string | null,
 	opts: { retryDelaysMs?: number[] } = {},
 ): Promise<void> {
 	if (!keepTerminalId) return;
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return;
-	let tabs: Array<{ id: string; terminals: Array<{ id: string }> }> = [];
+	let layout: GhosttyLayout;
 	try {
-		const layout = JSON.parse(res.stdout) as {
-			windows: Array<{
-				id: string;
-				tabs: Array<{ id: string; terminals: Array<{ id: string }> }>;
-			}>;
-		};
-		const win = layout.windows.find((w) => w.id === winId);
-		if (!win) return;
-		tabs = win.tabs;
+		layout = await layoutJson();
 	} catch {
-		/* 解析失败不影响主流程 */
 		return;
 	}
+	const win = layout.windows.find((w) => w.id === winId);
+	if (!win) return;
 	// 刚创建的窗口/tab 在 AppleScript 侧引用会失败(-1728:不能获得 terminal id
 	// of window N),close-tab 失败后按退避重试,总耗时 ≤ 重试间隔之和。
 	const retryDelaysMs = opts.retryDelaysMs ?? [500, 1000, 2000];
-	for (const t of tabs) {
+	for (const t of win.tabs) {
 		const termIds = t.terminals.map((x) => x.id);
 		if (termIds.includes(keepTerminalId)) continue;
 		for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
 			if (attempt > 0) {
 				await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1]));
 			}
-			const closeRes = await run(ghostctlBin, ["close-tab", t.id], cwd);
-			if (closeRes.code === 0) break;
+			try {
+				await closeTab(t.id);
+				break;
+			} catch {
+				/* 退避重试 */
+			}
 		}
 	}
 }
 
 /**
- * 反查 terminal id(ghostctl layout --json):
+ * 反查 terminal id(layout 查询):
  * 优先按 new-tab 返回的 tab id;兜底按 cwd / 终端名(worktree 目录名)匹配。
  * 新开终端的 cwd 字段常为空(AppleScript 限制),故 name 匹配是主要兜底。
  */
 export async function findTerminalId(
-	ghostctlBin: string,
-	cwd: string,
 	tabId: string | null,
 	wtPath: string,
 ): Promise<string | null> {
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return null;
+	let layout: GhosttyLayout;
 	try {
-		const layout = JSON.parse(res.stdout) as {
-			windows: Array<{
-				tabs: Array<{
-					id: string;
-					terminals: Array<{ id: string; cwd?: string; name?: string }>;
-				}>;
-			}>;
-		};
-		const wtBase = path.basename(wtPath);
-		for (const w of layout.windows) {
-			for (const t of w.tabs) {
-				if (tabId && t.id === tabId && t.terminals.length > 0) {
-					return t.terminals[0].id;
-				}
-				for (const term of t.terminals) {
-					if (term.cwd && path.resolve(term.cwd) === path.resolve(wtPath)) {
-						return term.id;
-					}
-					if (term.name && term.name.endsWith(wtBase)) {
-						return term.id;
-					}
-				}
-			}
-		}
+		layout = await layoutJson();
 	} catch {
 		return null;
 	}
+	const wtBase = path.basename(wtPath);
+	for (const w of layout.windows) {
+		for (const t of w.tabs) {
+			if (tabId && t.id === tabId && t.terminals.length > 0) {
+				return t.terminals[0].id;
+			}
+			for (const term of t.terminals) {
+				if (term.cwd && path.resolve(term.cwd) === path.resolve(wtPath)) {
+					return term.id;
+				}
+				if (term.name && term.name.endsWith(wtBase)) {
+					return term.id;
+				}
+			}
+		}
+	}
 	return null;
 }
+
+export { collectTerminalIds, GhosttyError };

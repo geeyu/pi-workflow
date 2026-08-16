@@ -2,8 +2,9 @@
  * exec/shell.ts — 无状态工具层:进程执行 + 可执行文件解析 + worktree 路径计算
  * (arch-refactor §3.4,自 src/exec/dispatch.ts 同名迁移;三者均无依赖,最先 import)
  *
- * - run:execFile 封装(Ghostty 非交互 shell 的 PATH 极简,补充 brew 常用目录);
- * - resolveBin / resolveOnPath:gittree/ghostctl/pi 可执行文件解析;
+ * - run:execFile 封装(进程 PATH 可能缺失 brew 目录,补充常用位);
+ * - resolveBin / resolveOnPath:gittree/pi 可执行文件解析(窗口操作已内化为
+ *   exec/ghostty.ts 直接调 osascript,不再解析外部 CLI);
  * - piInvocation:子 pi 启动命令(绝对路径,子 tab 的 PATH 不可靠);
  * - worktreeName / worktreePath:gittree worktree 命名与路径约定(window/template/dispatch 三方共用)。
  */
@@ -24,8 +25,7 @@ export function run(
 	cwd: string,
 ): Promise<RunResult> {
 	return new Promise((resolve) => {
-		// Ghostty 新窗口的非交互 shell 的 PATH 极简(无 brew),会命中系统旧版
-		// python3(3.9,不支持 str | None 语法导致 ghostctl 报错)。补充常用目录。
+		// 当前进程 PATH 可能缺 brew 常用目录(gittree/ghostty 子 shell 场景),补充。
 		const env = {
 			...process.env,
 			PATH: ["/opt/homebrew/bin", "/usr/local/bin", process.env.PATH ?? ""].join(
@@ -141,13 +141,12 @@ function resolveOnPath(name: string): string | null {
 }
 
 /**
- * 解析 gittree/ghostctl 可执行文件:
- * 优先 PATH,兜底已知安装位(与 gittree/ghostctl skill 的内部约定一致):
+ * 解析 gittree 可执行文件:
+ * 优先 PATH,兜底已知安装位(与 gittree skill 的内部约定一致):
  * - gittree 本体: ~/.pi/agent/extensions/gittree/scripts/gittree.sh
- * - ghostctl 本体: ~/.pi/skills/ghostctl/scripts/ghostctl(软链在 ~/.local/bin)
- * Ghostty 新窗口的非交互 shell PATH 极简,不依赖其 PATH 解析。
+ * (窗口操作不再解析外部 ghostctl —— exec/ghostty.ts 内化 osascript 实现。)
  */
-export function resolveBin(name: "gittree" | "ghostctl"): string {
+export function resolveBin(name: "gittree"): string {
 	const known: Record<typeof name, string> = {
 		gittree: path.join(
 			os.homedir(),
@@ -157,14 +156,6 @@ export function resolveBin(name: "gittree" | "ghostctl"): string {
 			"gittree",
 			"scripts",
 			"gittree.sh",
-		),
-		ghostctl: path.join(
-			os.homedir(),
-			".pi",
-			"skills",
-			"ghostctl",
-			"scripts",
-			"ghostctl",
 		),
 	};
 	const local = path.join(os.homedir(), ".local", "bin", name);

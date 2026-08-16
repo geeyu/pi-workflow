@@ -1,7 +1,7 @@
 /**
  * observe/monitor.ts — 监听与批次推进(设计 §4.5 崩溃恢复 / §5.5 监听 / §7.2 合并)
  *
- * - pollOnce:tab 存活检测(ghostctl layout 按 tab_id=terminal id 匹配),
+ * - pollOnce:tab 存活检测(layout 按 tab_id=terminal id 匹配),
  *   running/dispatched 步骤的 tab 消失且未回报 → step_tab_closed → aborted
  * - recoverStaleSteps:崩溃恢复(编排者 session_start 时调用)
  * - getReadySteps:就绪集(pending 且依赖全 done/skipped,wave 推进用)
@@ -36,7 +36,7 @@ import {
 	WORKFLOW_STATUS,
 } from "../core/db.ts";
 import { depsDone } from "../exec/dispatch.ts";
-import { resolveBin, run } from "../exec/shell.ts";
+import { collectTerminalIds, layoutJson } from "../exec/ghostty.ts";
 import { isMasterMode } from "../master.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -83,24 +83,10 @@ export function pollTargetReached(
 }
 
 /** 一次 layout 查询,返回所有存活 terminal id(按 tab_id 匹配) */
-export async function fetchLiveTabIds(
-	ghostctlBin: string,
-	cwd: string,
-): Promise<Set<string> | null> {
+export async function fetchLiveTabIds(): Promise<Set<string> | null> {
 	// 查询失败返回 null:调用方必须跳过本轮,绝不把"查询失败"误判为"所有 tab 消失"
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return null;
 	try {
-		const layout = JSON.parse(res.stdout) as {
-			windows: Array<{ tabs: Array<{ terminals: Array<{ id: string }> }> }>;
-		};
-		const ids = new Set<string>();
-		for (const w of layout.windows) {
-			for (const t of w.tabs) {
-				for (const term of t.terminals) ids.add(term.id);
-			}
-		}
-		return ids;
+		return collectTerminalIds(await layoutJson());
 	} catch {
 		return null;
 	}
@@ -124,14 +110,12 @@ export const TAB_MISS_KEY = "tab_miss_count";
  */
 export async function pollOnce(
 	db: DatabaseSync,
-	opts: { ghostctlBin?: string; repoPath?: string } = {},
+	opts: { repoPath?: string } = {},
 ): Promise<PollResult> {
 	let running = getRunningSteps(db);
 	if (opts.repoPath) {
 		// 会话隔离:只轮询 cwd 所在仓库的步骤(谁发起谁看)
-		const mine = new Set(
-			listActiveWorkflows(db, opts.repoPath).map((w) => w.id),
-		);
+		const mine = new Set(listActiveWorkflows(db, opts.repoPath).map((w) => w.id));
 		running = running.filter((s) => mine.has(s.workflow_id));
 	}
 	// dead-master 检测对象:master 模式 + running + 已记录主控 tab。
@@ -149,7 +133,6 @@ export async function pollOnce(
 		return { closed: [], timedOut: [] };
 	}
 
-	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
 	// 按仓库分组,每个仓库一次 layout(主控检测对象的仓库也纳入,保证拿到 layout)
 	const byRepo = new Map<string, StepRow[]>();
 	for (const s of running) {
@@ -165,7 +148,7 @@ export async function pollOnce(
 	const closed: string[] = [];
 	const timedOut: string[] = [];
 	const nowMs = Date.now();
-	// 超时检查(不依赖 ghostctl)
+	// 超时检查(不依赖窗口查询)
 	for (const s of running) {
 		if (
 			s.status === "running" &&
@@ -202,7 +185,7 @@ export async function pollOnce(
 	}
 
 	for (const [repo, steps] of byRepo) {
-		const live = await fetchLiveTabIds(ghostctlBin, repo);
+		const live = await fetchLiveTabIds();
 		if (!live) continue; // 查询失败 → 本轮跳过,不误标 aborted
 		for (const s of steps) {
 			if (!s.tab_id) continue;
@@ -301,7 +284,7 @@ function getRepoOfStep(db: DatabaseSync, stepId: string): string | null {
 /** 崩溃恢复:编排者启动时立即检测一轮(等价 pollOnce,tab 还在的保持 running) */
 export function recoverStaleSteps(
 	db: DatabaseSync,
-	opts: { ghostctlBin?: string } = {},
+	opts: { repoPath?: string } = {},
 ): Promise<PollResult> {
 	return pollOnce(db, opts);
 }
@@ -311,7 +294,6 @@ export interface MonitorOptions {
 	intervalMs?: number;
 	/** fs.watch 触发后的 debounce 合并窗口,默认 300ms(高频写合并) */
 	watchDebounceMs?: number;
-	ghostctlBin?: string;
 	/** 会话隔离:只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看);缺省 = 全量 */
 	cwd?: string;
 	/** 本轮检测到 tab 消失的步骤 */
@@ -356,7 +338,6 @@ export function startMonitor(
 		ticking = true;
 		try {
 			const { closed } = await pollOnce(db, {
-				ghostctlBin: opts.ghostctlBin,
 				repoPath: opts.cwd,
 			});
 			if (closed.length > 0) opts.onClosed?.(closed);
@@ -499,8 +480,7 @@ export function detectStateChanges(
 			if (steps.length === 0) continue;
 			if (
 				!steps.every(
-					(s) =>
-						s.status === STEP_STATUS.done || s.status === STEP_STATUS.skipped,
+					(s) => s.status === STEP_STATUS.done || s.status === STEP_STATUS.skipped,
 				)
 			) {
 				continue;
@@ -509,9 +489,7 @@ export function detectStateChanges(
 				continue;
 			}
 			const mergeCmd =
-				wave.seq === wf.current_wave
-					? "/wf merge"
-					: `/wf merge --wave ${wave.seq}`;
+				wave.seq === wf.current_wave ? "/wf merge" : `/wf merge --wave ${wave.seq}`;
 			items.push({
 				workflowId: wf.id,
 				waveSeq: wave.seq,
@@ -553,10 +531,7 @@ export function detectStateChanges(
 					kind: "master-failed",
 					text: `workflow ${wf.id} 主控执行失败 → 请 /wf status ${wf.id} 查看原因;可自行接管或 /wf master-fail ${wf.id} <原因> 确认结束`,
 				});
-			} else if (
-				wf.status === WORKFLOW_STATUS.running &&
-				deadAt !== undefined
-			) {
+			} else if (wf.status === WORKFLOW_STATUS.running && deadAt !== undefined) {
 				// dead-master:主控 tab 已消失且 workflow 仍在 running(无人编排)
 				items.push({
 					workflowId: wf.id,

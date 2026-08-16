@@ -53,17 +53,16 @@ import {
 	openStepTab,
 	parseExpectations,
 	resolveBin,
-	run,
 	sendTextToTerminal,
 	WF_WINDOW_META_KEY,
 	worktreePath,
 } from "./exec/dispatch.ts";
+import { closeTerminal, layoutJson } from "./exec/ghostty.ts";
 import {
 	createWorkflowWithMaster,
 	isMasterMode,
 	markMasterFailed,
 	masterBranch,
-	masterName,
 	mergeMaster,
 } from "./master.ts";
 import {
@@ -475,9 +474,7 @@ function printStatusText(env: CmdEnv, wfId?: string): void {
 			(counts.conflict ?? 0) +
 			(counts["needs-fix"] ?? 0);
 		const costText =
-			cost && cost.cost_cents > 0
-				? ` $${(cost.cost_cents / 100).toFixed(2)}`
-				: "";
+			cost && cost.cost_cents > 0 ? ` $${(cost.cost_cents / 100).toFixed(2)}` : "";
 		env.info(
 			`[${w.id}] ${sanitizeTerminalText(w.title)} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
 		);
@@ -596,9 +593,7 @@ register({
 		if (explicitWf) {
 			const wf = getWorkflow(env.db, explicitWf);
 			if (!wf) {
-				env.fail(
-					`${env.kind === "cli" ? "✗ " : ""}workflow 不存在: ${explicitWf}`,
-				);
+				env.fail(`${env.kind === "cli" ? "✗ " : ""}workflow 不存在: ${explicitWf}`);
 				return;
 			}
 			const appRes = appendSteps(
@@ -708,12 +703,8 @@ register({
 		}
 		if (dryRun) {
 			env.info(`[dry-run] 将创建 workflow ${workflowId}(repo: ${repoPath}):`);
-			env.info(
-				`  master gittree: ${res.masterBranchName}(${res.masterWorktree})`,
-			);
-			env.info(
-				`  专属窗口开主控 tab,主控自主完成 plan→dispatch→merge→goal-check`,
-			);
+			env.info(`  master gittree: ${res.masterBranchName}(${res.masterWorktree})`);
+			env.info(`  专属窗口开主控 tab,主控自主完成 plan→dispatch→merge→goal-check`);
 			return;
 		}
 		env.info(
@@ -788,19 +779,20 @@ register({
 export function ensureGllaIgnored(repoPath: string): boolean {
 	let root: string;
 	try {
-		root = execFileSync(
-			"git",
-			["rev-parse", "--show-toplevel"],
-			{ cwd: repoPath, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-		)
-			.trim();
+		root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+			cwd: repoPath,
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
 	} catch {
 		return false; // 非 git 仓库
 	}
 	if (!root) return false;
 	try {
 		const giPath = path.join(root, ".gitignore");
-		const giContent = fs.existsSync(giPath) ? fs.readFileSync(giPath, "utf-8") : "";
+		const giContent = fs.existsSync(giPath)
+			? fs.readFileSync(giPath, "utf-8")
+			: "";
 		const hasEntry = giContent
 			.split("\n")
 			.some((l) => l.trim() === ".pi-glla/" || l.trim() === ".pi-glla");
@@ -834,8 +826,8 @@ register({
 		const showAll = parsed.bool("--all");
 		const lines: string[] = [];
 		const workflows = explicit
-			? [getWorkflow(env.db, explicit)].filter(
-					(w): w is NonNullable<typeof w> => Boolean(w),
+			? [getWorkflow(env.db, explicit)].filter((w): w is NonNullable<typeof w> =>
+					Boolean(w),
 				)
 			: showAll
 				? listWorkflows(env.db)
@@ -862,9 +854,7 @@ register({
 					w.status === WORKFLOW_STATUS.awaitingMerge
 						? " → /wf master-merge 合并回主分支"
 						: "(主控 agent 自主编排中)";
-				lines.push(
-					`  mode: master(master gittree: ${masterBranch(w.id)})${hint}`,
-				);
+				lines.push(`  mode: master(master gittree: ${masterBranch(w.id)})${hint}`);
 			}
 			for (const s of getRunningSteps(env.db, w.id)) {
 				lines.push(`  ▶ ${s.id} ${s.title} tab=${s.tab_id ?? "?"}`);
@@ -1097,8 +1087,7 @@ register({
 			return;
 		}
 		// pi:widget 渲染(无 follow)
-		const limit =
-			args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
+		const limit = args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
 		const wfId =
 			args[0] && !/^\d+$/.test(args[0])
 				? resolveWorkflowId(env, args[0])
@@ -1151,9 +1140,7 @@ register({
 			// per-token 错误只打印不置退出码(现状)
 			const readyTokens =
 				tokens.length === 0
-					? getReadySteps(env.db, wfId).map((s) =>
-							s.id.slice(wfId.length + 1),
-						)
+					? getReadySteps(env.db, wfId).map((s) => s.id.slice(wfId.length + 1))
 					: tokens;
 			if (readyTokens.length === 0) {
 				env.info(
@@ -1162,8 +1149,7 @@ register({
 				return;
 			}
 			for (const token of readyTokens) {
-				const step =
-					getStep(env.db, token) ?? getStep(env.db, `${wfId}-${token}`);
+				const step = getStep(env.db, token) ?? getStep(env.db, `${wfId}-${token}`);
 				if (!step) {
 					env.warn(`✗ ${token}: 步骤不存在`);
 					continue;
@@ -1171,9 +1157,7 @@ register({
 				const res = await dispatchStep(env.db, workflow, step, { dryRun });
 				if (res.ok) {
 					if (res.reused) {
-						env.info(
-							`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
-						);
+						env.info(`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
 					} else {
 						env.info(
 							res.dryRun
@@ -1206,9 +1190,7 @@ register({
 				? getReadySteps(env.db, wfId).map((s) => s.id.slice(wfId.length + 1))
 				: tokens;
 		if (readyTokens.length === 0) {
-			env.info(
-				`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`,
-			);
+			env.info(`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`);
 			return;
 		}
 		const results: string[] = [];
@@ -1376,9 +1358,7 @@ register({
 		const res = await dispatchStep(env.db, workflow, step, { fresh });
 		if (res.ok) {
 			if (res.reused) {
-				env.info(
-					`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
-				);
+				env.info(`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
 			} else if (env.kind === "cli") {
 				env.info(
 					`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
@@ -1419,48 +1399,23 @@ register({
 			env.fail(`workflow 不存在: ${wfId}`);
 			return;
 		}
-		// 取当前焦点窗口 id(ghostctl layout --json 的 front 标记)
-		let raw: string;
-		if (env.kind === "cli") {
-			try {
-				raw = execFileSync(resolveBin("ghostctl"), ["layout", "--json"], {
-					encoding: "utf-8",
-					cwd: workflow.repo_path,
-				});
-			} catch (e) {
-				env.fail(`ghostctl layout 失败: ${(e as Error).message}`);
-				return;
-			}
-		} else {
-			const res = await run(
-				resolveBin("ghostctl"),
-				["layout", "--json"],
-				workflow.repo_path,
-			);
-			if (res.code !== 0) {
-				env.fail(`ghostctl layout 失败: ${res.stderr || res.stdout}`);
-				return;
-			}
-			raw = res.stdout;
-		}
-		let windows: Array<{ id: string; front?: boolean }>;
+		// 取当前焦点窗口 id(layout 查询的 front 标记)
+		let layout;
 		try {
-			windows = (
-				JSON.parse(raw) as { windows: Array<{ id: string; front?: boolean }> }
-			).windows;
-		} catch {
-			env.fail("ghostctl layout 输出无法解析");
+			layout = await layoutJson();
+		} catch (e) {
+			env.fail(`Ghostty layout 查询失败: ${(e as Error).message}`);
+			return;
+		}
+		const windows = layout.windows;
+		if (windows.length === 0) {
+			env.fail("Ghostty layout 无窗口信息");
 			return;
 		}
 		const target = windows.find((w) => w.front) ?? windows[0];
-		if (!target) {
-			env.fail("ghostctl layout 无窗口信息");
-			return;
-		}
 		const old =
-			(getWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY) as
-				| string
-				| undefined) ?? "(未绑定)";
+			(getWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY) as string | undefined) ??
+			"(未绑定)";
 		setWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY, target.id);
 		addEvent(env.db, {
 			workflowId: wfId,
@@ -1888,15 +1843,12 @@ register({
 			return;
 		}
 		const steps = getStepsByWorkflow(env.db, workflow.id);
-		const live = await fetchLiveTabIds(
-			resolveBin("ghostctl"),
-			workflow.repo_path,
-		);
+		const live = await fetchLiveTabIds();
 		if (live === null) {
 			env.fail(
-				"✗ ghostctl layout 查询失败,无法判定 tab 存活(与 monitor 同口径:查询失败不算 tab 关闭)",
+				"✗ Ghostty layout 查询失败,无法判定 tab 存活(与 monitor 同口径:查询失败不算 tab 关闭)",
 			);
-			env.fail("  请用 wf doctor 检查 ghostctl/ghostty 环境后重试");
+			env.fail("  请用 wf doctor 检查 osascript/Ghostty 环境后重试");
 			return;
 		}
 		const rows = steps.map((s) => ({
@@ -1915,11 +1867,7 @@ register({
 		};
 		if (json) {
 			env.info(
-				JSON.stringify(
-					{ workflowId: workflow.id, steps: rows, summary },
-					null,
-					2,
-				),
+				JSON.stringify({ workflowId: workflow.id, steps: rows, summary }, null, 2),
 			);
 			return;
 		}
@@ -1933,7 +1881,7 @@ register({
 		);
 		if (summary.withTab > 0 && live.size === 0) {
 			env.warn(
-				"(提示:ghostctl layout 无任何存活 terminal,存活判定可能不准 — 可用 wf doctor 检查环境)",
+				"(提示:Ghostty layout 无任何存活 terminal,存活判定可能不准 — 可用 wf doctor 检查环境)",
 			);
 		}
 	},
@@ -1949,7 +1897,6 @@ register({
 		const [target, ...text] = args;
 		if (!target || text.length === 0) throw new UsageError();
 		const msg = text.join(" ");
-		const ghostctl = resolveBin("ghostctl");
 		const step = resolveStepId(env, target);
 		if (step) {
 			if (!step.tab_id) {
@@ -1958,24 +1905,18 @@ register({
 				);
 				return;
 			}
-			const workflow = getWorkflow(env.db, step.workflow_id);
-			const res = await sendTextToTerminal(
-				ghostctl,
-				step.tab_id,
-				msg,
-				workflow?.repo_path ?? env.cwd,
-			);
-			if (res.code !== 0) {
-				env.fail(`✗ 注入失败: ${res.stderr || res.stdout}`);
+			const res = await sendTextToTerminal(step.tab_id, msg);
+			if (!res.ok) {
+				env.fail(`✗ 注入失败: ${res.error ?? "未知错误"}`);
 				return;
 			}
 			env.info(`✓ 已向 ${step.id} 的 tab 注入 ${msg.length} 字符`);
 			return;
 		}
-		// 未命中任何步骤 → 按 terminal id 前缀直接注入(不查 DB,ghostctl 负责前缀匹配)
-		const res = await sendTextToTerminal(ghostctl, target, msg, env.cwd);
-		if (res.code !== 0) {
-			env.fail(`✗ 注入失败: ${res.stderr || res.stdout}`);
+		// 未命中任何步骤 → 按 terminal id 前缀直接注入(不查 DB,内部层负责前缀匹配)
+		const res = await sendTextToTerminal(target, msg);
+		if (!res.ok) {
+			env.fail(`✗ 注入失败: ${res.error ?? "未知错误"}`);
 			return;
 		}
 		env.info(`✓ 已向 terminal ${target} 注入 ${msg.length} 字符`);
@@ -2147,9 +2088,7 @@ register({
 			path.join(os.homedir(), ".pi", "agent", "sessions");
 		const file = findLatestSessionFile(sessionsRoot, cwd);
 		if (!file) {
-			env.fail(
-				`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`,
-			);
+			env.fail(`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`);
 			return;
 		}
 		const messages: Array<{ ts: string; role: string; text: string }> = [];
@@ -2218,13 +2157,10 @@ register({
 		}
 		// 已绑定且 tab 存活 → 无需重开(layout 查询失败时保守重开并提示)
 		if (step.tab_id) {
-			const live = await fetchLiveTabIds(
-				resolveBin("ghostctl"),
-				workflow.repo_path,
-			);
+			const live = await fetchLiveTabIds();
 			if (live === null) {
 				env.warn(
-					"⚠ ghostctl layout 查询失败,无法确认旧 tab 是否存活;仍尝试重开(旧 tab 若还活着请手动关闭)",
+					"⚠ Ghostty layout 查询失败,无法确认旧 tab 是否存活;仍尝试重开(旧 tab 若还活着请手动关闭)",
 				);
 			} else if (live.has(step.tab_id)) {
 				env.fail(
@@ -2234,17 +2170,12 @@ register({
 			}
 		}
 		// 新 attempt 行(冻结 task_md + pointer),成功后由 openStepTab 回写 tab_id
-		const pointer = buildPointer(
-			workflow.id,
-			dotted,
-			workflow.current_wave || 1,
-		);
+		const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
 		const attempt = createAttempt(env.db, step.id, {
 			taskMd: step.task_md,
 			pointer,
 		});
 		const res = await openStepTab(env.db, workflow, step, {
-			ghostctlBin: resolveBin("ghostctl"),
 			attemptId: attempt.id,
 			manual: true,
 		});
@@ -2290,13 +2221,12 @@ register({
 			env.fail(`✗ workflow 不存在: ${step.workflow_id}`);
 			return;
 		}
-		const ghostctl = resolveBin("ghostctl");
 		const dotted = step.id.slice(workflow.id.length + 1);
 		const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
 		let fullId: string | null = null;
 		let mode: "auto" | "explicit" = "auto";
 		if (tid === "auto") {
-			fullId = await findTerminalId(ghostctl, workflow.repo_path, null, wtPath);
+			fullId = await findTerminalId(null, wtPath);
 			if (!fullId) {
 				env.fail(
 					`✗ layout 中无该 worktree 对应终端(${wtPath});请用 wf open-tab ${step.id} 重开`,
@@ -2305,10 +2235,10 @@ register({
 			}
 		} else {
 			mode = "explicit";
-			const live = await fetchLiveTabIds(ghostctl, workflow.repo_path);
+			const live = await fetchLiveTabIds();
 			if (live === null) {
 				env.fail(
-					"✗ ghostctl layout 查询失败,无法校验 terminal id;请用 auto 或 wf open-tab 重开",
+					"✗ Ghostty layout 查询失败,无法校验 terminal id;请用 auto 或 wf open-tab 重开",
 				);
 				return;
 			}
@@ -2365,10 +2295,7 @@ register({
 	usage: "wf cleanup [workflowId] [--dry-run] [--no-fix]",
 	entry: "cli",
 	run: async (args, env) => {
-		const parsed = parseArgs(args, [
-			{ name: "--dry-run" },
-			{ name: "--no-fix" },
-		]);
+		const parsed = parseArgs(args, [{ name: "--dry-run" }, { name: "--no-fix" }]);
 		const dryRun = parsed.bool("--dry-run");
 		const noFix = parsed.bool("--no-fix");
 		const wfArg = parsed.positionals[0];
@@ -2395,35 +2322,28 @@ register({
 		};
 
 		// 1. 关终态 tab
-		const ghostctlBin = resolveBin("ghostctl");
-		const ghostctlOk = fs.existsSync(ghostctlBin);
-		const live = await fetchLiveTabIds(ghostctlBin, workflow.repo_path);
+		const live = await fetchLiveTabIds();
 		// 查询失败:绝不关闭任何 tab(与 monitor 同口径:查询失败不算 tab 关闭),其余清理继续
 		const canJudgeTabs = live !== null;
 		if (!canJudgeTabs) {
 			warn(
-				"ghostctl layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续",
+				"Ghostty layout 查询失败,跳过「关闭终态 tab」步骤(不关闭任何 tab);其余清理继续",
 			);
 		}
 		for (const s of steps) {
 			if (!canJudgeTabs || !s.tab_id || !TERMINAL_OK.has(s.status)) continue;
 			if (!live?.has(s.tab_id)) continue; // 已不在布局中,无需动作
-			if (!ghostctlOk) {
-				warn(`${s.id}: ghostctl 不可用,无法关闭 tab ${s.tab_id.slice(0, 8)}`);
-				continue;
-			}
 			if (dryRun) {
 				env.info(`${prefix}关闭终态 tab: ${s.id} (${s.tab_id.slice(0, 8)})`);
 				summary.closedTabs++;
 				continue;
 			}
-			const res = await run(
-				ghostctlBin,
-				["close-terminal", s.tab_id],
-				workflow.repo_path,
-			);
-			if (res.code !== 0) {
-				warn(`${s.id}: close-terminal 失败: ${res.stderr || res.stdout}`);
+			try {
+				await closeTerminal(s.tab_id);
+			} catch (e) {
+				warn(
+					`${s.id}: close-terminal 失败: ${e instanceof Error ? e.message : String(e)}`,
+				);
 				continue;
 			}
 			addEvent(env.db, {
@@ -2455,9 +2375,7 @@ register({
 		for (const s of steps) {
 			if (!s.worktree) continue;
 			if (ACTIVE_STATES.has(s.status)) {
-				env.info(
-					`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`,
-				);
+				env.info(`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`);
 				continue;
 			}
 			const dotted = s.id.slice(workflow.id.length + 1);
@@ -2535,13 +2453,9 @@ register({
 			const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
 			if (!fs.existsSync(wtPath)) continue;
 			try {
-				const out = execFileSync(
-					"git",
-					["-C", wtPath, "status", "--porcelain"],
-					{
-						encoding: "utf-8",
-					},
-				).trim();
+				const out = execFileSync("git", ["-C", wtPath, "status", "--porcelain"], {
+					encoding: "utf-8",
+				}).trim();
 				const dirty = out
 					.split("\n")
 					.filter(Boolean)
@@ -2592,25 +2506,16 @@ register({
 		checks.push(["node:sqlite 可用", true, DB_PATH]);
 		const gittree = resolveBin("gittree");
 		checks.push(["gittree 可执行", fs.existsSync(gittree), gittree]);
-		const ghostctl = resolveBin("ghostctl");
-		checks.push(["ghostctl 可执行", fs.existsSync(ghostctl), ghostctl]);
-		try {
-			const py = execFileSync("/usr/bin/env", ["python3", "--version"], {
-				encoding: "utf-8",
-			}).trim();
-			const ok = /3\.(1[0-9]|[2-9])/.test(py);
-			checks.push(["python3 ≥ 3.10(ghostctl 语法)", ok, py]);
-		} catch {
-			checks.push(["python3 ≥ 3.10(ghostctl 语法)", false, "python3 不可用"]);
-		}
+		const osa = "/usr/bin/osascript";
+		checks.push([
+			"osascript 可用(macOS Ghostty 控制层)",
+			fs.existsSync(osa),
+			`${osa}${process.env.WF_OSA_BIN ? `(WF_OSA_BIN=${process.env.WF_OSA_BIN})` : ""}`,
+		]);
 		const ver = (
 			env.db.prepare("PRAGMA user_version").get() as { user_version: number }
 		).user_version;
-		checks.push([
-			"数据库可打开(user_version)",
-			ver >= 1,
-			`v${ver} @ ${DB_PATH}`,
-		]);
+		checks.push(["数据库可打开(user_version)", ver >= 1, `v${ver} @ ${DB_PATH}`]);
 		let okAll = true;
 		for (const [name, ok, detail] of checks) {
 			env.info(`${ok ? "✓" : "✗"} ${name}${ok ? "" : " ← 需修复"}`);
@@ -2651,9 +2556,7 @@ register({
 		if (running.length > 0) {
 			env.info(`运行中(${running.length}):`);
 			for (const s of running) {
-				env.info(
-					`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`,
-				);
+				env.info(`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`);
 			}
 		}
 		const evtTotal = (
@@ -2667,9 +2570,7 @@ register({
 			}
 		).n;
 		env.info(`事件总数: ${evtTotal} | attempts: ${attTotal}`);
-		env.info(
-			`gittree: ${resolveBin("gittree")} | ghostctl: ${resolveBin("ghostctl")}`,
-		);
+		env.info(`gittree: ${resolveBin("gittree")}`);
 	},
 });
 
@@ -2745,13 +2646,12 @@ register({
 			env.warn(`步骤 ${step.id} 无 tab(tab_id 为空),无法 steer`);
 			return;
 		}
-		const ghostctl = resolveBin("ghostctl");
 		const msg = text.join(" ");
-		const res = await sendTextToTerminal(ghostctl, step.tab_id, msg, env.cwd);
-		if (res.code === 0) {
+		const res = await sendTextToTerminal(step.tab_id, msg);
+		if (res.ok) {
 			env.info(`已向 ${step.id} 的 tab 发送指令`);
 		} else {
-			env.warn(`发送失败: ${res.stderr || res.stdout}`);
+			env.warn(`发送失败: ${res.error ?? "未知错误"}`);
 		}
 	},
 });

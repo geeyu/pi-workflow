@@ -38,6 +38,7 @@ import {
 	WORKFLOW_STATUS,
 } from "./core/db.ts";
 import { piInvocation, resolveBin, run } from "./exec/shell.ts";
+import { newWindow, closeTerminal } from "./exec/ghostty.ts";
 import { findTerminalId, shellQuote } from "./exec/window.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -107,7 +108,6 @@ export interface CreateMasterOptions {
 	goal: string;
 	dryRun?: boolean;
 	gittreeBin?: string;
-	ghostctlBin?: string;
 }
 
 export interface CreateMasterResult {
@@ -135,7 +135,6 @@ export async function createWorkflowWithMaster(
 	const name = masterName(workflowId);
 	const wtPath = masterWorktreePath(repoPath, workflowId);
 	const gittreeBin = opts.gittreeBin ?? resolveBin("gittree");
-	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
 
 	if (opts.dryRun) {
 		return {
@@ -191,21 +190,19 @@ export async function createWorkflowWithMaster(
 	// 主控后续在自己所在窗口开子任务 tab(resolveMasterWindow)。
 	const pointer = buildMasterPointer(workflowId, opts.goal);
 	const cmd = `env PI_WF_MASTER=${workflowId} PI_WF_REPO=${repoPath} ${piInvocation()} ${shellQuote(pointer)}`;
-	const winRes = await run(
-		ghostctlBin,
-		["new-window", "--cwd", wtPath, "--command", cmd, "--no-focus"],
-		repoPath,
-	);
-	if (winRes.code !== 0) {
+	try {
+		// 后台创建(不抢焦点,不打扰当前开发)
+		await newWindow({ cwd: wtPath, command: cmd, noFocus: true });
+	} catch (e) {
 		return {
 			ok: false,
 			workflowId,
-			error: `主控窗口创建失败: ${winRes.stderr || winRes.stdout}`,
+			error: `主控窗口创建失败: ${e instanceof Error ? e.message : String(e)}`,
 		};
 	}
 	// 反查主控 terminal id(按 cwd 匹配;新窗口初始 tab 的 AppleScript 引用
 	// 刚创建时不可用,但 layout 读取不受影响)
-	const tabId = await findTerminalId(ghostctlBin, repoPath, null, wtPath);
+	const tabId = await findTerminalId(null, wtPath);
 	if (tabId) {
 		setWorkflowMeta(db, workflowId, MASTER_TAB_KEY, tabId);
 	}
@@ -232,7 +229,6 @@ export async function createWorkflowWithMaster(
 // ────────────────────────────────────────────────────────────
 export interface MergeMasterOptions {
 	gittreeBin?: string;
-	ghostctlBin?: string;
 }
 
 export interface MergeMasterResult {
@@ -280,7 +276,6 @@ export async function mergeMaster(
 	}
 	const name = masterName(workflowId);
 	const gittreeBin = opts.gittreeBin ?? resolveBin("gittree");
-	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
 
 	// 1. 关主控会话 tab(尽力而为;已关则跳过)
 	let tabClosed = false;
@@ -288,18 +283,16 @@ export async function mergeMaster(
 		| string
 		| undefined;
 	if (masterTab) {
-		const closeRes = await run(
-			ghostctlBin,
-			["close-terminal", masterTab],
-			wf.repo_path,
-		);
-		if (closeRes.code === 0) {
+		try {
+			await closeTerminal(masterTab);
 			tabClosed = true;
 			addEvent(db, {
 				workflowId,
 				type: EVT.masterTabClosed,
 				payload: { tabId: masterTab, reason: "master-merge" },
 			});
+		} catch {
+			/* 已关闭/查询失败 → 跳过,不阻断合并 */
 		}
 	}
 
@@ -337,7 +330,11 @@ export async function mergeMaster(
 	// 占用中的由 gittree clean 跳过,不阻断合并)
 	for (const st of getStepsByWorkflow(db, workflowId)) {
 		if (st.tab_id && (st.status === "done" || st.status === "skipped")) {
-			await run(ghostctlBin, ["close-terminal", st.tab_id], wf.repo_path);
+			try {
+				await closeTerminal(st.tab_id);
+			} catch {
+				/* 尽力而为 */
+			}
 		}
 		if (st.worktree) {
 			await run(

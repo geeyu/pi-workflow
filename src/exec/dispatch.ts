@@ -10,7 +10,7 @@
  *   2. 渲染 task_md(目标 + 本步任务 + 期望 + 输出契约 + worktree 约束,模板注入依赖结果)
  *      → 写入 workflow_steps.task_md;事件 step_dispatched
  *   3. 组装短指引 pointer → 写入 workflow_attempts.pointer
- *   4. ghostctl new-tab --cwd <worktree> --command "env PI_WF_* pi '<pointer>'"
+ *   4. new-tab(内部 ghostty 层)→ 绑定窗口, --cwd <worktree> --command "env PI_WF_* pi '<pointer>'"
  *      (pointer 为 pi 位置参数,由 pi 自身在 UI 就绪后自动发送,无注入/盲等/回车)
  *      (事件 step_tab_opened,记录 tab_id)
  *
@@ -29,6 +29,7 @@ import {
 	type WorkflowRow,
 } from "../core/db.ts";
 import { isMasterMode, masterBranch } from "../master.ts";
+import { collectTerminalIds, layoutJson } from "./ghostty.ts";
 import { resolveBin, run, worktreeName, worktreePath } from "./shell.ts";
 import { buildPointer, renderTaskMd } from "./template.ts";
 import { openStepTab } from "./window.ts";
@@ -47,25 +48,15 @@ export interface DispatchResult {
 	reused?: boolean;
 }
 
+/**
+ * 去重复用:重派时原 tab 是否仍存活(layout 实时查询)。
+ * 查询失败返回 undefined:调用方必须保守处理(存活未知 ≠ 已关闭)。
+ */
 export async function isTerminalAlive(
-	ghostctlBin: string,
-	cwd: string,
 	terminalId: string,
 ): Promise<boolean | undefined> {
-	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
-	if (res.code !== 0) return undefined;
 	try {
-		const layout = JSON.parse(res.stdout) as {
-			windows: Array<{ tabs: Array<{ terminals: Array<{ id: string }> }> }>;
-		};
-		for (const w of layout.windows) {
-			for (const t of w.tabs) {
-				for (const term of t.terminals) {
-					if (term.id === terminalId) return true;
-				}
-			}
-		}
-		return false;
+		return collectTerminalIds(await layoutJson()).has(terminalId);
 	} catch {
 		return undefined;
 	}
@@ -74,7 +65,7 @@ export async function isTerminalAlive(
 /**
  * workflow 绑定窗口(设计:一次 workflow 一个完整窗口流程):
  * 首次派发把当前焦点窗口记为绑定窗口(存 workflow_metadata.ghostty_window_id),
- * 之后所有子任务 tab 固定开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),
+ * 之后所有子任务 tab 固定开进该窗口 —— 按窗口 id 定位(new-tab --window-id),
  * 不依赖窗口序号/焦点,窗口开合不会漂移;
  * 绑定窗口已关闭则返回错误,绝不静默回退焦点窗口。
  */
@@ -113,9 +104,8 @@ export interface DispatchOptions {
 	dryRun?: boolean;
 	/** fresh=true:先 gittree clean --branch --force 重建 worktree(设计 §7.1) */
 	fresh?: boolean;
-	/** 覆盖 gittree/ghostctl 可执行文件(测试用) */
+	/** 覆盖 gittree 可执行文件(测试用) */
 	gittreeBin?: string;
-	ghostctlBin?: string;
 }
 
 const DISPATCHABLE = new Set([
@@ -155,11 +145,7 @@ export async function dispatchStep(
 	// 复用不消耗 retries_done(未真正重派);--fresh 语义为重建,跳过此检查。
 	const isRetry = ["failed", "aborted", "needs-fix"].includes(step.status);
 	if (isRetry && step.tab_id && !opts.fresh) {
-		const alive = await isTerminalAlive(
-			opts.ghostctlBin ?? resolveBin("ghostctl"),
-			workflow.repo_path,
-			step.tab_id,
-		);
+		const alive = await isTerminalAlive(step.tab_id);
 		if (alive === true) {
 			buildUpdate(
 				db,
@@ -300,24 +286,15 @@ export async function dispatchStep(
 	// 3. attempt 行(冻结 task_md + pointer)
 	const attempt = createAttempt(db, step.id, { taskMd, pointer });
 
-	// 4. 开子任务 tab(共享 openStepTab:new-tab → 反查 → 等就绪回车 → 落库)
+	// 4. 开子任务 tab(共享 openStepTab:new-tab → 反查 → 落库)
 	// 子任务开 tab,固定开进 workflow 绑定窗口(不受用户切焦点影响)
 	const tabRes = await openStepTab(db, workflow, step, {
-		ghostctlBin: opts.ghostctlBin,
 		attemptId: attempt.id,
 	});
 	if (!tabRes.ok) {
 		// 绑定窗口不可用(含已关闭)/ new-tab 失败 → 中止派发
-		const reason =
-			tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
-		abortDispatch(
-			db,
-			attempt.id,
-			step,
-			workflow.id,
-			reason,
-			tabRes.error ?? "",
-		);
+		const reason = tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
+		abortDispatch(db, attempt.id, step, workflow.id, reason, tabRes.error ?? "");
 		return {
 			ok: false,
 			stepId: step.id,

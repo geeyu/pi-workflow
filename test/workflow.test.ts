@@ -23,6 +23,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { StepRow } from "../src/core/db.ts";
 import type { NotifyItem } from "../src/observe/monitor.ts";
+import { __setOsaRunnerForTest } from "../src/exec/ghostty.ts";
 
 // 必须在 import core/db.ts 之前设置(DB_PATH 模块加载时计算)
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wf-test-"));
@@ -38,6 +39,112 @@ function assert(cond: boolean, msg: string): void {
 		failed++;
 		console.error(`  ✗ ${msg}`);
 	}
+}
+
+// ────────────────────────────────────────────────────────────
+// fake osa(窗口操作已内化为 exec/ghostty.ts,测试注入 osascript 执行器):
+//   - 进程内:installFakeOsa(spec) → __setOsaRunnerForTest,返回脚本日志读取器;
+//   - 子进程(CLI):WF_OSA_BIN 指向通用 fake 脚本(行为由 WF_FAKE_OSA_DIR 控制)。
+// ────────────────────────────────────────────────────────────
+
+interface FakeOsaSpec {
+	/** layout 查询响应(AppleScript W/T/S 行,缺省空 windows) */
+	layout?: string;
+	/** windowIndexMap 响应(TSV:i<tab>id,缺省空映射) */
+	indexMap?: string;
+	/** new-window 输出中的窗口 id */
+	winId?: string;
+	/** new-tab 输出中的 tab id */
+	tabId?: string;
+	/** 所有脚本失败(stderr 文本,模拟 osascript 出错) */
+	failAll?: string;
+	/** 首次 close_tab 失败(-1728,验证退避重试) */
+	failCloseOnce?: boolean;
+}
+
+/** 进程内 fake osa:替换 osascript 执行器;返回脚本日志读取器(按调用顺序) */
+function installFakeOsa(spec: FakeOsaSpec = {}): () => string[] {
+	const log: string[] = [];
+	let closeFailed = false;
+	__setOsaRunnerForTest(async (script) => {
+		log.push(script);
+		if (spec.failAll !== undefined) {
+			return { code: 1, stdout: "", stderr: spec.failAll };
+		}
+		if (script.includes("repeat with w in windows")) {
+			return { code: 0, stdout: spec.layout ?? "", stderr: "" };
+		}
+		if (script.includes("count of windows")) {
+			return { code: 0, stdout: spec.indexMap ?? "", stderr: "" };
+		}
+		if (script.includes("set w to new window")) {
+			return {
+				code: 0,
+				stdout: `已创建窗口 (id=${spec.winId ?? "tab-group-aabbccddeeff"})`,
+				stderr: "",
+			};
+		}
+		if (script.includes("set t to new tab in window")) {
+			return {
+				code: 0,
+				stdout: `已创建标签页 (id=${spec.tabId ?? "tab-xyz"})`,
+				stderr: "",
+			};
+		}
+		if (script.includes("close_tab")) {
+			if (spec.failCloseOnce && !closeFailed) {
+				closeFailed = true;
+				return { code: 1, stdout: "", stderr: "AppleScript 错误: -1728" };
+			}
+		}
+		return { code: 0, stdout: "", stderr: "" };
+	});
+	return () => log;
+}
+
+/** 日志中出现次数(断言辅助) */
+function countIn(log: string[], marker: string): number {
+	return log.join("\n").split(marker).length - 1;
+}
+
+/** 子进程级 fake osascript 脚本(行为由 $WF_FAKE_OSA_DIR 下文件控制) */
+const SUBPROC_FAKE_OSA = `#!/bin/bash
+# fake osascript(测试):记录脚本到 osa.log;按脚本内容返回 canned 响应
+D="$WF_FAKE_OSA_DIR"
+echo "$@" >> "$D/osa.log"
+s=""
+p=""
+for a in "$@"; do
+  [ "$p" = "-e" ] && s="$a"
+  p="$a"
+done
+if [ -f "$D/fail.txt" ]; then
+  cat "$D/fail.txt" >&2
+  exit 1
+fi
+case "$s" in
+  *"repeat with w in windows"*) cat "$D/layout.tsv" 2>/dev/null ;;
+  *"count of windows"*) cat "$D/indexmap.txt" 2>/dev/null ;;
+  *"set w to new window"*) echo "已创建窗口 (id=$(cat "$D/winid.txt" 2>/dev/null))" ;;
+  *"set t to new tab in window"*) echo "已创建标签页 (id=$(cat "$D/tabid.txt" 2>/dev/null))" ;;
+esac
+exit 0
+`;
+
+/** 安装子进程 fake osa 目录结构,返回 (binPath, dirPath) */
+function installSubprocFakeOsa(): { bin: string; dir: string } {
+	const dir = path.join(tmpDir, "wf-fake-osa");
+	fs.mkdirSync(dir, { recursive: true });
+	const bin = path.join(tmpDir, "wf-fake-osa.sh");
+	fs.writeFileSync(bin, SUBPROC_FAKE_OSA, { mode: 0o755 });
+	// 默认响应文件
+	fs.writeFileSync(path.join(dir, "layout.tsv"), "");
+	fs.writeFileSync(path.join(dir, "indexmap.txt"), "");
+	fs.writeFileSync(path.join(dir, "winid.txt"), "tab-group-aabbccddeeff");
+	fs.writeFileSync(path.join(dir, "tabid.txt"), "tab-xyz");
+	fs.rmSync(path.join(dir, "fail.txt"), { force: true });
+	fs.writeFileSync(path.join(dir, "osa.log"), "");
+	return { bin, dir };
 }
 
 const AGENTS = [
@@ -272,13 +379,7 @@ async function main(): Promise<void> {
 		inPlugin.includes("node") && inPlugin.includes(fakePiEntry),
 		`pi 插件上下文复用 node+pi 入口(${inPlugin})`,
 	);
-	process.argv[1] = path.join(
-		tmpDir,
-		"extensions",
-		"workflow",
-		"src",
-		"cli.ts",
-	);
+	process.argv[1] = path.join(tmpDir, "extensions", "workflow", "src", "cli.ts");
 	fs.mkdirSync(path.join(tmpDir, "extensions", "workflow", "src"), {
 		recursive: true,
 	});
@@ -326,8 +427,7 @@ async function main(): Promise<void> {
 	});
 	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") &&
-			dry.pointer!.includes("/wf done 1.1"),
+		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
@@ -353,7 +453,7 @@ async function main(): Promise<void> {
 	);
 
 	console.log(
-		"== T6 dispatch 真实执行(scratch 仓库 + 真 gittree + fake ghostctl) ==",
+		"== T6 dispatch 真实执行(scratch 仓库 + 真 gittree + fake osa) ==",
 	);
 	const scratchRepo = path.join(tmpDir, "repo");
 	fs.mkdirSync(scratchRepo, { recursive: true });
@@ -390,57 +490,43 @@ async function main(): Promise<void> {
 		AGENTS,
 	);
 	assert(scratchWf.ok, "scratch workflow 导入");
-	const fakeGhostctl = path.join(tmpDir, "fake-ghostctl.sh");
-	const ghostctlLog = path.join(tmpDir, "ghostctl-args.log");
 	const wt1Path = path.join(
 		scratchRepo,
 		".worktrees",
 		"gittree-wf-scratch-wf-1",
 	);
-	fs.writeFileSync(
-		fakeGhostctl,
-		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccddeeff","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${wt1Path}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbccddeeff)"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-xyz)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(ghostctlLog, "");
+	const osaLog = installFakeOsa({
+		layout: [
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue",
+			"T\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789",
+			`S\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t${wt1Path}`,
+		].join("\n"),
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;
 	const sStep = dbMod.getStep(db2, "scratch-wf-1")!;
 	const real = await dispatchMod.dispatchStep(db2, sWf, sStep, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
-	const boundWin = dbMod.getWorkflowMeta(
-		db2,
-		"scratch-wf",
-		"ghostty_window_id",
-	);
+	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
 	assert(
 		boundWin === "tab-group-aabbccddeeff",
 		"未绑定 → new-window 创建专属窗口并绑定(meta)",
 	);
-	const ghostctlCalls = fs
-		.readFileSync(ghostctlLog, "utf-8")
-		.split("\n")
-		.filter(Boolean);
-	const ghostctlRaw = fs.readFileSync(ghostctlLog, "utf-8");
+	const osaRaw = osaLog().join("\n");
 	assert(
-		ghostctlRaw.includes("new-window") &&
-			ghostctlRaw.includes("--no-focus") &&
-			ghostctlRaw.includes(`--cwd ${scratchRepo}`),
-		`new-window 后台创建(--no-focus + --cwd 仓库:${ghostctlCalls.join(" | ")})`,
+		osaRaw.includes("set w to new window") &&
+			osaRaw.includes(`initial working directory:"${scratchRepo}"`) &&
+			osaRaw.includes('to focus (terminal id "abcdef0123456789"'),
+		`new-window 后台创建(--no-focus 恢复焦点 + --cwd 仓库)`,
 	);
 	// 用整段日志断言(pointer 位置参数内含换行,按行切分会拆开参数)
 	assert(
-		ghostctlRaw.includes("new-tab") &&
-			ghostctlRaw.includes("--window-id tab-group-aabbccddeeff") &&
-			ghostctlRaw.includes("--at-end") &&
-			ghostctlRaw.includes("--no-focus"),
-		`new-tab 按窗口 id 定位 + 末尾顺序 + 不抢焦点(${ghostctlCalls.join(" | ")})`,
-	);
-	assert(
-		!ghostctlCalls.some((l) => l.includes("--window ")),
-		"new-tab 不再传 --window 序号",
+		osaRaw.includes("set t to new tab in window 1") &&
+			osaRaw.includes('perform action "last_tab"') &&
+			osaRaw.includes('to focus (terminal id "abcdef0123456789"'),
+		`new-tab 按窗口 id 定位(window 1=绑定窗口) + 末尾顺序 + 不抢焦点`,
 	);
 	assert(real.tabId === "abcdef0123456789", `tab id 解析(${real.tabId})`);
 	assert(
@@ -493,46 +579,42 @@ async function main(): Promise<void> {
 	);
 	assert(lockWf.ok, "lock-wf 导入");
 	dbMod.setWorkflowMeta(db2, "lock-wf", "ghostty_window_id", "win-b");
-	const fakeLock = path.join(tmpDir, "fake-ghostctl-lock.sh");
-	const lockLog = path.join(tmpDir, "ghostctl-lock.log");
 	const lockWtPath = path.join(
 		scratchRepo,
 		".worktrees",
 		"gittree-wf-lock-wf-1",
 	);
-	fs.writeFileSync(
-		fakeLock,
-		`#!/bin/bash\necho "$@" >> "${lockLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-b","front":false,"tabs":[]},{"id":"win-f","front":true,"tabs":[{"terminals":[{"id":"feedcafe00000000","cwd":"${lockWtPath}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-lock)"\nfi\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(lockLog, "");
+	const lockLog = installFakeOsa({
+		layout: [
+			"W\twin-b\twin\t\tfalse",
+			"T\twin-b\ttab-b\ttab\t1\tfalse\t",
+			`S\twin-b\ttab-b\tbbbbbbbbbbbbbbbb\tterm\t${lockWtPath}`,
+			"W\twin-f\twin\t\ttrue",
+			"T\twin-f\ttab-f\ttab\t1\tfalse\t",
+			`S\twin-f\ttab-f\tfeedcafe00000000\tterm\t${lockWtPath}`,
+		].join("\n"),
+		indexMap: "1\twin-b\n2\twin-f",
+		tabId: "tab-lock",
+	});
 	const lockRes = await dispatchMod.dispatchStep(
 		db2,
 		dbMod.getWorkflow(db2, "lock-wf")!,
 		dbMod.getStep(db2, "lock-wf-1")!,
-		{ gittreeBin: "gittree", ghostctlBin: fakeLock },
+		{ gittreeBin: "gittree" },
 	);
 	assert(lockRes.ok, `锁定窗口派发成功: ${lockRes.error ?? ""}`);
 	assert(
 		dbMod.getWorkflowMeta(db2, "lock-wf", "ghostty_window_id") === "win-b",
 		"已锁定 id 不被焦点窗口覆盖",
 	);
-	const lockCalls = fs
-		.readFileSync(lockLog, "utf-8")
-		.split("\n")
-		.filter(Boolean);
+	const lockRaw = lockLog().join("\n");
 	assert(
-		lockCalls.some(
-			(l) => l.includes("new-tab") && l.includes("--window-id win-b"),
-		),
-		`new-tab 携带 --window-id win-b(${lockCalls.join(" | ")})`,
+		lockRaw.includes("set t to new tab in window 1") &&
+			lockRaw.includes('perform action "last_tab" on (tgt)'),
+		`new-tab 按窗口 id 定位(window 1 = 非焦点锁定窗口 win-b)`,
 	);
 	assert(
-		!lockCalls.some((l) => l.includes("--window ")),
-		"锁定窗口不传 --window 序号",
-	);
-	assert(
-		!lockCalls.some((l) => l.includes("new-window")),
+		!lockRaw.includes("set w to new window"),
 		"已绑定窗口不重复创建(无 new-window)",
 	);
 
@@ -552,29 +634,21 @@ async function main(): Promise<void> {
 	assert(goneWf.ok, "gonewin-wf 导入");
 	// 预绑定一个 layout 中不存在的窗口 id(模拟绑定窗口已关闭)
 	dbMod.setWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id", "win-gone");
-	const fakeGoneWin = path.join(tmpDir, "fake-ghostctl-gonewin.sh");
-	const goneLog = path.join(tmpDir, "ghostctl-gonewin.log");
-	fs.writeFileSync(
-		fakeGoneWin,
-		`#!/bin/bash\necho "$@" >> "${goneLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-other","front":true,"tabs":[]}]}'\nelse\n  echo "已创建标签页 (id=tab-gone)"\nfi\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(goneLog, "");
+	const goneLog = installFakeOsa({
+		layout: "W\twin-other\twin\t\ttrue",
+	});
 	const goneRes = await dispatchMod.dispatchStep(
 		db2,
 		dbMod.getWorkflow(db2, "gonewin-wf")!,
 		dbMod.getStep(db2, "gonewin-wf-1")!,
-		{ gittreeBin: "gittree", ghostctlBin: fakeGoneWin },
+		{ gittreeBin: "gittree" },
 	);
 	assert(!goneRes.ok, "派发失败(绑定窗口不可用)");
 	assert(
 		goneRes.error!.includes("绑定窗口") && goneRes.error!.includes("win-gone"),
 		`错误提及绑定窗口与 id(${goneRes.error})`,
 	);
-	assert(
-		goneRes.error!.includes("rebind-window"),
-		"错误提示 /wf rebind-window",
-	);
+	assert(goneRes.error!.includes("rebind-window"), "错误提示 /wf rebind-window");
 	assert(
 		dbMod.getStep(db2, "gonewin-wf-1")?.status === "failed",
 		"步骤回退 failed(可重派,不卡 dispatched)",
@@ -584,16 +658,12 @@ async function main(): Promise<void> {
 		"attempt 置 aborted",
 	);
 	assert(
-		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") ===
-			"win-gone",
+		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") === "win-gone",
 		"锁定不被焦点窗口覆盖",
 	);
-	const goneCalls = fs
-		.readFileSync(goneLog, "utf-8")
-		.split("\n")
-		.filter(Boolean);
+	const goneRaw = goneLog().join("\n");
 	assert(
-		!goneCalls.some((l) => l.includes("new-tab")),
+		!goneRaw.includes("set t to new tab in window"),
 		"绝不无窗口参数裸开 tab",
 	);
 
@@ -699,10 +769,7 @@ async function main(): Promise<void> {
 	const cost = dbMod.workflowCost(db2, "demo-wf");
 	assert(cost === null, "无尝试的 workflow → 成本为 null");
 	const costScratch = dbMod.workflowCost(db2, "scratch-wf");
-	assert(
-		costScratch !== null && costScratch.attempts === 1,
-		"成本聚合(1 尝试)",
-	);
+	assert(costScratch !== null && costScratch.attempts === 1, "成本聚合(1 尝试)");
 	const kanban = db2
 		.prepare(
 			"SELECT * FROM v_workflow_kanban WHERE workflow_id = 'demo-wf' ORDER BY sort_order",
@@ -851,28 +918,31 @@ async function main(): Promise<void> {
 	// 复用 T6 的 scratch 场景:重新派发(可重派)→ running + tab_id
 	const sWf2 = dbMod.getWorkflow(db2, "scratch-wf")!;
 	const sStep2 = dbMod.getStep(db2, "scratch-wf-1")!;
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789\nS\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
 	const redispatch = await dispatchMod.dispatchStep(db2, sWf2, sStep2, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
 	});
 	assert(redispatch.ok, "重新派发成功(可重派)");
 	const tabId = redispatch.tabId!;
 	assert(tabId === "abcdef0123456789", "重派 tab_id");
 	// fake layout 不含该 terminal → 单次未命中不判死(抗 Ghostty layout 瞬时抖动)
-	const fakeGone = path.join(tmpDir, "fake-ghostctl-gone.sh");
-	fs.writeFileSync(
-		fakeGone,
-		`#!/bin/bash\necho "$@" >> "${ghostctlLog}"\necho '{"windows":[{"id":"tab-group-aabbccddeeff","tabs":[{"terminals":[]}]}]}'\n`,
-		{ mode: 0o755 },
-	);
-	const gone1 = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\t\nS\ttab-group-aabbccddeeff\ttab-1\totherterm0001\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
+	const gone1 = await monitorMod.pollOnce(db2);
 	assert(gone1.closed.length === 0, "单次未命中不误判(抗抖动)");
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
 		"单次未命中后仍 running",
 	);
 	// 连续两次未命中 → aborted
-	const gone = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	const gone = await monitorMod.pollOnce(db2);
 	assert(gone.closed.includes("scratch-wf-1"), "连续 2 次未命中 → aborted");
 	const sAborted = dbMod.getStep(db2, "scratch-wf-1");
 	assert(sAborted?.status === "aborted", "步骤状态 aborted");
@@ -881,26 +951,42 @@ async function main(): Promise<void> {
 		.some((e) => e.type === "step_tab_closed");
 	assert(evtClosed, "step_tab_closed 事件");
 	// fake layout 含该 terminal → pollOnce 保持 running
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789\nS\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
 	const re2 = await dispatchMod.dispatchStep(
 		db2,
 		sWf2,
 		dbMod.getStep(db2, "scratch-wf-1")!,
 		{
 			gittreeBin: "gittree",
-			ghostctlBin: fakeGhostctl,
 		},
 	);
 	assert(re2.ok, "aborted 后可重派");
-	const alive = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
+	const alive = await monitorMod.pollOnce(db2);
 	assert(alive.closed.length === 0, "tab 存活 → 保持 running");
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
 		"步骤保持 running",
 	);
 	// 命中清零:未命中 1 次 → 命中 1 次 → 再未命中 1 次,仍不判死(计数已被清零)
-	await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
-	await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
-	const flicker = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGone });
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\t\nS\ttab-group-aabbccddeeff\ttab-1\totherterm0001\tterm\t",
+	});
+	await monitorMod.pollOnce(db2);
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789\nS\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t",
+	});
+	await monitorMod.pollOnce(db2);
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\t\nS\ttab-group-aabbccddeeff\ttab-1\totherterm0001\tterm\t",
+	});
+	const flicker = await monitorMod.pollOnce(db2);
 	assert(flicker.closed.length === 0, "命中后计数清零,抖动不累积");
 	assert(
 		dbMod.getStep(db2, "scratch-wf-1")?.status === "running",
@@ -910,16 +996,18 @@ async function main(): Promise<void> {
 	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
 		error: "模拟 monitor 误判",
 	});
-	const logBefore = fs
-		.readFileSync(ghostctlLog, "utf-8")
-		.split("\n")
-		.filter(Boolean).length;
+	const reuseLog = installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789\nS\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
+	const logBefore = countIn(reuseLog(), "set t to new tab in window");
 	const retriesBefore = dbMod.getStep(db2, "scratch-wf-1")!.retries_done;
 	const reuse = await dispatchMod.dispatchStep(
 		db2,
 		sWf2,
 		dbMod.getStep(db2, "scratch-wf-1")!,
-		{ gittreeBin: "gittree", ghostctlBin: fakeGhostctl },
+		{ gittreeBin: "gittree" },
 	);
 	assert(
 		reuse.ok && reuse.reused === true,
@@ -937,45 +1025,40 @@ async function main(): Promise<void> {
 		dbMod.getStep(db2, "scratch-wf-1")?.retries_done === retriesBefore,
 		"复用不消耗 retries_done",
 	);
-	const logAfterReuse = fs
-		.readFileSync(ghostctlLog, "utf-8")
-		.split("\n")
-		.filter(Boolean)
-		.slice(logBefore);
 	assert(
-		!logAfterReuse.some((l) => l.includes("new-tab")),
-		`复用未调用 new-tab(${logAfterReuse.join(" | ")})`,
+		countIn(reuseLog(), "set t to new tab in window") === logBefore,
+		`复用未调用 new-tab(new-tab ×${countIn(reuseLog(), "set t to new tab in window")})`,
 	);
 	// 对照:tab 已死时 retry → 正常重开(new-tab 被调用)
 	dbMod.updateStepStatus(db2, "scratch-wf-1", "aborted", {
 		error: "tab 已关闭",
 	});
-	const logBefore2 = fs
-		.readFileSync(ghostctlLog, "utf-8")
-		.split("\n")
-		.filter(Boolean).length;
+	const reopenLog = installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\t\nS\ttab-group-aabbccddeeff\ttab-1\totherterm0001\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
 	const reopen = await dispatchMod.dispatchStep(
 		db2,
 		sWf2,
 		dbMod.getStep(db2, "scratch-wf-1")!,
-		{ gittreeBin: "gittree", ghostctlBin: fakeGone },
+		{ gittreeBin: "gittree" },
 	);
 	assert(reopen.ok && reopen.reused !== true, "tab 已死 → 正常重开");
-	const logAfterReopen = fs
-		.readFileSync(ghostctlLog, "utf-8")
-		.split("\n")
-		.filter(Boolean)
-		.slice(logBefore2);
 	assert(
-		logAfterReopen.some((l) => l.includes("new-tab")),
-		`重开调用 new-tab(log=${logAfterReopen.join(" | ") || "(空)"})`,
+		countIn(reopenLog(), "set t to new tab in window") === 1,
+		`重开调用 new-tab(new-tab ×${countIn(reopenLog(), "set t to new tab in window")})`,
 	);
 
 	// ── fs.watch 事件驱动:跨连接写库 → watch 触发 → 毫秒级检测(非轮询)──
 	const watchLog = path.join(tmpDir, "watch-events.log");
 	fs.writeFileSync(watchLog, "");
+	installFakeOsa({
+		layout:
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue\nT\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789\nS\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t",
+		indexMap: "1\ttab-group-aabbccddeeff",
+	});
 	const wfStop = monitorMod.startMonitor(db2, {
-		ghostctlBin: fakeGhostctl,
 		cwd: scratchRepo,
 		intervalMs: 60_000, // 轮询拉长:证明事件由 fs.watch 触发而非轮询
 		watchDebounceMs: 50,
@@ -1003,9 +1086,7 @@ async function main(): Promise<void> {
 	);
 	// 恢复状态(绕过状态机直接还原,不干扰后续测试)
 	db2
-		.prepare(
-			"UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'",
-		)
+		.prepare("UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'")
 		.run();
 	dbMod.setStepMeta(db2, "scratch-wf-1", "notify:reported", null);
 
@@ -1076,7 +1157,6 @@ async function main(): Promise<void> {
 		const step = dbMod.getStep(db2, `merge-wf-${dotted}`)!;
 		const res = await dispatchMod.dispatchStep(db2, mWf, step, {
 			gittreeBin: "gittree",
-			ghostctlBin: fakeGhostctl,
 		});
 		assert(res.ok, `merge-wf-${dotted} 派发`);
 		// 子任务在 worktree 里真实提交
@@ -1128,9 +1208,7 @@ async function main(): Promise<void> {
 	);
 	// merge --delete 后 worktree 已清理
 	assert(
-		!fs.existsSync(
-			path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1"),
-		),
+		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
 		"merge --delete 清理 worktree",
 	);
 	// skipped 步骤:不合并但 worktree/分支一并清理(合并主线后不留 gittree 残留)
@@ -1155,7 +1233,6 @@ async function main(): Promise<void> {
 	const sw1 = dbMod.getStep(db2, "sweep-wf-1")!;
 	const sw1Res = await dispatchMod.dispatchStep(db2, swWf, sw1, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
 	});
 	assert(sw1Res.ok, "sweep-wf-1 派发(worktree 创建)");
 	const sw1Wt = path.join(scratchRepo, ".worktrees", "gittree-wf-sweep-wf-1");
@@ -1165,7 +1242,6 @@ async function main(): Promise<void> {
 	const sw2 = dbMod.getStep(db2, "sweep-wf-2")!;
 	const sw2Res = await dispatchMod.dispatchStep(db2, swWf, sw2, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
 	});
 	assert(sw2Res.ok, "sweep-wf-2 派发");
 	const sw2Wt = path.join(scratchRepo, ".worktrees", "gittree-wf-sweep-wf-2");
@@ -1198,7 +1274,6 @@ async function main(): Promise<void> {
 	);
 	const retryRes = await dispatchMod.dispatchStep(db2, rw, rwStep2, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeGhostctl,
 	});
 	assert(retryRes.ok, "failed 可重派");
 	assert(
@@ -1213,7 +1288,7 @@ async function main(): Promise<void> {
 		db2,
 		rw,
 		dbMod.getStep(db2, "ready-wf-2")!,
-		{ gittreeBin: "gittree", ghostctlBin: fakeGhostctl },
+		{ gittreeBin: "gittree" },
 	);
 	assert(!over.ok && over.error!.includes("上限"), "超过 max_retries 拒绝");
 
@@ -1236,10 +1311,7 @@ async function main(): Promise<void> {
 	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
 	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
 	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
-	const budgetOk = orchMod.checkBudget(
-		db2,
-		dbMod.getWorkflow(db2, "merge-wf")!,
-	);
+	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
@@ -1250,7 +1322,7 @@ async function main(): Promise<void> {
 			"UPDATE workflow_steps SET started_at = ?, timeout_min = 1 WHERE id = 'ready-wf-1'",
 		)
 		.run(Date.now() - 3 * 60 * 1000);
-	const poll = await monitorMod.pollOnce(db2, { ghostctlBin: fakeGhostctl });
+	const poll = await monitorMod.pollOnce(db2);
 	assert(poll.timedOut.includes("ready-wf-1"), "超时标 aborted");
 	assert(
 		dbMod.getStep(db2, "ready-wf-1")?.status === "aborted",
@@ -1791,10 +1863,7 @@ async function main(): Promise<void> {
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "running"), "done");
-		assert(
-			!r.reached && r.unreachable.length === 0,
-			"running 未达成不 reached",
-		);
+		assert(!r.reached && r.unreachable.length === 0, "running 未达成不 reached");
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "failed"), "done");
@@ -1942,9 +2011,7 @@ async function main(): Promise<void> {
 		"1",
 	]);
 	assert(
-		pr.code === 1 &&
-			pr.stdout.includes("超时") &&
-			pr.stderr.includes("未派发 3"),
+		pr.code === 1 && pr.stdout.includes("超时") && pr.stderr.includes("未派发 3"),
 		`poll 超时 → 退出 1(${pr.code} ${pr.stdout.trim().slice(0, 60)})`,
 	);
 	// 用法错误 → 3
@@ -2087,70 +2154,74 @@ async function main(): Promise<void> {
 		{ status: "running", tab_id: "abcdef0123456789", updated_at: Date.now() },
 		{ id: "inj-wf-1" },
 	);
-	const injBin = path.join(tmpDir, "inject-bin");
-	fs.mkdirSync(injBin, { recursive: true });
-	const injLog = path.join(tmpDir, "inject.log");
+	// 子进程 fake osascript(CLI 子进程经 WF_OSA_BIN 注入,行为由文件控制)
+	const subFake = installSubprocFakeOsa();
 	fs.writeFileSync(
-		path.join(injBin, "ghostctl"),
-		`#!/bin/bash\necho "$@" >> "${injLog}"\n`,
-		{ mode: 0o755 },
+		path.join(subFake.dir, "layout.tsv"),
+		[
+			"W\twin-1\twin\t\ttrue",
+			"T\twin-1\ttab-1\ttab\t1\ttrue\tabcdef0123456789",
+			"S\twin-1\ttab-1\tabcdef0123456789\tterm\t/tmp",
+			"T\twin-1\ttab-2\ttab\t2\tfalse\t",
+			"S\twin-1\ttab-2\t1CA675C0ABCDEF\tterm\t/tmp",
+		].join("\n"),
 	);
-	fs.writeFileSync(injLog, "");
-	const injEnv = { PATH: `${injBin}:${process.env.PATH ?? ""}` };
+	fs.writeFileSync(path.join(subFake.dir, "indexmap.txt"), "1\twin-1");
+	const injEnv = { WF_OSA_BIN: subFake.bin, WF_FAKE_OSA_DIR: subFake.dir };
+	const injLogPath = path.join(subFake.dir, "osa.log");
+	const injRaw = (): string => fs.readFileSync(injLogPath, "utf-8");
+	fs.writeFileSync(injLogPath, "");
 	let ir = runCli(["inject", "inj-wf-1", "hello world"], {
-		cwd: injBin,
+		cwd: tmpDir,
 		env: injEnv,
 	});
-	let injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
 	assert(
 		ir.code === 0 &&
-			injCalls.includes("input hello world --to abcdef0123456789") &&
-			injCalls.includes("key enter --to abcdef0123456789"),
-		`完整 step id → input+enter 序列(${injCalls.join(" | ")})`,
+			injRaw().includes('input text "hello world"') &&
+			injRaw().includes('to (terminal id "abcdef0123456789" of window 1)') &&
+			injRaw().includes('send key "enter"'),
+		`完整 step id → input+enter 序列`,
 	);
 	// 点号 id(身份 env 解析)
-	fs.writeFileSync(injLog, "");
+	fs.writeFileSync(injLogPath, "");
 	ir = runCli(["inject", "1", "hi"], {
-		cwd: injBin,
+		cwd: tmpDir,
 		env: { ...injEnv, PI_WF_WORKFLOW: "inj-wf", PI_WF_STEP: "1" },
 	});
-	injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
 	assert(
-		ir.code === 0 && injCalls.includes("input hi --to abcdef0123456789"),
+		ir.code === 0 &&
+			injRaw().includes('input text "hi"') &&
+			injRaw().includes('to (terminal id "abcdef0123456789" of window 1)'),
 		"点号 id 按身份 env 解析",
 	);
-	// terminal 前缀(未命中任何步骤 → 直接注入)
-	fs.writeFileSync(injLog, "");
-	ir = runCli(["inject", "1CA675C0", "raw"], { cwd: injBin, env: injEnv });
-	injCalls = fs.readFileSync(injLog, "utf-8").trim().split("\n");
+	// terminal 前缀(未命中任何步骤 → 直接注入,内部层负责前缀匹配)
+	fs.writeFileSync(injLogPath, "");
+	ir = runCli(["inject", "1CA675C0", "raw"], { cwd: tmpDir, env: injEnv });
 	assert(
-		ir.code === 0 && injCalls.includes("input raw --to 1CA675C0"),
+		ir.code === 0 &&
+			injRaw().includes('input text "raw"') &&
+			injRaw().includes('to (terminal id "1CA675C0ABCDEF" of window 1)'),
 		"terminal 前缀直接注入(不查 DB)",
 	);
 	// 步骤无 tab → 1
-	ir = runCli(["inject", "inj-wf-2", "x"], { cwd: injBin, env: injEnv });
+	ir = runCli(["inject", "inj-wf-2", "x"], { cwd: tmpDir, env: injEnv });
 	assert(
 		ir.code === 1 && ir.stderr.includes("wf open-tab inj-wf-2"),
 		`步骤无 tab → 退出 1 并提示(${ir.stderr.trim().slice(0, 60)})`,
 	);
 	// 缺参数 → 3
-	ir = runCli(["inject"], { cwd: injBin, env: injEnv });
+	ir = runCli(["inject"], { cwd: tmpDir, env: injEnv });
 	assert(ir.code === 3, "inject 无参数 → 退出 3");
-	// ghostctl 失败 → 1
-	const injFailBin = path.join(tmpDir, "inject-fail-bin");
-	fs.mkdirSync(injFailBin, { recursive: true });
+	// osascript 失败 → 1
 	fs.writeFileSync(
-		path.join(injFailBin, "ghostctl"),
-		`#!/bin/bash\necho "$@" >> "${injLog}"\nexit 1\n`,
-		{ mode: 0o755 },
+		path.join(subFake.dir, "fail.txt"),
+		"AppleScript 错误: -1743 权限未授予",
 	);
-	ir = runCli(["inject", "inj-wf-1", "boom"], {
-		cwd: injFailBin,
-		env: { PATH: `${injFailBin}:${process.env.PATH ?? ""}` },
-	});
+	ir = runCli(["inject", "inj-wf-1", "boom"], { cwd: tmpDir, env: injEnv });
+	fs.rmSync(path.join(subFake.dir, "fail.txt"), { force: true });
 	assert(
 		ir.code === 1 && ir.stderr.includes("注入失败"),
-		"ghostctl 失败 → 退出 1",
+		"osascript 失败 → 退出 1",
 	);
 
 	console.log("== T24 openStepTab 共享开 tab + open-tab/fix-tab CLI ==");
@@ -2186,20 +2257,22 @@ async function main(): Promise<void> {
 		},
 		{ id: "open-wf-1" },
 	);
-	const openGhostctl = path.join(tmpDir, "open-ghostctl.sh");
-	const openLog = path.join(tmpDir, "open-ghostctl.log");
-	fs.writeFileSync(
-		openGhostctl,
-		`#!/bin/bash\necho "$@" >> "${openLog}"\nif [ "$1" = "layout" ]; then\n  echo '{"windows":[{"id":"win-9","front":true,"tabs":[{"terminals":[{"id":"feedface12345678","cwd":"${openWt}"}]}]}]}'\nelse\n  echo "已创建标签页 (id=tab-open)"\nfi\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(openLog, "");
+	// 进程内 fake(openStepTab 直调)+ 子进程 fake(open-tab/fix-tab CLI)
+	const openLog = installFakeOsa({
+		layout: [
+			"W\twin-9\twin\t\ttrue",
+			"T\twin-9\ttab-1\ttab\t1\ttrue\tfeedface12345678",
+			`S\twin-9\ttab-1\tfeedface12345678\tterm\t${openWt}`,
+		].join("\n"),
+		indexMap: "1\twin-9",
+		tabId: "tab-open",
+	});
 	// openStepTab 单测(共享序列:new-tab(pointer 位置参数)→ 反查 → 落库 + manual 事件)
 	const openRes = await dispatchMod.openStepTab(
 		db2,
 		dbMod.getWorkflow(db2, "open-wf")!,
 		dbMod.getStep(db2, "open-wf-1")!,
-		{ ghostctlBin: openGhostctl, manual: true },
+		{ manual: true },
 	);
 	assert(
 		openRes.ok && openRes.tabId === "feedface12345678",
@@ -2220,12 +2293,11 @@ async function main(): Promise<void> {
 				true,
 		"step_tab_opened 事件带 manual 标记",
 	);
-	const openLogRaw = fs.readFileSync(openLog, "utf-8");
+	const openLogRaw = openLog().join("\n");
 	assert(
-		openLogRaw.includes("new-tab") &&
-			openLogRaw.includes("--window-id win-9") &&
-			openLogRaw.includes("--at-end") &&
-			openLogRaw.includes("--no-focus"),
+		openLogRaw.includes("set t to new tab in window 1") &&
+			openLogRaw.includes('perform action "last_tab"') &&
+			openLogRaw.includes('to focus (terminal id "feedface12345678"'),
 		"openStepTab 复用绑定窗口 + 末尾顺序 + 不抢焦点",
 	);
 	// pointer 改为 pi 位置参数交付:--command 内嵌单引号指引;不再 --input 注入、不再补回车
@@ -2234,7 +2306,7 @@ async function main(): Promise<void> {
 		`pointer 作为位置参数传入(--input 已移除): ${openLogRaw.slice(0, 160)}`,
 	);
 	assert(
-		!openLogRaw.includes("key enter"),
+		!openLogRaw.includes('send key "enter"'),
 		"openStepTab 不再盲等 + 补回车(pi 启动即自动发送)",
 	);
 	// shellQuote:单引号包裹 + 嵌入 ' 按 POSIX '\'' 转义(防御性)
@@ -2245,30 +2317,38 @@ async function main(): Promise<void> {
 		"shellQuote 单引号包裹 + 嵌入引号转义",
 	);
 	// open-tab CLI:无参数 → 3;步骤不存在 → 1;tab 存活 → 1;无 worktree → 1
-	const openBin = path.join(tmpDir, "open-bin");
-	fs.mkdirSync(openBin, { recursive: true });
-	fs.copyFileSync(openGhostctl, path.join(openBin, "ghostctl"));
-	const openEnv = { PATH: `${openBin}:${process.env.PATH ?? ""}` };
-	let or = runCli(["open-tab"], { cwd: openBin, env: openEnv });
+	// 子进程 fake(open-tab/fix-tab 经 WF_OSA_BIN 注入;layout 含 win-9 + feedface12345678)
+	fs.writeFileSync(
+		path.join(subFake.dir, "layout.tsv"),
+		[
+			"W\twin-9\twin\t\ttrue",
+			"T\twin-9\ttab-1\ttab\t1\ttrue\tfeedface12345678",
+			`S\twin-9\ttab-1\tfeedface12345678\tterm\t${openWt}`,
+		].join("\n"),
+	);
+	fs.writeFileSync(path.join(subFake.dir, "indexmap.txt"), "1\twin-9");
+	fs.writeFileSync(path.join(subFake.dir, "osa.log"), "");
+	const openEnv = { WF_OSA_BIN: subFake.bin, WF_FAKE_OSA_DIR: subFake.dir };
+	let or = runCli(["open-tab"], { cwd: tmpDir, env: openEnv });
 	assert(or.code === 3, "open-tab 无参数 → 退出 3");
-	or = runCli(["open-tab", "open-wf-9"], { cwd: openBin, env: openEnv });
+	or = runCli(["open-tab", "open-wf-9"], { cwd: tmpDir, env: openEnv });
 	assert(
 		or.code === 1 && or.stderr.includes("步骤不存在"),
 		"open-tab 未知步骤 → 退出 1",
 	);
-	or = runCli(["open-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
+	or = runCli(["open-tab", "open-wf-1"], { cwd: tmpDir, env: openEnv });
 	assert(
 		or.code === 1 && or.stderr.includes("无需重开"),
 		`open-tab 已绑定且存活 → 退出 1(${or.stderr.trim().slice(0, 60)})`,
 	);
-	or = runCli(["open-tab", "open-wf-2"], { cwd: openBin, env: openEnv });
+	or = runCli(["open-tab", "open-wf-2"], { cwd: tmpDir, env: openEnv });
 	assert(
 		or.code === 1 && or.stderr.includes("无 worktree"),
 		`open-tab 无 worktree → 退出 1(${or.stderr.trim().slice(0, 60)})`,
 	);
 	// fix-tab:显式前缀 / auto / 非法前缀 / 缺参数
 	let fr = runCli(["fix-tab", "open-wf-1", "feed"], {
-		cwd: openBin,
+		cwd: tmpDir,
 		env: openEnv,
 	});
 	let fixed = dbMod.getStep(db2, "open-wf-1")!;
@@ -2295,7 +2375,7 @@ async function main(): Promise<void> {
 		{ tab_id: null, status: "failed", updated_at: Date.now() },
 		{ id: "open-wf-1" },
 	);
-	fr = runCli(["fix-tab", "open-wf-1", "auto"], { cwd: openBin, env: openEnv });
+	fr = runCli(["fix-tab", "open-wf-1", "auto"], { cwd: tmpDir, env: openEnv });
 	fixed = dbMod.getStep(db2, "open-wf-1")!;
 	assert(
 		fr.code === 0 &&
@@ -2311,14 +2391,14 @@ async function main(): Promise<void> {
 			(JSON.parse(fixEvt.payload ?? "{}") as { mode?: string }).mode === "auto",
 		"step_tab_fixed 事件(mode=auto)",
 	);
-	fr = runCli(["fix-tab", "open-wf-1", "zzzz"], { cwd: openBin, env: openEnv });
+	fr = runCli(["fix-tab", "open-wf-1", "zzzz"], { cwd: tmpDir, env: openEnv });
 	assert(
 		fr.code === 1 && fr.stderr.includes("无 terminal 前缀"),
 		"fix-tab 非法前缀 → 退出 1",
 	);
-	fr = runCli(["fix-tab", "open-wf-1"], { cwd: openBin, env: openEnv });
+	fr = runCli(["fix-tab", "open-wf-1"], { cwd: tmpDir, env: openEnv });
 	assert(fr.code === 3, "fix-tab 缺 terminal → 退出 3");
-	fr = runCli(["fix-tab", "no-such", "auto"], { cwd: openBin, env: openEnv });
+	fr = runCli(["fix-tab", "no-such", "auto"], { cwd: tmpDir, env: openEnv });
 	assert(
 		fr.code === 1 && fr.stderr.includes("步骤不存在"),
 		"fix-tab 未知步骤 → 退出 1",
@@ -2626,38 +2706,28 @@ async function main(): Promise<void> {
 		AGENTS,
 	);
 	assert(cdImp.ok, "cd-wf 导入");
-	// fake ghostctl:new-window 输出可解析窗口 id;layout 按 worktree cwd 反查 terminal;
-	// new-tab 输出非 hex id(走 cwd 兜底,同 T6)。
-	const cdBin = path.join(tmpDir, "cd-bin");
-	fs.mkdirSync(cdBin, { recursive: true });
-	const cdLog = path.join(tmpDir, "cd-ghostctl.log");
+	// 子进程 fake osa:new-window 输出可解析窗口 id;layout 按 worktree cwd 反查 terminal
 	const cdWt1 = path.join(cdRepo, ".worktrees", "gittree-wf-cd-wf-1");
 	const cdWt2 = path.join(cdRepo, ".worktrees", "gittree-wf-cd-wf-2");
 	fs.writeFileSync(
-		path.join(cdBin, "ghostctl"),
-		`#!/bin/bash
-case "$1" in
-  layout)
-    echo '{"windows":[{"id":"tab-group-aabbccddeeff","front":true,"tabs":[{"terminals":[{"id":"abcdef0123456789","cwd":"${cdWt1}"}]},{"terminals":[{"id":"fedcba9876543210","cwd":"${cdWt2}"}]}]}]}'
-    ;;
-  new-window)
-    echo "已创建窗口 (id=tab-group-aabbccddeeff)"
-    ;;
-  *)
-    echo "已创建标签页 (id=tab-xyz)"
-    ;;
-esac
-echo "$@" >> "${cdLog}"
-`,
-		{ mode: 0o755 },
+		path.join(subFake.dir, "layout.tsv"),
+		[
+			"W\ttab-group-aabbccddeeff\twin\t\ttrue",
+			"T\ttab-group-aabbccddeeff\ttab-1\ttab\t1\ttrue\tabcdef0123456789",
+			`S\ttab-group-aabbccddeeff\ttab-1\tabcdef0123456789\tterm\t${cdWt1}`,
+			"T\ttab-group-aabbccddeeff\ttab-2\ttab\t2\tfalse\t",
+			`S\ttab-group-aabbccddeeff\ttab-2\tfedcba9876543210\tterm\t${cdWt2}`,
+		].join("\n"),
 	);
-	fs.writeFileSync(cdLog, "");
-	const cdEnv = { PATH: `${cdBin}:${process.env.PATH ?? ""}` };
+	fs.writeFileSync(
+		path.join(subFake.dir, "indexmap.txt"),
+		"1\ttab-group-aabbccddeeff",
+	);
+	fs.writeFileSync(path.join(subFake.dir, "osa.log"), "");
+	const cdEnv = { WF_OSA_BIN: subFake.bin, WF_FAKE_OSA_DIR: subFake.dir };
 	// 无参 dispatch(显式 --workflow 定位;修复前此调用静默无输出无效果)。
-	// cwd 必须指向 fake 所在目录:resolveBin("ghostctl") 先按相对名在 cwd 找,
-	// 否则会落到真实 ~/.local/bin/ghostctl(T24 同款约定)。
 	const cdRes = runCli(["dispatch", "--workflow", "cd-wf"], {
-		cwd: cdBin,
+		cwd: tmpDir,
 		env: cdEnv,
 	});
 	assert(
@@ -2698,24 +2768,24 @@ echo "$@" >> "${cdLog}"
 			cdEvts.every((e) => ["cd-wf-1", "cd-wf-2"].includes(e.step_id ?? "")),
 		`step_dispatched × 2(${cdEvts.map((e) => e.step_id).join(",")})`,
 	);
-	// ghostctl 调用序列:new-window 仅首次;new-tab 两次均按窗口 id 定位
-	const cdCalls = fs.readFileSync(cdLog, "utf-8").trim().split("\n");
+	// osa 调用序列:new-window 仅首次;new-tab 两次均按窗口 id 定位
+	const cdRaw = fs.readFileSync(path.join(subFake.dir, "osa.log"), "utf-8");
 	assert(
-		cdCalls.filter((l) => l.startsWith("new-window")).length === 1 &&
-			cdCalls.filter((l) => l.startsWith("new-tab")).length === 2 &&
-			cdCalls.filter((l) => l.startsWith("new-tab") && l.includes("--window-id tab-group-aabbccddeeff")).length === 2,
-		`new-window ×1 + new-tab ×2 按窗口 id(${cdCalls.join(" | ")})`,
+		(cdRaw.match(/set w to new window/g) ?? []).length === 1 &&
+			(cdRaw.match(/set t to new tab in window/g) ?? []).length === 2 &&
+			cdRaw.includes("new tab in window 1"),
+		`new-window ×1 + new-tab ×2 按窗口 id(window 1 = tab-group-aabbccddeeff)`,
 	);
 	// 二次无参 dispatch:无就绪步骤 → 提示且不重复派发(退出码 0)
-	fs.writeFileSync(cdLog, "");
+	fs.writeFileSync(path.join(subFake.dir, "osa.log"), "");
 	const cdRes2 = runCli(["dispatch", "--workflow", "cd-wf"], {
-		cwd: cdBin,
+		cwd: tmpDir,
 		env: cdEnv,
 	});
 	assert(
 		cdRes2.code === 0 &&
 			cdRes2.stdout.includes("无就绪步骤") &&
-			fs.readFileSync(cdLog, "utf-8").trim() === "",
+			fs.readFileSync(path.join(subFake.dir, "osa.log"), "utf-8").trim() === "",
 		`二次无参 dispatch 提示无就绪步骤且零副作用(${cdRes2.stdout.trim()})`,
 	);
 
@@ -2727,10 +2797,7 @@ echo "$@" >> "${cdLog}"
 	);
 	assert(stateMod.canTransition("running", "running"), "同态幂等合法");
 	assert(!stateMod.canTransition("done", "running"), "done → running 非法");
-	assert(
-		!stateMod.canTransition("skipped", "reported"),
-		"skipped 终态不可回退",
-	);
+	assert(!stateMod.canTransition("skipped", "reported"), "skipped 终态不可回退");
 	assert(
 		stateMod.canTransition("done", "conflict"),
 		"done → conflict(merge 冲突)合法",
@@ -2766,15 +2833,9 @@ echo "$@" >> "${cdLog}"
 	// 同态幂等 strict 不抛
 	let idemOk = true;
 	try {
-		dbMod.updateStepStatus(
-			db2,
-			"demo-wf-2",
-			dbMod.STEP_STATUS.done,
-			undefined,
-			{
-				strict: true,
-			},
-		);
+		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.done, undefined, {
+			strict: true,
+		});
 	} catch {
 		idemOk = false;
 	}
@@ -2782,9 +2843,7 @@ echo "$@" >> "${cdLog}"
 	// 关键入口:reportDone/reportFail/verifyStep 非法迁移 → 明确错误 + 合法目标
 	const re1 = orchMod.reportDone(db2, "demo-wf-2", { summary: "重报" });
 	assert(
-		!re1.ok &&
-			re1.error!.includes("状态迁移非法") &&
-			re1.error!.includes("允许"),
+		!re1.ok && re1.error!.includes("状态迁移非法") && re1.error!.includes("允许"),
 		`reportDone 终态拒绝(${re1.error})`,
 	);
 	const rf1 = orchMod.reportFail(db2, "demo-wf-2", "x");
@@ -2923,7 +2982,9 @@ echo "$@" >> "${cdLog}"
 	// 跨连接写库(模拟其他进程写)→ fs.watch 触发 monitor tick → onTick 重断言标题
 	const tickConn = new DatabaseSync(process.env.WF_DB_PATH!);
 	tickConn
-		.prepare("UPDATE workflow_steps SET updated_at = updated_at + 1 WHERE id='scratch-wf-1'")
+		.prepare(
+			"UPDATE workflow_steps SET updated_at = updated_at + 1 WHERE id='scratch-wf-1'",
+		)
 		.run();
 	tickConn.close();
 	await new Promise((r) => setTimeout(r, 1100)); // debounce(300)+tick+onTick
@@ -3278,9 +3339,7 @@ echo "$@" >> "${cdLog}"
 	const legacyLines = legacy.render(120);
 	assert(
 		legacyLines[0]!.includes("<dim>") &&
-			legacyLines.some((l) =>
-				l.includes("<accent>/wf retry san-wf-1</accent>"),
-			),
+			legacyLines.some((l) => l.includes("<accent>/wf retry san-wf-1</accent>")),
 		"无 details 降级渲染(首行 dim + 命令高亮)",
 	);
 
@@ -3346,9 +3405,7 @@ echo "$@" >> "${cdLog}"
 	);
 	pr = runCli(["import", "bad-plan.json"], { cwd: tmpDir });
 	assert(
-		pr.code === 1 &&
-			pr.stderr.includes("导入失败") &&
-			pr.stderr.includes("点号"),
+		pr.code === 1 && pr.stderr.includes("导入失败") && pr.stderr.includes("点号"),
 		`非法 plan 校验错误逐条可读(${pr.stderr.slice(0, 80).replace(/\n/g, " ")})`,
 	);
 
@@ -3382,9 +3439,7 @@ echo "$@" >> "${cdLog}"
 		const msg = (e as Error).message;
 		assert(
 			msg.includes("非法状态迁移: san-wf-1 conflict → dispatched") &&
-				msg.includes(
-					"允许: conflict, done, failed, aborted, needs-fix, skipped",
-				),
+				msg.includes("允许: conflict, done, failed, aborted, needs-fix, skipped"),
 			`非法迁移报错含状态/允许集(${msg.slice(0, 60)}…)`,
 		);
 	}
@@ -3543,16 +3598,18 @@ echo "$@" >> "${cdLog}"
 		`wf-master-foo-1.1 → workflow master-foo 的步骤(${ambStep?.workflowId}/${ambStep?.dotted})`,
 	);
 
-	// T27b createWorkflowWithMaster(真实 gittree + fake ghostctl)
+	// T27b createWorkflowWithMaster(真实 gittree + fake osa)
 	const mWtPath = path.join(mRepo, ".worktrees", "gittree-wf-master-m-demo");
-	const fakeMCtl = path.join(tmpDir, "fake-ghostctl-master.sh");
-	const mLog = path.join(tmpDir, "ghostctl-master.log");
-	fs.writeFileSync(
-		fakeMCtl,
-		`#!/bin/bash\necho "$@" >> "${mLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[{"terminals":[{"id":"masterterm0001","cwd":"${mWtPath}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbccdd)"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-master)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(mLog, "");
+	const mLog = installFakeOsa({
+		layout: [
+			"W\ttab-group-aabbccdd\twin\t\ttrue",
+			"T\ttab-group-aabbccdd\ttab-1\ttab\t1\ttrue\tmasterterm0001",
+			`S\ttab-group-aabbccdd\ttab-1\tmasterterm0001\tterm\t${mWtPath}`,
+		].join("\n"),
+		indexMap: "1\ttab-group-aabbccdd",
+		winId: "tab-group-aabbccdd",
+		tabId: "tab-master",
+	});
 	const mCreate = await masterMod.createWorkflowWithMaster(db2, {
 		repoPath: mRepo,
 		ownerCwd: tmpDir,
@@ -3560,7 +3617,6 @@ echo "$@" >> "${cdLog}"
 		title: "master demo",
 		goal: "完成 demo 改造",
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(mCreate.ok, `create 成功: ${mCreate.error ?? ""}`);
 	assert(
@@ -3593,17 +3649,16 @@ echo "$@" >> "${cdLog}"
 		{ encoding: "utf-8" },
 	);
 	assert(mBr.includes("gittree-wf-master-m-demo"), "master 分支已创建");
-	const mRaw = fs.readFileSync(mLog, "utf-8");
+	const mRaw = mLog().join("\n");
 	assert(
-		mRaw.includes("new-window") &&
-			mRaw.includes("--no-focus") &&
-			mRaw.includes(`--cwd ${mWtPath}`) &&
-			mRaw.includes("--command") &&
-			mRaw.includes("PI_WF_MASTER=m-demo"),
+		mRaw.includes("set w to new window") &&
+			mRaw.includes(`initial working directory:"${mWtPath}"`) &&
+			mRaw.includes('command:"env PI_WF_MASTER=') &&
+			mRaw.includes('to focus (terminal id "masterterm0001"'),
 		"一步创建主控 tab(new-window --cwd 主控worktree --command env PI_WF_MASTER… --no-focus)",
 	);
 	assert(
-		!mRaw.includes("new-tab"),
+		!mRaw.includes("set t to new tab in window"),
 		"主控 tab 不再 new-tab(初始 tab 即主控,无多余空白 tab)",
 	);
 	assert(
@@ -3643,20 +3698,23 @@ echo "$@" >> "${cdLog}"
 		title: "t",
 		goal: "g",
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(!mDup.ok, "workflow 已存在拒绝创建");
 
 	// T27b2 经典模式首次派发:new-window 自带初始空白 tab → openStepTab 清理
-	const sweepFake = path.join(tmpDir, "fake-ghostctl-sweep.sh");
-	const sweepLog = path.join(tmpDir, "ghostctl-sweep.log");
 	const sweepWt = path.join(mRepo, ".worktrees", "gittree-wf-sweep2-wf-1");
-	fs.writeFileSync(
-		sweepFake,
-		`#!/bin/bash\necho "$@" >> "${sweepLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbcc11","front":true,"tabs":[{"id":"tab-sweep-empty","terminals":[{"id":"emptyterm0001","cwd":"${mRepo}"}]},{"id":"tab-sweep-biz","terminals":[{"id":"sweterm0001","cwd":"${sweepWt}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbcc11)"\n    ;;\n  close-tab)\n    echo "已关闭标签页 $2"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sweep-biz)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(sweepLog, "");
+	const sweepLog = installFakeOsa({
+		layout: [
+			"W\ttab-group-aabbcc11\twin\t\ttrue",
+			"T\ttab-group-aabbcc11\ttab-sweep-empty\tempty\t1\ttrue\t",
+			`S\ttab-group-aabbcc11\ttab-sweep-empty\temptyterm0001\tterm\t${mRepo}`,
+			"T\ttab-group-aabbcc11\ttab-sweep-biz\tbiz\t2\tfalse\t",
+			`S\ttab-group-aabbcc11\ttab-sweep-biz\tsweterm0001\tterm\t${sweepWt}`,
+		].join("\n"),
+		indexMap: "1\ttab-group-aabbcc11",
+		winId: "tab-group-aabbcc11",
+		tabId: "tab-sweep-biz",
+	});
 	const sweepImp = orchMod.importPlan(
 		db2,
 		{
@@ -3674,47 +3732,46 @@ echo "$@" >> "${cdLog}"
 		db2,
 		dbMod.getWorkflow(db2, "sweep2-wf")!,
 		dbMod.getStep(db2, "sweep2-wf-1")!,
-		{ gittreeBin: "gittree", ghostctlBin: sweepFake },
+		{ gittreeBin: "gittree" },
 	);
 	assert(sweepRes.ok, `经典模式首次派发成功: ${sweepRes.error ?? ""}`);
-	const sweepRaw = fs.readFileSync(sweepLog, "utf-8");
+	const sweepRaw = sweepLog().join("\n");
 	assert(
-		sweepRaw.includes("close-tab tab-sweep-empty"),
-		`初始空白 tab 已清理(${sweepRaw.split("\n").filter(Boolean).join(" | ")})`,
+		sweepRaw.includes('perform action "goto_tab:1"') &&
+			sweepRaw.includes('perform action "close_tab"'),
+		`初始空白 tab 已清理`,
 	);
 	assert(
-		!sweepRaw.includes("close-tab tab-sweep-biz"),
+		!sweepRaw.includes('perform action "goto_tab:2"'),
 		"业务 tab 保留(不误关)",
 	);
 
 	// T27b3 sweep 重试:刚创建窗口的 tab 在 AppleScript 侧引用未就绪(-1728),
 	// close-tab 失败后按退避重试,最终关闭空白 tab 且不误关业务 tab
 	const wndMod = await import("../src/exec/window.ts");
-	const retryFake = path.join(tmpDir, "fake-ghostctl-retry.sh");
-	const retryLog = path.join(tmpDir, "ghostctl-retry.log");
-	const retryFlag = path.join(tmpDir, "retry-fail.flag");
-	fs.writeFileSync(
-		retryFake,
-		`#!/bin/bash\necho "$@" >> "${retryLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-sweepwin","front":true,"tabs":[{"id":"tab-sweep-empty","terminals":[{"id":"emptyterm0001"}]},{"id":"tab-sweep-biz","terminals":[{"id":"sweterm0001"}]}]}]}'\n    ;;\n  close-tab)\n    if [ ! -f "${retryFlag}" ]; then\n      touch "${retryFlag}"\n      echo "AppleScript 错误: -1728" >&2\n      exit 1\n    fi\n    echo "已关闭标签页 $2"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sweep-biz)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(retryLog, "");
-	fs.rmSync(retryFlag, { force: true });
-	await wndMod.sweepInitialTabs(
-		retryFake,
-		mRepo,
-		"tab-group-sweepwin",
-		"sweterm0001",
-		{
-			retryDelaysMs: [10, 10],
-		},
-	);
-	const retryRaw = fs.readFileSync(retryLog, "utf-8");
+	const retryLog = installFakeOsa({
+		layout: [
+			"W\ttab-group-sweepwin\twin\t\ttrue",
+			"T\ttab-group-sweepwin\ttab-sweep-empty\tempty\t1\ttrue\t",
+			"S\ttab-group-sweepwin\ttab-sweep-empty\temptyterm0001\tterm\t",
+			"T\ttab-group-sweepwin\ttab-sweep-biz\tbiz\t2\tfalse\t",
+			"S\ttab-group-sweepwin\ttab-sweep-biz\tsweterm0001\tterm\t",
+		].join("\n"),
+		indexMap: "1\ttab-group-sweepwin",
+		failCloseOnce: true,
+	});
+	await wndMod.sweepInitialTabs("tab-group-sweepwin", "sweterm0001", {
+		retryDelaysMs: [10, 10],
+	});
+	const retryRaw = retryLog().join("\n");
 	assert(
-		(retryRaw.match(/close-tab tab-sweep-empty/g) ?? []).length === 2,
-		`close-tab 失败后重试至成功(${retryRaw.split("\n").filter(Boolean).join(" | ")})`,
+		(retryRaw.match(/perform action "goto_tab:1"/g) ?? []).length === 2,
+		`close-tab 失败后重试至成功(goto_tab:1 ×${(retryRaw.match(/perform action "goto_tab:1"/g) ?? []).length})`,
 	);
-	assert(!retryRaw.includes("close-tab tab-sweep-biz"), "重试不误关业务 tab");
+	assert(
+		!retryRaw.includes('perform action "goto_tab:2"'),
+		"重试不误关业务 tab",
+	);
 
 	// T27c 空 workflow 首 wave 自动创建(主控 /wf plan --workflow 落点)
 	const appRes = orchMod.appendSteps(
@@ -3770,8 +3827,6 @@ echo "$@" >> "${cdLog}"
 		{ encoding: "utf-8" },
 	).trim();
 	const subWt = path.join(mRepo, ".worktrees", "gittree-wf-m-demo-1");
-	const fakeSubCtl = path.join(tmpDir, "fake-ghostctl-sub.sh");
-	const subLog = path.join(tmpDir, "ghostctl-sub.log");
 	const fakeGittree = path.join(tmpDir, "fake-gittree.sh");
 	const gLog = path.join(tmpDir, "gittree-sub.log");
 	fs.writeFileSync(
@@ -3780,17 +3835,22 @@ echo "$@" >> "${cdLog}"
 		{ mode: 0o755 },
 	);
 	fs.writeFileSync(gLog, "");
-	fs.writeFileSync(
-		fakeSubCtl,
-		`#!/bin/bash\necho "$@" >> "${subLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-masterwin","front":true,"tabs":[{"id":"tab-master","terminals":[{"id":"masterterm0001","cwd":"${mWtPath}"}]},{"id":"tab-sub","terminals":[{"id":"subterm0001","cwd":"${subWt}"}]}]}]}'\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sub)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
-	fs.writeFileSync(subLog, "");
+	const subLog = installFakeOsa({
+		layout: [
+			"W\ttab-group-masterwin\twin\t\ttrue",
+			"T\ttab-group-masterwin\ttab-master\tmaster\t1\ttrue\t",
+			`S\ttab-group-masterwin\ttab-master\tmasterterm0001\tterm\t${mWtPath}`,
+			"T\ttab-group-masterwin\ttab-sub\tsub\t2\tfalse\t",
+			`S\ttab-group-masterwin\ttab-sub\tsubterm0001\tterm\t${subWt}`,
+		].join("\n"),
+		indexMap: "1\ttab-group-masterwin",
+		tabId: "tab-sub",
+	});
 	const dRes = await dispatchMod.dispatchStep(
 		db2,
 		dbMod.getWorkflow(db2, mWfId)!,
 		dbMod.getStep(db2, "m-demo-1")!,
-		{ gittreeBin: fakeGittree, ghostctlBin: fakeSubCtl },
+		{ gittreeBin: fakeGittree },
 	);
 	assert(dRes.ok, `master 模式派发成功: ${dRes.error ?? ""}`);
 	assert(fs.existsSync(subWt), "子 worktree 已创建");
@@ -3940,7 +4000,6 @@ echo "$@" >> "${cdLog}"
 	dbMod.updateWorkflowStatus(db2, mWfId, "running");
 	const badMerge = await masterMod.mergeMaster(db2, mWfId, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(
 		!badMerge.ok && (badMerge.error?.includes("awaiting-merge") ?? false),
@@ -3953,7 +4012,6 @@ echo "$@" >> "${cdLog}"
 	fs.writeFileSync(path.join(mWtPath, "plan.json"), '{"name":"m-demo"}');
 	const mRes = await masterMod.mergeMaster(db2, mWfId, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(mRes.ok, `master-merge 成功(自动清 .pi-glla): ${mRes.error ?? ""}`);
 	assert(
@@ -3990,7 +4048,6 @@ echo "$@" >> "${cdLog}"
 	// 幂等
 	const again = await masterMod.mergeMaster(db2, mWfId, {
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(again.ok, "重复 master-merge 幂等(ok)");
 
@@ -4004,15 +4061,11 @@ echo "$@" >> "${cdLog}"
 		title: "f",
 		goal: "f",
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(fCreate.ok, "m-fail create");
 	const mfRes = masterMod.markMasterFailed(db2, "m-fail", "无法继续");
 	assert(mfRes.ok, "master-fail 标记成功");
-	assert(
-		dbMod.getWorkflow(db2, "m-fail")?.status === "failed",
-		"status=failed",
-	);
+	assert(dbMod.getWorkflow(db2, "m-fail")?.status === "failed", "status=failed");
 	const fEvts = dbMod
 		.getEvents(db2, { workflowId: "m-fail", limit: 10 })
 		.map((e) => e.type);
@@ -4075,7 +4128,6 @@ echo "$@" >> "${cdLog}"
 		title: "imp",
 		goal: "imp",
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(impWf.ok, "m-imp create");
 	const impPlan = path.join(tmpDir, "m-imp-plan.json");
@@ -4119,12 +4171,9 @@ echo "$@" >> "${cdLog}"
 	);
 
 	// T27k dead-master:主控 tab 消失 → 标记 + 通知(独立于 running 步骤)
-	const deadFake = path.join(tmpDir, "fake-ghostctl-dead.sh");
-	fs.writeFileSync(
-		deadFake,
-		`#!/bin/bash\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[]}]}'\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-dead)"\n    ;;\nesac\n`,
-		{ mode: 0o755 },
-	);
+	installFakeOsa({
+		layout: "W\ttab-group-aabbccdd\twin\t\ttrue",
+	});
 	const deadCreate = await masterMod.createWorkflowWithMaster(db2, {
 		repoPath: mRepo,
 		ownerCwd: tmpDir,
@@ -4132,13 +4181,12 @@ echo "$@" >> "${cdLog}"
 		title: "d",
 		goal: "d",
 		gittreeBin: "gittree",
-		ghostctlBin: fakeMCtl,
 	});
 	assert(deadCreate.ok, "m-dead create(无 running 步骤场景)");
 	// 模拟已绑定的主控 tab(create 时 fake layout 的 cwd 不匹配,master_tab_id 未落库)
 	dbMod.setWorkflowMeta(db2, "m-dead", "master_tab_id", "deadterm0001");
-	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: deadFake });
-	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: deadFake });
+	await monitorMod.pollOnce(db2, { repoPath: mRepo });
+	await monitorMod.pollOnce(db2, { repoPath: mRepo });
 	assert(
 		dbMod.getWorkflowMeta(db2, "m-dead", "master_dead_at") !== undefined,
 		"连续 2 轮未命中 → master_dead_at 标记",
@@ -4158,13 +4206,21 @@ echo "$@" >> "${cdLog}"
 		"dead-master → master-failed 通知项(发起方可接管)",
 	);
 	// 主控恢复存活 → 计数清零,不再误报
+	installFakeOsa({
+		layout: [
+			"W\ttab-group-aabbccdd\twin\t\ttrue",
+			"T\ttab-group-aabbccdd\ttab-1\ttab\t1\ttrue\t",
+			"S\ttab-group-aabbccdd\ttab-1\tdeadterm0001\tterm\tx",
+		].join("\n"),
+	});
+	// 主控恢复存活 → 计数清零,不再误报
 	const aliveFake = path.join(tmpDir, "fake-ghostctl-alive.sh");
 	fs.writeFileSync(
 		aliveFake,
 		`#!/bin/bash\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[{"terminals":[{"id":"deadterm0001","cwd":"x"}]}]}]}'\n    ;;\n  *)\n    echo "x"\n    ;;\nesac\n`,
 		{ mode: 0o755 },
 	);
-	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: aliveFake });
+	await monitorMod.pollOnce(db2, { repoPath: mRepo });
 	assert(
 		dbMod.getWorkflowMeta(db2, "m-dead", "master_tab_miss") === 0,
 		"主控恢复 → 未命中计数清零",
@@ -4173,9 +4229,7 @@ echo "$@" >> "${cdLog}"
 	// status --json 不因新状态(awaiting-merge/completed/failed)崩溃
 	pr = runCli(["status", "--json"], { cwd: mRepo });
 	assert(
-		pr.code === 0 &&
-			pr.stdout.includes("m-demo") &&
-			pr.stdout.includes("m-fail"),
+		pr.code === 0 && pr.stdout.includes("m-demo") && pr.stdout.includes("m-fail"),
 		`status --json 全状态可渲染(${pr.stdout.slice(0, 60).replace(/\n/g, " ")})`,
 	);
 

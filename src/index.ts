@@ -21,11 +21,12 @@ import type {
 
 /** 本扩展目录(兼容 jiti 的 CJS/ESM 两种加载) */
 const EXT_DIR =
-	typeof __dirname !== "undefined"
-		? __dirname
-		: path.dirname(fileURLToPath(import.meta.url));
+	typeof __dirname === "undefined"
+		? path.dirname(fileURLToPath(import.meta.url))
+		: __dirname;
 
 import {
+	ensureGllaIgnored,
 	type CmdEnv,
 	getCommand,
 	listCommands,
