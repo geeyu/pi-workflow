@@ -70,6 +70,7 @@ export function importPlan(
 			title: sanitizeTerminalText(plan.title ?? ""),
 			goal: sanitizeTerminalText(plan.goal ?? ""),
 			repoPath: plan.repoPath ?? cwd,
+			ownerCwd: cwd,
 			description: plan.description ? sanitizeTerminalText(plan.description) : undefined,
 			concurrency: plan.concurrency,
 			budgetCents: plan.budgetCents,

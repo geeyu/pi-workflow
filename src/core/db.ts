@@ -124,6 +124,8 @@ export interface WorkflowRow {
 	context: string | null;
 	description: string;
 	repo_path: string;
+	/** 发起者 cwd(导入时记录;会话隔离 owner 通道,空=老数据仅 repo 匹配) */
+	owner_cwd: string | null;
 	base_sha: string | null;
 	status: WorkflowStatus;
 	current_wave: number;
@@ -227,6 +229,8 @@ export interface NewWorkflowInput {
 	title: string;
 	goal: string;
 	repoPath: string;
+	/** 发起者 cwd(会话隔离双通道:repo 匹配 + 发起者匹配) */
+	ownerCwd?: string;
 	description?: string;
 	concurrency?: number;
 	budgetCents?: number | null;
@@ -420,6 +424,9 @@ SELECT a.step_id, s.workflow_id,
 FROM workflow_attempts a JOIN workflow_steps s ON s.id = a.step_id
 GROUP BY a.step_id;
 `,
+	`
+ALTER TABLE workflow ADD COLUMN owner_cwd TEXT;
+`,
 ];
 
 // ────────────────────────────────────────────────────────────
@@ -502,8 +509,8 @@ export function createWorkflow(
 ): WorkflowRow {
 	const ts = now();
 	db.prepare(
-		`INSERT INTO workflow (id, title, goal, context, description, repo_path, concurrency, budget_cents, max_steps, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workflow (id, title, goal, context, description, repo_path, owner_cwd, concurrency, budget_cents, max_steps, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	).run(
 		input.id,
 		input.title,
@@ -511,6 +518,7 @@ export function createWorkflow(
 		null,
 		input.description ?? "",
 		input.repoPath,
+		input.ownerCwd ?? null,
 		input.concurrency ?? 4,
 		input.budgetCents ?? null,
 		input.maxSteps ?? 50,
@@ -560,12 +568,15 @@ export function listActiveWorkflows(
 		)
 		.all() as unknown as WorkflowRow[];
 	if (!repoPath) return all;
-	// 会话隔离:仅返回 cwd 位于 repo_path 内(或等于)的 workflow——
-	// 谁发起的任务谁看自己的 workflow,不串扰其他仓库的编排。
+	// 会话隔离双通道:① cwd 位于 repo_path 内(或等于)——任务所在地;
+	// ② cwd 等于 owner_cwd——发起者本人(无论后来切到哪个目录都能看到自己发起的任务)。
+	// 两者皆不匹配则不显示,避免跨仓库串扰。
 	const cwd = path.resolve(repoPath);
 	return all.filter((w) => {
 		const repo = path.resolve(w.repo_path);
-		return cwd === repo || cwd.startsWith(repo + path.sep);
+		const inRepo = cwd === repo || cwd.startsWith(repo + path.sep);
+		if (inRepo) return true;
+		return w.owner_cwd !== null && path.resolve(w.owner_cwd) === cwd;
 	});
 }
 
@@ -573,7 +584,6 @@ export function updateWorkflowStatus(
 	db: DatabaseSync,
 	id: string,
 	status: WorkflowStatus,
-	extra?: { error?: string },
 ): void {
 	const patch: Record<string, unknown> = { status, updated_at: now() };
 	if (status === "running" && !patch.started_at) patch.started_at = now();

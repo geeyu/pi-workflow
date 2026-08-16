@@ -129,13 +129,13 @@ async function main(): Promise<void> {
 	const ver = (
 		db.prepare("PRAGMA user_version").get() as { user_version: number }
 	).user_version;
-	assert(ver === 1, `user_version = 1(实际 ${ver})`);
+	assert(ver === 2, `user_version = 2(owner_cwd 迁移;实际 ${ver})`);
 	dbMod.resetDbForTests();
 	const db2 = dbMod.getDb();
 	const ver2 = (
 		db2.prepare("PRAGMA user_version").get() as { user_version: number }
 	).user_version;
-	assert(ver2 === 1, "迁移幂等:重连后 user_version 仍为 1");
+	assert(ver2 === 2, "迁移幂等:重连后 user_version 仍为 2");
 
 	console.log("== T2 validatePlan ==");
 	const validateMod = await import("../src/validate.ts");
@@ -1630,6 +1630,23 @@ async function main(): Promise<void> {
 	assert(
 		evA.some((i) => i.stepId === "iso-a-1"),
 		"/repo/a 会话收到 iso-a 的事件",
+	);
+	// owner 通道:发起者 cwd(importPlan 的 cwd=tmpDir)也能看到自己发起的 workflow
+	const ownerView = dbMod.listActiveWorkflows(db2, tmpDir);
+	assert(
+		ownerView.some((w) => w.id === "iso-a") &&
+			ownerView.some((w) => w.id === "iso-b"),
+		`发起者目录(owner_cwd)可见自己发起的 workflow(${ownerView.map((w) => w.id).join(",")})`,
+	);
+	const evOwner = monitorMod.detectStateChanges(db2, { repoPath: tmpDir });
+	assert(
+		evOwner.some((i) => i.stepId === "iso-a-1"),
+		"发起者目录收到自己 workflow 的事件(owner 通道)",
+	);
+	const otherView = dbMod.listActiveWorkflows(db2, "/somewhere/else");
+	assert(
+		!otherView.some((w) => w.id === "iso-a" || w.id === "iso-b"),
+		"无关目录双通道都不匹配 → 不可见",
 	);
 
 	console.log("== T21 pollTargetReached 纯函数 + wf poll 退出码 ==");
