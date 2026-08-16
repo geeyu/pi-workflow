@@ -3766,17 +3766,19 @@ async function main(): Promise<void> {
 		"非 awaiting-merge 拒绝合并",
 	);
 	dbMod.updateWorkflowStatus(db2, mWfId, "awaiting-merge");
-	// 主控 worktree 残留 pi 运行时目录 → master-merge 前自动清理(否则 gittree 干净检查拦截)
+	// 主控 worktree 残留临时产物(.pi-glla + plan.json)→ master-merge 前自动清理
 	fs.mkdirSync(path.join(mWtPath, ".pi-glla"), { recursive: true });
 	fs.writeFileSync(path.join(mWtPath, ".pi-glla", "state.json"), "{}");
+	fs.writeFileSync(path.join(mWtPath, "plan.json"), '{"name":"m-demo"}');
 	const mRes = await masterMod.mergeMaster(db2, mWfId, {
 		gittreeBin: "gittree",
 		ghostctlBin: fakeMCtl,
 	});
 	assert(mRes.ok, `master-merge 成功(自动清 .pi-glla): ${mRes.error ?? ""}`);
 	assert(
-		!fs.existsSync(path.join(mWtPath, ".pi-glla")),
-		"master-merge 已清理主控 worktree 的 .pi-glla",
+		!fs.existsSync(path.join(mWtPath, ".pi-glla")) &&
+			!fs.existsSync(path.join(mWtPath, "plan.json")),
+		"master-merge 已清理主控 worktree 临时产物(.pi-glla + plan.json)",
 	);
 	const mWf3 = dbMod.getWorkflow(db2, mWfId)!;
 	assert(

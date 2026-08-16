@@ -303,15 +303,19 @@ export async function mergeMaster(
 		}
 	}
 
-	// 1.5 清理主控 worktree 的 pi 运行时目录(.pi-glla 等非代码产出,会拦截
-	// gittree merge 的干净检查——真实现象:主控会话残留 .pi-glla 导致合并失败)
+	// 1.5 清理主控 worktree 的临时产物(非代码产出,会拦截 gittree merge 的
+	// 干净检查——真实现象:主控会话遗留 .pi-glla / plan.json 导致合并失败)。
+	// 已知临时条目直接删;其他 untracked 交给 gittree 报错(不误删主控产出)。
 	const masterWt = masterWorktreePath(wf.repo_path, workflowId);
-	const gllaDir = path.join(masterWt, ".pi-glla");
-	if (fs.existsSync(gllaDir)) {
-		try {
-			fs.rmSync(gllaDir, { recursive: true, force: true });
-		} catch {
-			/* 清理失败交给 gittree 的报错兜底 */
+	const TEMP_ENTRIES = new Set([".pi-glla", "plan.json", ".DS_Store"]);
+	for (const name of TEMP_ENTRIES) {
+		const p = path.join(masterWt, name);
+		if (fs.existsSync(p)) {
+			try {
+				fs.rmSync(p, { recursive: true, force: true });
+			} catch {
+				/* 清理失败交给 gittree 的报错兜底 */
+			}
 		}
 	}
 
