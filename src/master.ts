@@ -340,6 +340,25 @@ export async function mergeMaster(
 			}
 		}
 	}
+	// 主控 worktree 的 .gitignore(ensureGllaIgnored 写入,防 .pi-glla 干扰):
+	// 提交进主控分支,避免 untracked 拦截 gittree merge 的干净检查。
+	try {
+		const gi = path.join(masterWt, ".gitignore");
+		if (fs.existsSync(gi)) {
+			await run(
+				"git",
+				["-C", masterWt, "add", ".gitignore"],
+				masterWt,
+			);
+			await run(
+				"git",
+				["-C", masterWt, "commit", "-q", "-m", "chore: ignore .pi-glla (wf)"],
+				masterWt,
+			);
+		}
+	} catch {
+		/* 提交失败交给 gittree 的报错兜底 */
+	}
 
 	// 2. 合并主控 gittree 到发起方当前分支(--delete 删 worktree+分支)
 	const mergeRes = await run(
