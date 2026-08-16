@@ -19,6 +19,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import type { StepRow } from "../src/core/db.ts";
 import type { NotifyItem } from "../src/observe/monitor.ts";
@@ -911,6 +912,40 @@ async function main(): Promise<void> {
 		logAfterReopen.some((l) => l.includes("new-tab")),
 		`重开调用 new-tab(log=${logAfterReopen.join(" | ") || "(空)"})`,
 	);
+
+	// ── fs.watch 事件驱动:跨连接写库 → watch 触发 → 毫秒级检测(非轮询)──
+	const watchLog = path.join(tmpDir, "watch-events.log");
+	fs.writeFileSync(watchLog, "");
+	const wfStop = monitorMod.startMonitor(db2, {
+		ghostctlBin: fakeGhostctl,
+		cwd: scratchRepo,
+		intervalMs: 60_000, // 轮询拉长:证明事件由 fs.watch 触发而非轮询
+		watchDebounceMs: 50,
+		onState: async (items) => {
+			fs.appendFileSync(
+				watchLog,
+				items.map((i) => `${i.kind}:${i.stepId}`).join(",") + "\n",
+			);
+		},
+	});
+	// 第二个连接模拟"另一个进程(子 agent/CLI)写库"——WAL 落盘 → 目录 watch 触发
+	const watchConn = new DatabaseSync(process.env.WF_DB_PATH!);
+	watchConn
+		.prepare("UPDATE workflow_steps SET status='reported' WHERE id='scratch-wf-1'")
+		.run();
+	watchConn.close();
+	await new Promise((r) => setTimeout(r, 900)); // debounce(50)+tick(ghostctl)+detect
+	wfStop();
+	const watchEvts = fs.readFileSync(watchLog, "utf-8");
+	assert(
+		watchEvts.includes("reported:scratch-wf-1"),
+		`fs.watch 写库触发立即检测(${watchEvts.trim() || "(无事件)"})`,
+	);
+	// 恢复状态(绕过状态机直接还原,不干扰后续测试)
+	db2
+		.prepare("UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'")
+		.run();
+	dbMod.setStepMeta(db2, "scratch-wf-1", "notify:reported", null);
 
 	console.log("== T11 就绪集 getReadySteps ==");
 	const readyWf = orchMod.importPlan(

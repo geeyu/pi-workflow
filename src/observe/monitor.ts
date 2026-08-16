@@ -9,8 +9,11 @@
  *   冲突 → 步骤 conflict(事件 merge_conflict),wave → merged(事件 wave_merged)
  */
 import type { DatabaseSync } from "node:sqlite";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import {
 	ATTEMPT_STATUS,
+	DB_PATH,
 	EVT,
 	STEP_STATUS,
 	WORKFLOW_STATUS,
@@ -122,9 +125,7 @@ export async function pollOnce(
 	let running = getRunningSteps(db);
 	if (opts.repoPath) {
 		// 会话隔离:只轮询 cwd 所在仓库的步骤(谁发起谁看)
-		const mine = new Set(
-			listActiveWorkflows(db, opts.repoPath).map((w) => w.id),
-		);
+		const mine = new Set(listActiveWorkflows(db, opts.repoPath).map((w) => w.id));
 		running = running.filter((s) => mine.has(s.workflow_id));
 	}
 	if (running.length === 0) return { closed: [], timedOut: [] };
@@ -151,7 +152,13 @@ export async function pollOnce(
 			nowMs - s.started_at > s.timeout_min * 60_000
 		) {
 			const reason = `超时(${s.timeout_min}min 未完成)`;
-			updateStepStatus(db, s.id, STEP_STATUS.aborted, { error: reason }, { strict: true });
+			updateStepStatus(
+				db,
+				s.id,
+				STEP_STATUS.aborted,
+				{ error: reason },
+				{ strict: true },
+			);
 			const attempt = getLatestAttempt(db, s.id);
 			if (attempt && attempt.status === ATTEMPT_STATUS.running) {
 				buildUpdate(
@@ -245,8 +252,10 @@ export function recoverStaleSteps(
 }
 
 export interface MonitorOptions {
-	/** 轮询间隔,默认 5000ms(设计决策 12) */
+	/** 轮询间隔,默认 5000ms(设计决策 12);fs.watch 事件驱动为毫秒级主通道 */
 	intervalMs?: number;
+	/** fs.watch 触发后的 debounce 合并窗口,默认 300ms(高频写合并) */
+	watchDebounceMs?: number;
 	ghostctlBin?: string;
 	/** 会话隔离:只轮询/通知 cwd 所在仓库的 workflow(谁发起谁看);缺省 = 全量 */
 	cwd?: string;
@@ -269,6 +278,24 @@ export function startMonitor(
 	const intervalMs = opts.intervalMs ?? 5000;
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let ticking = false;
+	// ── fs.watch 事件驱动(WAL 模式写 .db-wal,故监听 DB 目录)──
+	// 任何进程(子 agent / CLI)写入 DB → 目录事件 → debounce 后立即检测通知,
+	// 毫秒级送达(非 5s 轮询);5s 轮询保留为兜底(防 watch 漏事件/文件替换)。
+	let watchDebounce: ReturnType<typeof setTimeout> | null = null;
+	let watcher: fs.FSWatcher | null = null;
+	const dbBase = path.basename(DB_PATH); // workflow.db / 测试库 test.db
+	try {
+		watcher = fs.watch(path.dirname(DB_PATH), (_ev, filename) => {
+			if (filename && !String(filename).startsWith(dbBase)) return;
+			if (watchDebounce) return; // 已排程,合并高频写
+			watchDebounce = setTimeout(() => {
+				watchDebounce = null;
+				void tick();
+			}, opts.watchDebounceMs ?? 300);
+		});
+	} catch {
+		/* fs.watch 不可用(网络盘等)则纯轮询兜底 */
+	}
 	const tick = async (): Promise<void> => {
 		if (ticking) return;
 		ticking = true;
@@ -294,6 +321,12 @@ export function startMonitor(
 			clearInterval(timer);
 			timer = null;
 		}
+		if (watchDebounce) {
+			clearTimeout(watchDebounce);
+			watchDebounce = null;
+		}
+		watcher?.close();
+		watcher = null;
 	};
 }
 
@@ -402,9 +435,7 @@ export function detectStateChanges(
 			if (steps.length === 0) continue;
 			if (
 				!steps.every(
-					(s) =>
-						s.status === STEP_STATUS.done ||
-						s.status === STEP_STATUS.skipped,
+					(s) => s.status === STEP_STATUS.done || s.status === STEP_STATUS.skipped,
 				)
 			) {
 				continue;
@@ -413,9 +444,7 @@ export function detectStateChanges(
 				continue;
 			}
 			const mergeCmd =
-				wave.seq === wf.current_wave
-					? "/wf merge"
-					: `/wf merge --wave ${wave.seq}`;
+				wave.seq === wf.current_wave ? "/wf merge" : `/wf merge --wave ${wave.seq}`;
 			items.push({
 				workflowId: wf.id,
 				waveSeq: wave.seq,
