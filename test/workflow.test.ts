@@ -2873,6 +2873,66 @@ echo "$@" >> "${cdLog}"
 		`子会话不渲染编排者面板/状态条(${extCalls.join(", ")})`,
 	);
 
+	// ── agent_start 标题重断言:pi 扩展绑定完成后会用 updateTerminalTitle() 覆盖
+	// session_start 里设的标题(实测 OSC 捕获 setTitle 已调用,最终标题仍被覆盖回
+	// 「π - <cwd basename>」),故每个 turn 开始重断言(worker: wf <id>/<dotted>)。
+	extCalls.length = 0;
+	await handlers.get("agent_start")!("", {
+		cwd: "/repo/.worktrees/gittree-wf-demo-wf-1.1",
+		ui: mockUi,
+	});
+	assert(
+		extCalls.includes("setTitle:wf demo-wf/1.1"),
+		`agent_start 子会话重设标题(${extCalls.join(", ")})`,
+	);
+	assert(
+		!extCalls.includes("setWidget") && !extCalls.includes("setStatus"),
+		`agent_start 子会话不渲染面板/状态条(${extCalls.join(", ")})`,
+	);
+	// master 会话:agent_start 重断言 wf-master <id>(非数字结尾避免步骤歧义)
+	extCalls.length = 0;
+	await handlers.get("agent_start")!("", {
+		cwd: "/repo/.worktrees/gittree-wf-master-demo",
+		ui: mockUi,
+	});
+	assert(
+		extCalls.includes("setTitle:wf-master demo"),
+		`agent_start master 会话重设标题(${extCalls.join(", ")})`,
+	);
+	// 编排者会话:agent_start 不设标题(保持现状)
+	extCalls.length = 0;
+	await handlers.get("agent_start")!("", { cwd: "/repo", ui: mockUi });
+	assert(
+		!extCalls.some((c) => c.startsWith("setTitle")),
+		`agent_start 编排者会话不设标题(${extCalls.join(", ")})`,
+	);
+
+	// ── master 会话 session_start 设 wf-master 标题;monitor onTick 每轮重断言
+	// (5s 自愈,防 session_info_changed 再覆盖);结束前 shutdown 停掉 monitor。
+	// 注:session_start 会跑 recoverStaleSteps(全量轮询),此处 master cwd 指向
+	// 不存在仓库,monitor tick 的 repoPath 过滤后为空,不会碰真实 ghostctl。
+	extCalls.length = 0;
+	await handlers.get("session_start")!("", {
+		cwd: "/repo/.worktrees/gittree-wf-master-demo",
+		ui: mockUi,
+	});
+	assert(
+		extCalls.includes("setTitle:wf-master demo"),
+		`master 会话 session_start 设标题(${extCalls.join(", ")})`,
+	);
+	// 跨连接写库(模拟其他进程写)→ fs.watch 触发 monitor tick → onTick 重断言标题
+	const tickConn = new DatabaseSync(process.env.WF_DB_PATH!);
+	tickConn
+		.prepare("UPDATE workflow_steps SET updated_at = updated_at + 1 WHERE id='scratch-wf-1'")
+		.run();
+	tickConn.close();
+	await new Promise((r) => setTimeout(r, 1100)); // debounce(300)+tick+onTick
+	assert(
+		extCalls.filter((c) => c === "setTitle:wf-master demo").length >= 2,
+		`monitor onTick 重断言 master 标题(${extCalls.join(", ")})`,
+	);
+	await handlers.get("session_shutdown")!();
+
 	console.log("== T28 面板配置(config.ts:maxWidgetLines/collapseKey)= ");
 	const configMod = await import("../src/config.ts");
 	const savedXdg = process.env.XDG_CONFIG_HOME;
