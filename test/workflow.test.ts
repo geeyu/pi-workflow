@@ -3499,6 +3499,32 @@ async function main(): Promise<void> {
 		"业务 tab 保留(不误关)",
 	);
 
+	// T27b3 sweep 重试:刚创建窗口的 tab 在 AppleScript 侧引用未就绪(-1728),
+	// close-tab 失败后按退避重试,最终关闭空白 tab 且不误关业务 tab
+	const wndMod = await import("../src/exec/window.ts");
+	const retryFake = path.join(tmpDir, "fake-ghostctl-retry.sh");
+	const retryLog = path.join(tmpDir, "ghostctl-retry.log");
+	const retryFlag = path.join(tmpDir, "retry-fail.flag");
+	fs.writeFileSync(
+		retryFake,
+		`#!/bin/bash\necho "$@" >> "${retryLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-sweepwin","front":true,"tabs":[{"id":"tab-sweep-empty","terminals":[{"id":"emptyterm0001"}]},{"id":"tab-sweep-biz","terminals":[{"id":"sweterm0001"}]}]}]}'\n    ;;\n  close-tab)\n    if [ ! -f "${retryFlag}" ]; then\n      touch "${retryFlag}"\n      echo "AppleScript 错误: -1728" >&2\n      exit 1\n    fi\n    echo "已关闭标签页 $2"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sweep-biz)"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(retryLog, "");
+	fs.rmSync(retryFlag, { force: true });
+	await wndMod.sweepInitialTabs(retryFake, mRepo, "tab-group-sweepwin", "sweterm0001", {
+		retryDelaysMs: [10, 10],
+	});
+	const retryRaw = fs.readFileSync(retryLog, "utf-8");
+	assert(
+		(retryRaw.match(/close-tab tab-sweep-empty/g) ?? []).length === 2,
+		`close-tab 失败后重试至成功(${retryRaw.split("\n").filter(Boolean).join(" | ")})`,
+	);
+	assert(
+		!retryRaw.includes("close-tab tab-sweep-biz"),
+		"重试不误关业务 tab",
+	);
+
 	// T27c 空 workflow 首 wave 自动创建(主控 /wf plan --workflow 落点)
 	const appRes = orchMod.appendSteps(
 		db2,
@@ -3648,7 +3674,7 @@ async function main(): Promise<void> {
 	const mWf2 = dbMod.getWorkflow(db2, mWfId)!;
 	assert(
 		mWf2.status === "awaiting-merge" &&
-			mWf2.goal_check?.includes("passed") &&
+			Boolean(mWf2.goal_check?.includes("passed")) &&
 			!mWf2.completed_at,
 		"状态 awaiting-merge + goal_check 落库(未 completed)",
 	);

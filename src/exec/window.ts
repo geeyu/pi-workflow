@@ -270,10 +270,12 @@ export async function sweepInitialTabs(
 	cwd: string,
 	winId: string,
 	keepTerminalId: string | null,
+	opts: { retryDelaysMs?: number[] } = {},
 ): Promise<void> {
 	if (!keepTerminalId) return;
 	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
 	if (res.code !== 0) return;
+	let tabs: Array<{ id: string; terminals: Array<{ id: string }> }> = [];
 	try {
 		const layout = JSON.parse(res.stdout) as {
 			windows: Array<{
@@ -283,13 +285,24 @@ export async function sweepInitialTabs(
 		};
 		const win = layout.windows.find((w) => w.id === winId);
 		if (!win) return;
-		for (const t of win.tabs) {
-			const termIds = t.terminals.map((x) => x.id);
-			if (termIds.includes(keepTerminalId)) continue;
-			await run(ghostctlBin, ["close-tab", t.id], cwd);
-		}
+		tabs = win.tabs;
 	} catch {
-		/* 解析/清理失败不影响主流程 */
+		/* 解析失败不影响主流程 */
+		return;
+	}
+	// 刚创建的窗口/tab 在 AppleScript 侧引用会失败(-1728:不能获得 terminal id
+	// of window N),close-tab 失败后按退避重试,总耗时 ≤ 重试间隔之和。
+	const retryDelaysMs = opts.retryDelaysMs ?? [500, 1000, 2000];
+	for (const t of tabs) {
+		const termIds = t.terminals.map((x) => x.id);
+		if (termIds.includes(keepTerminalId)) continue;
+		for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+			if (attempt > 0) {
+				await new Promise((r) => setTimeout(r, retryDelaysMs[attempt - 1]));
+			}
+			const closeRes = await run(ghostctlBin, ["close-tab", t.id], cwd);
+			if (closeRes.code === 0) break;
+		}
 	}
 }
 
