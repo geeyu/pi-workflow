@@ -518,14 +518,14 @@ async function main(): Promise<void> {
 	assert(
 		osaRaw.includes("set w to new window") &&
 			osaRaw.includes(`initial working directory:"${scratchRepo}"`) &&
-			osaRaw.includes('to focus (terminal id "abcdef0123456789"'),
+			osaRaw.includes('if (id of term) is "abcdef0123456789"'),
 		`new-window 后台创建(--no-focus 恢复焦点 + --cwd 仓库)`,
 	);
 	// 用整段日志断言(pointer 位置参数内含换行,按行切分会拆开参数)
 	assert(
 		osaRaw.includes("set t to new tab in window 1") &&
 			osaRaw.includes('perform action "last_tab"') &&
-			osaRaw.includes('to focus (terminal id "abcdef0123456789"'),
+			osaRaw.includes('if (id of term) is "abcdef0123456789"'),
 		`new-tab 按窗口 id 定位(window 1=绑定窗口) + 末尾顺序 + 不抢焦点`,
 	);
 	assert(real.tabId === "abcdef0123456789", `tab id 解析(${real.tabId})`);
@@ -2297,7 +2297,7 @@ async function main(): Promise<void> {
 	assert(
 		openLogRaw.includes("set t to new tab in window 1") &&
 			openLogRaw.includes('perform action "last_tab"') &&
-			openLogRaw.includes('to focus (terminal id "feedface12345678"'),
+			openLogRaw.includes('if (id of term) is "feedface12345678"'),
 		"openStepTab 复用绑定窗口 + 末尾顺序 + 不抢焦点",
 	);
 	// pointer 改为 pi 位置参数交付:--command 内嵌单引号指引;不再 --input 注入、不再补回车
@@ -3654,7 +3654,7 @@ async function main(): Promise<void> {
 		mRaw.includes("set w to new window") &&
 			mRaw.includes(`initial working directory:"${mWtPath}"`) &&
 			mRaw.includes('command:"env PI_WF_MASTER=') &&
-			mRaw.includes('to focus (terminal id "masterterm0001"'),
+			mRaw.includes('if (id of term) is "masterterm0001"'),
 		"一步创建主控 tab(new-window --cwd 主控worktree --command env PI_WF_MASTER… --no-focus)",
 	);
 	assert(
