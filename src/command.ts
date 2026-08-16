@@ -304,9 +304,7 @@ export function resolveWorkflowId(
 ): string | null {
 	if (explicit) {
 		if (getWorkflow(env.db, explicit)) return explicit; // 完整 id 直接命中
-		const hits = listWorkflows(env.db).filter((w) =>
-			w.id.startsWith(explicit),
-		);
+		const hits = listWorkflows(env.db).filter((w) => w.id.startsWith(explicit));
 		if (hits.length === 1) return hits[0].id;
 		if (hits.length > 1) {
 			env.warn(
