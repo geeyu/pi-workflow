@@ -2802,7 +2802,7 @@ async function main(): Promise<void> {
 	// 跨连接写库(模拟其他进程写)→ fs.watch 触发 monitor tick → onTick 重断言标题
 	const tickConn = new DatabaseSync(process.env.WF_DB_PATH!);
 	tickConn
-		.prepare("UPDATE workflow_steps SET updated_at = updated_at WHERE id='scratch-wf-1'")
+		.prepare("UPDATE workflow_steps SET updated_at = updated_at + 1 WHERE id='scratch-wf-1'")
 		.run();
 	tickConn.close();
 	await new Promise((r) => setTimeout(r, 1100)); // debounce(300)+tick+onTick
