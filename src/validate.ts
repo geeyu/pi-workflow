@@ -202,6 +202,20 @@ export function validatePlan(
 		};
 	}
 
+	// 层级 id 的父步骤必须存在(1.1 需先有 1;否则 createStep 的 parent_id
+	// 引用悬空 → SQLite 报"FOREIGN KEY constraint failed"这种难懂错误)
+	for (const dotted of dottedSet) {
+		const parts = dotted.split(".");
+		for (let i = 1; i < parts.length; i++) {
+			const parent = parts.slice(0, i).join(".");
+			if (!dottedSet.has(parent)) {
+				errors.push(
+					`step ${dotted} 父步骤不存在: ${parent}(层级 id 要求父步骤同计划内,如 1.1 需先有 1)`,
+				);
+			}
+		}
+	}
+
 	// deps:存在性 + 自引用 + 无环(Kahn)
 	for (const [dotted, deps] of rawDeps) {
 		for (const dep of deps) {

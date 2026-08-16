@@ -459,6 +459,26 @@ function parseSurfaceId(stdout: string, re: RegExp, label: string): string {
 }
 
 /**
+ * 反查指定窗口的第一个 terminal id(new-window 初始 tab 即主控等场景)。
+ * 只按窗口 id 定位,不依赖 cwd/name 匹配(layout 的 cwd 字段常为空,AppleScript
+ * 限制);新窗口刚创建时引用可能未就绪,短退避重试(~2s)。
+ */
+export async function firstTerminalInWindow(winId: string): Promise<string | null> {
+	for (let i = 0; i < 5; i++) {
+		try {
+			const layout = await layoutJson();
+			const w = layout.windows.find((x) => x.id === winId);
+			const term = w?.tabs[0]?.terminals[0];
+			if (term) return term.id;
+		} catch {
+			/* 查询失败重试 */
+		}
+		await new Promise((r) => setTimeout(r, 400));
+	}
+	return null;
+}
+
+/**
  * 新建窗口(--no-focus:创建后把输入焦点恢复到原终端,不打扰当前工作)。
  * 返回新窗口 id。
  */

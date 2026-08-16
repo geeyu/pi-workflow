@@ -39,32 +39,18 @@ idle ──(import/plan 后首派发)──► running ──(全部 wave 合并
 | step | created / decomposed / dispatched / tab_opened / tab_reused / tab_closed / tab_fixed / reported / verified / needs_fix / failed / retrying / aborted / skipped / conflict / resolved |
 | worktree | created / merged / cleaned;merge_conflict / merge_resolved |
 
-### 4.3 数据库(10 表 + 2 视图)
+### 4.3 数据模型(抽象)
 
-表:`workflow` / `workflow_goal_items` / `workflow_waves` / `workflow_steps` / `workflow_step_deps` / `workflow_attempts` / `workflow_events` / `workflow_agents` / `workflow_metadata` / `workflow_step_metadata`;视图:`v_workflow_kanban` / `v_workflow_cost`。
+**⚠️ agent 只经 wf 命令操作;不要直接读写数据库文件,不要臆想 SQL。**
 
-**workflow_steps 列名速查**(查库前先看这里,别猜列名):
+- **workflow**:一次编排(goal/status/repo/base_sha);
+- **wave**:批次(串行推进,全部终态才合并);
+- **step**:任务(点号层级 id `1 / 1.1 / 1.2`,依赖图 = deps;每步一个 gittree worktree + 一个 Ghostty tab);
+- **attempt**:派发记录(每次派发的冻结任务正文与指针,重试可回溯);
+- **event**:全生命周期事件流(wave/step/worktree/attempt 各阶段,`wf events` 可查);
+- **metadata**:workflow 级键值(如绑定窗口、master tab);step_metadata:步骤级键值。
 
-| 用途 | 列名 |
-| --- | --- |
-| 步骤 id | `id`(完整 id,如 `wf-demo-1.2`;不是 step_id) |
-| 任务正文 | `task_md`(不是 task;读任务用 `wf context <id>` 更省事) |
-| 期望/验收 | `expectations`(JSON 数组字符串) |
-| 回报 | `report` / `summary` / `files_changed` / `issues` / `tests`(无 output_contract 列) |
-| 护栏 | `timeout_min` / `max_retries` / `retries_done` |
-| 派发信息 | `worktree` / `tab_id` / `gate` / `wave_id` / `sort_order` |
-| 成本 | `usage_input` / `usage_output` / `usage_cost_cents` / `usage_turns` |
-| 时间 | `created_at` / `updated_at` / `started_at` / `finished_at` |
-
-尝试史:`workflow_attempts(step_id, attempt_no, status, error, task_md, pointer, usage_*)`——每次派发的冻结副本与错误。
-
-常用查询:
-
-```bash
-sqlite3 ~/.pi/agent/workflows/workflow.db "SELECT id,status FROM workflow_steps WHERE workflow_id='<wf>' ORDER BY sort_order"
-sqlite3 ~/.pi/agent/workflows/workflow.db "SELECT type,created_at,step_id FROM workflow_events WHERE workflow_id='<wf>' ORDER BY id"
-sqlite3 ~/.pi/agent/workflows/workflow.db "SELECT * FROM v_workflow_kanban WHERE workflow_id='<wf>'"
-```
+状态与事件枚举见上表;查看实时状态一律用 `wf status` / `wf board` / `wf events`。
 
 ### 4.4 plan.json 格式
 

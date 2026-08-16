@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAgents } from "./agents.ts";
+import { resolvePiCommand } from "./exec/shell.ts";
 
 export const PLANNER_TASK_TEMPLATE = `你的任务:把下面的需求目标拆解成可执行的 workflow 计划。
 
@@ -55,19 +56,13 @@ export function parsePlannerOutput(text: string): unknown {
 	}
 }
 
-/** 构造 pi 子进程调用:当前进程是 pi 时复用其 node+脚本;否则走 PATH 的 pi(CLI 场景) */
-export function piCommand(): { command: string; args: string[] } {
-	const script = process.argv[1];
-	if (
-		script &&
-		!script.startsWith("/$bunfs/") &&
-		fs.existsSync(script) &&
-		path.basename(script) === "pi"
-	) {
-		return { command: process.execPath, args: [script] };
-	}
-	return { command: "pi", args: [] };
-}
+/**
+ * 构造 pi 子进程调用:与 shell.ts 的 piInvocation 同源(当前进程是 pi 则复用
+ * node+脚本,包括 realpath 展开成 cli.js 的情况;否则按 PI_BIN/PATH/已知
+ * 安装位兜底)——planner 曾自创"只认 basename 是 pi"的判断,主控 tab 里
+ * argv[1] 是 cli.js 时 fallback 到 spawn pi 导致 ENOENT。
+ */
+export const piCommand = resolvePiCommand;
 
 export interface PlannerOptions {
 	/** 测试注入:替代 pi 子进程调用 */

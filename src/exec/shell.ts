@@ -62,20 +62,33 @@ export function run(
  * - 兜底链走完仍找不到 → 返回裸 pi(Ghostty login shell 大概率也找不到,tab 秒关),
  *   但 fnm 扫描覆盖了本机 pi 的真实安装位,正常情况不会走到这一步。
  */
-export function piInvocation(): string {
+
+/** pi 子进程调用(node + 脚本,或裸可执行) */
+export interface PiCommand {
+	command: string;
+	args: string[];
+}
+
+/**
+ * 解析 pi 可执行文件(所有"启动子 pi"场景共用:子任务 tab、planner、master tab)。
+ * 与 piInvocation 同源:当前进程是 pi 则复用其 node+脚本(不要求 basename 是 pi,
+ * realpath 展开后可能是 cli.js —— planner 曾因只认 "pi" 而 fallback 到 PATH 导致
+ * spawn pi ENOENT);否则按 PI_BIN → PATH → ~/.local/bin → fnm 兜底链解析。
+ */
+export function resolvePiCommand(): PiCommand {
 	const script = process.argv[1];
 	if (script && !script.startsWith("/$bunfs/") && fs.existsSync(script)) {
 		const isWfCli =
 			path.basename(script) === "cli.ts" &&
 			script.includes(`${path.sep}extensions${path.sep}workflow${path.sep}`);
 		if (!isWfCli) {
-			return `"${process.execPath}" "${script}"`;
+			return { command: process.execPath, args: [script] };
 		}
 	}
 	const envBin = process.env.PI_BIN;
 	if (envBin) {
 		// 显式覆盖:信任调用方,不做存在性校验
-		return `"${envBin}"`;
+		return { command: envBin, args: [] };
 	}
 	// 兜底链:PATH → ~/.local/bin/pi → fnm node-versions 各版本安装位(取最新)
 	// 主控会话的 bash 工具 PATH 极简(无 npm 全局 bin),~/.local/bin 软链也可能缺失
@@ -90,13 +103,20 @@ export function piInvocation(): string {
 			fs.accessSync(c, fs.constants.X_OK);
 			const real = fs.realpathSync(c);
 			return real.endsWith(".js")
-				? `"${process.execPath}" "${real}"`
-				: `"${real}"`;
+				? { command: process.execPath, args: [real] }
+				: { command: real, args: [] };
 		} catch {
 			/* 尝试下一个 */
 		}
 	}
-	return "pi";
+	return { command: "pi", args: [] };
+}
+
+export function piInvocation(): string {
+	const c = resolvePiCommand();
+	return c.args.length > 0
+		? `"${c.command}" "${c.args[0]}"`
+		: `"${c.command}"`;
 }
 
 /**

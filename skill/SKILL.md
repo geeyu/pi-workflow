@@ -9,7 +9,7 @@ description: >
 
 # pi-workflow 使用手册
 
-> 主 pi 为调度者,把大计划拆成并行/串行批次;每个子任务 = 一个 gittree worktree + 一个 Ghostty tab(可见、可干预);全生命周期事件落 SQLite(`~/.pi/agent/workflows/workflow.db`,唯一事实源)。
+> 主 pi 为调度者,把大计划拆成并行/串行批次;每个子任务 = 一个 gittree worktree + 一个 Ghostty tab(可见、可干预);全生命周期事件持久化(唯一事实源),**一切操作只经 wf 命令,禁止直接读写数据库文件**。
 >
 > 权威层级:本手册 → `docs/DESIGN.md`(设计)→ 代码(src/ 命令注册表,以代码为准)。
 

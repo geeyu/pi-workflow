@@ -21,6 +21,7 @@
  */
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -38,8 +39,8 @@ import {
 	WORKFLOW_STATUS,
 } from "./core/db.ts";
 import { piInvocation, resolveBin, run } from "./exec/shell.ts";
-import { newWindow, closeTerminal } from "./exec/ghostty.ts";
-import { findTerminalId, shellQuote } from "./exec/window.ts";
+import { firstTerminalInWindow, newWindow, closeTerminal } from "./exec/ghostty.ts";
+import { shellQuote } from "./exec/window.ts";
 
 // ────────────────────────────────────────────────────────────
 // 命名与 mode 元数据
@@ -74,25 +75,31 @@ export function isMasterMode(db: DatabaseSync, workflowId: string): boolean {
 function buildMasterPointer(workflowId: string, goal: string): string {
 	return [
 		`[wf-master] You are the master agent of workflow ${workflowId}`,
-		`(own gittree, branch ${masterBranch(workflowId)}; repo is your cwd)`,
+		`(own gittree, branch ${masterBranch(workflowId)}; repo is your cwd)`, 
 		``,
-		`Goal: ${goal.trim() || "(see /wf status)"}`,
+		`Goal: ${goal.trim() || "(see wf status)"}`,
 		``,
-		`Autonomous loop (no need to ask the initiator):`,
-		`1. /wf status - check workflow state (goal/plan)`,
-		`2. Explore the repo, then /wf plan "<goal>" --workflow ${workflowId} to decompose`,
-		`   (or write plan.json yourself and /wf import plan.json --workflow ${workflowId})`,
-		`3. /wf dispatch - dispatch ready steps (auto opens sub tabs + sub gittrees)`,
-		`4. On step report: /wf step <id> to inspect, /wf verify <id> approve|reject;`,
-		`   on failure: /wf retry <id> [--fresh]; resolve conflicts yourself`,
-		`5. When a wave is fully done: wf cleanup && /wf merge (merges into YOUR gittree`,
-		`   branch, auto deletes sub gittrees; conflicts: resolve + commit in this worktree)`,
-		`6. Need more waves: /wf next, then plan again (--workflow ${workflowId})`,
-		`7. When everything is merged and the goal is met: /wf goal-check approve`,
+		`Strict execution loop — every command is the wf CLI (this is a shell session:`, 
+		`run wf <cmd> via bash; /wf is a pi plugin command and does NOT work here).`, 
+		`Use wf commands ONLY — never touch database files or sqlite, and never`, 
+		`invent commands: wf help lists everything that exists.`, 
 		``,
-		`After step 7 the initiator is notified and decides whether to merge your`,
-		`gittree back to the main branch. You may then close this tab yourself.`,
-		`If you cannot continue: /wf master-fail ${workflowId} <reason>`,
+		`1. wf status   — check workflow state (goal/plan)`,
+		`2. wf plan "<goal>" --workflow ${workflowId}   — auto-decompose and persist`, 
+		`   (no --dry-run, no manual plan.json, no wf import unless plan fails;`, 
+		`   if you DO write plan.json: flat ids 1/2/3 or hierarchical ids whose`, 
+		`   parent steps exist in the same plan)`,
+		`3. wf dispatch  — dispatch ALL ready steps (auto opens sub tabs + gittrees)`,
+		`4. Loop: wf status / wf board to watch; on step report: wf verify <id> approve`, 
+		`   (reject with reason for rework); on failure: wf retry <id> [--fresh];`, 
+		`   resolve merge conflicts yourself and commit in this worktree`,
+		`5. When the wave is fully merged: wf merge (merges into YOUR gittree branch,`, 
+		`   auto-deletes sub gittrees). More waves: wf next, then plan again.`,
+		`6. When everything is merged and the goal is met: wf goal-check approve`,
+		``,
+		`After step 6 the initiator is notified and decides whether to merge your`, 
+		`gittree back to the main branch. You may then close this tab yourself.`, 
+		`If you cannot continue: wf master-fail ${workflowId} <reason>`,
 	].join("\n");
 }
 
@@ -189,10 +196,31 @@ export async function createWorkflowWithMaster(
 	// 成为主控(带 cwd + 启动命令)——无多余空白 tab、无需 sweep/绑定窗口,
 	// 主控后续在自己所在窗口开子任务 tab(resolveMasterWindow)。
 	const pointer = buildMasterPointer(workflowId, opts.goal);
-	const cmd = `env PI_WF_MASTER=${workflowId} PI_WF_REPO=${repoPath} ${piInvocation()} ${shellQuote(pointer)}`;
+	// 主控会话 bash 工具的 PATH 极简(Ghostty tab 的 login shell):显式注入
+	// brew/pi/wf 已知位,主控 agent 才能直接使用 wf/pi 等命令。
+	const masterPath = [
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
+		path.join(os.homedir(), ".local", "bin"),
+		path.join(
+			os.homedir(),
+			".pi",
+			"agent",
+			"extensions",
+			"workflow",
+			"skill",
+			"bin",
+		),
+	].join(":");
+	const cmd = `env PATH=${masterPath} PI_WF_MASTER=${workflowId} PI_WF_REPO=${repoPath} ${piInvocation()} ${shellQuote(pointer)}`;
+	let winId: string;
 	try {
 		// 后台创建(不抢焦点,不打扰当前开发)
-		await newWindow({ cwd: wtPath, command: cmd, noFocus: true });
+		winId = (await newWindow({ cwd: wtPath, command: cmd, noFocus: true })).windowId;
 	} catch (e) {
 		return {
 			ok: false,
@@ -200,9 +228,10 @@ export async function createWorkflowWithMaster(
 			error: `主控窗口创建失败: ${e instanceof Error ? e.message : String(e)}`,
 		};
 	}
-	// 反查主控 terminal id(按 cwd 匹配;新窗口初始 tab 的 AppleScript 引用
-	// 刚创建时不可用,但 layout 读取不受影响)
-	const tabId = await findTerminalId(null, wtPath);
+	// 反查主控 terminal id:主控 tab 就是新窗口的初始 tab,按窗口 id 定位
+	// (layout 的 cwd 字段常为空,按 cwd/name 匹配不可靠——曾致 master_tab_id
+	// 未落库、子任务派发全部 aborted)。
+	const tabId = await firstTerminalInWindow(winId);
 	if (tabId) {
 		setWorkflowMeta(db, workflowId, MASTER_TAB_KEY, tabId);
 	}

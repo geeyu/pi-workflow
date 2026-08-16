@@ -51,9 +51,11 @@ tab 异常:  wf tabs 查存活 → wf fix-tab <id> <tid|auto> 对齐状态 → �
 ### 5.4 重置/清理
 
 ```bash
-wf clean                                        # 清理 gittree worktree(仅 gittree- 前缀,占用检测保护)
-sqlite3 ~/.pi/agent/workflows/workflow.db "DELETE FROM workflow"   # 清空全部测试数据(级联)
+wf delete <workflowId>    # 删除一个 workflow(关 tab + 清 gittree + 级联删数据)
+wf clean                  # 清理 gittree worktree(仅 gittree- 前缀,占用检测保护)
 ```
+
+禁止直接操作数据库文件(sqlite3 等);一切清理经 wf 命令。
 
 ---
 

@@ -20,6 +20,7 @@ const HELP_TEXT = `pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手
   wf create "<需求目标>" [--repo <path>] [--id <id>]          创建 master-agent 模式 workflow(主控 agent 独立 gittree 自主编排,发起方不阻塞)
   wf master-merge <id>                                       主控完成后把其 gittree 合并回主分支(发起方决策点)
   wf master-fail <id> <原因...>                              主控无法继续时标记失败(通知发起方人工介入)
+  wf delete <workflowId>                                     删除 workflow(关 tab + 清 gittree + 级联删库;禁止手动改库)
   wf status [--json] [wfId]                                  状态全景
   wf tree [wfId]                                             层级任务树
   wf board [wfId] [--wave N] [--html out.html]                   看板(终端列布局/导出 HTML)

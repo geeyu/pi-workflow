@@ -2424,32 +2424,33 @@ async function main(): Promise<void> {
 	);
 	const cliNames = cmdMod.listCommands("cli").map((d) => d.name);
 	assert(
-		cliNames.length === 34 &&
+		cliNames.length === 35 &&
 			cliNames.includes("plan-init") &&
 			cliNames.includes("context") &&
 			cliNames.includes("skip") &&
 			cliNames.includes("resolve-conflict") &&
 			cliNames.includes("board") &&
 			cliNames.includes("fix-tab") &&
+			cliNames.includes("delete") &&
 			cliNames.includes("create") &&
 			cliNames.includes("master-merge") &&
 			cliNames.includes("master-fail"),
-		`listCommands(cli) = 34 条(${cliNames.length})含 context/skip/resolve-conflict/create/master-merge`,
+		`listCommands(cli) = 35 条(${cliNames.length})含 context/skip/delete/create/master-merge`,
 	);
 	const piNames = cmdMod.listCommands("pi").map((d) => d.name);
 	assert(
-		piNames.length === 24 &&
+		piNames.length === 25 &&
 			piNames.includes("steer") &&
 			piNames.includes("resume") &&
 			piNames.includes("resolve-conflict") &&
 			piNames.includes("create") &&
 			piNames.includes("master-merge") &&
 			!piNames.includes("poll"),
-		`listCommands(pi) = 24 条(${piNames.length})含 both 共享命令`,
+		`listCommands(pi) = 25 条(${piNames.length})含 both 共享命令`,
 	);
 	assert(
-		cmdMod.listCommands().length === 35,
-		`注册表共 35 条(${cmdMod.listCommands().length})`,
+		cmdMod.listCommands().length === 36,
+		`注册表共 36 条(${cmdMod.listCommands().length})`,
 	);
 	assert(
 		[...cliNames].sort().join(",") === cliNames.join(","),
@@ -3653,7 +3654,8 @@ async function main(): Promise<void> {
 	assert(
 		mRaw.includes("set w to new window") &&
 			mRaw.includes(`initial working directory:"${mWtPath}"`) &&
-			mRaw.includes('command:"env PI_WF_MASTER=') &&
+			mRaw.includes('command:"env PATH=') &&
+			mRaw.includes('PI_WF_MASTER=') &&
 			mRaw.includes('if (id of term) is "masterterm0001"'),
 		"一步创建主控 tab(new-window --cwd 主控worktree --command env PI_WF_MASTER… --no-focus)",
 	);
@@ -3664,8 +3666,9 @@ async function main(): Promise<void> {
 	assert(
 		mRaw.includes("PI_WF_MASTER=m-demo") &&
 			mRaw.includes("PI_WF_REPO") &&
-			mRaw.includes("/wf plan"),
-		"PI_WF_MASTER/PI_WF_REPO + 主控 pointer",
+			mRaw.includes("wf plan") &&
+			mRaw.includes("wf goal-check approve"),
+		"PI_WF_MASTER/PI_WF_REPO + 主控 pointer(CLI 序列)",
 	);
 	const mEvts = dbMod
 		.getEvents(db2, { workflowId: mWfId, limit: 100 })

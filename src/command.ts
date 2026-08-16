@@ -37,6 +37,7 @@ import {
 	listActiveWorkflows,
 	listWaves,
 	listWorkflows,
+	MASTER_TAB_KEY,
 	STEP_STATUS,
 	setWorkflowMeta,
 	stepStatusCounts,
@@ -53,6 +54,7 @@ import {
 	openStepTab,
 	parseExpectations,
 	resolveBin,
+	run,
 	sendTextToTerminal,
 	WF_WINDOW_META_KEY,
 	worktreePath,
@@ -63,6 +65,7 @@ import {
 	isMasterMode,
 	markMasterFailed,
 	masterBranch,
+	masterName,
 	mergeMaster,
 } from "./master.ts";
 import {
@@ -763,6 +766,82 @@ register({
 			return;
 		}
 		env.info(`✗ workflow ${wfId} 已标记失败(发起方将收到通知)`);
+	},
+});
+
+// ── delete(双入口:agent 清理误建/废弃 workflow 的唯一正道,禁止手动改库)──
+register({
+	name: "delete",
+	description: "删除 workflow(关 tab + 清 gittree + 级联删库)",
+	usage: "wf delete <workflowId>",
+	run: async (args, env) => {
+		const wfId = args[0];
+		if (!wfId) throw new UsageError();
+		const wf = getWorkflow(env.db, wfId);
+		if (!wf) {
+			env.fail(`${env.kind === "cli" ? "✗ " : ""}workflow 不存在: ${wfId}`);
+			return;
+		}
+		const steps = getStepsByWorkflow(env.db, wfId);
+		// 1. 关 tab(主控 tab + 各步骤 tab;已关则跳过)
+		const masterTab = getWorkflowMeta(env.db, wfId, MASTER_TAB_KEY) as
+			| string
+			| undefined;
+		for (const tid of [
+			masterTab,
+			...steps.map((s) => s.tab_id ?? null),
+		]) {
+			if (!tid) continue;
+			try {
+				await closeTerminal(tid);
+			} catch {
+				/* 已关/查询失败,忽略 */
+			}
+		}
+		// 2. 清 gittree(尽力而为;占用中的由 gittree clean 跳过,不阻断)
+		const gittreeBin = resolveBin("gittree");
+		const gittrees = [
+			isMasterMode(env.db, wfId) ? masterName(wfId) : null,
+			...steps.map((s) => s.worktree ?? null),
+		].filter((n): n is string => Boolean(n));
+		for (const n of gittrees) {
+			await run(
+				gittreeBin,
+				["clean", n, "--branch", "--force"],
+				wf.repo_path,
+			);
+		}
+		// 3. 级联删库(按引用依赖序,禁手动改库的替代品)
+		env.db.exec("BEGIN");
+		try {
+			env.db.prepare("DELETE FROM workflow_events WHERE workflow_id=?").run(wfId);
+			env.db.prepare("DELETE FROM workflow_goal_items WHERE workflow_id=?").run(wfId);
+			env.db.prepare("DELETE FROM workflow_metadata WHERE workflow_id=?").run(wfId);
+			env.db
+				.prepare(
+					"DELETE FROM workflow_step_metadata WHERE step_id IN (SELECT id FROM workflow_steps WHERE workflow_id=?)",
+				)
+				.run(wfId);
+			env.db
+				.prepare(
+					"DELETE FROM workflow_attempts WHERE step_id IN (SELECT id FROM workflow_steps WHERE workflow_id=?)",
+				)
+				.run(wfId);
+			env.db
+				.prepare(
+					"DELETE FROM workflow_step_deps WHERE step_id IN (SELECT id FROM workflow_steps WHERE workflow_id=?) OR dep_id IN (SELECT id FROM workflow_steps WHERE workflow_id=?)",
+				)
+				.run(wfId, wfId);
+			env.db.prepare("DELETE FROM workflow_steps WHERE workflow_id=?").run(wfId);
+			env.db.prepare("DELETE FROM workflow_waves WHERE workflow_id=?").run(wfId);
+			env.db.prepare("DELETE FROM workflow WHERE id=?").run(wfId);
+			env.db.exec("COMMIT");
+		} catch (e) {
+			env.db.exec("ROLLBACK");
+			env.fail(`${env.kind === "cli" ? "✗ " : ""}删除失败: ${(e as Error).message}`);
+			return;
+		}
+		env.info(`✓ workflow ${wfId} 已删除(tab/数据库/worktree 已清理)`);
 	},
 });
 
