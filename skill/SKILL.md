@@ -25,7 +25,7 @@ description: >
 ```
 
 - 命令实现:`skill/bin/wf`(bash 包装,node 自动兜底:WF_NODE→PATH→fnm→brew,裸 PATH 可用)→ 仓库根 `src/cli.ts`(与插件共享同一命令注册表)
-- **只允许 skill 内二进制,禁止全局软链/全局安装**(`~/.local/bin/wf` 已移除;PATH 里的 `wf` 一律视为错误用法)
+- **全局软链可选**(已安装环境可用):`~/.local/bin/wf` 已软链到本 skill 的 `bin/wf`,PATH 含 `~/.local/bin` 时可直接 `wf <cmd>`;无软链环境仍按 `<skill目录>/bin/wf` 相对路径调用
 - 无 `/wf` 插件环境(纯脚本/CI)也能用 CLI;`/wf` 与 `wf` 行为一致,退出码契约 0/1/2/3
 
 ## 何时使用
