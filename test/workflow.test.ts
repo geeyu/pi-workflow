@@ -2931,7 +2931,7 @@ echo "$@" >> "${cdLog}"
 		extCalls.filter((c) => c === "setTitle:wf-master demo").length >= 2,
 		`monitor onTick 重断言 master 标题(${extCalls.join(", ")})`,
 	);
-	await handlers.get("session_shutdown")!();
+	await handlers.get("session_shutdown")!("", {});
 
 	console.log("== T28 面板配置(config.ts:maxWidgetLines/collapseKey)= ");
 	const configMod = await import("../src/config.ts");

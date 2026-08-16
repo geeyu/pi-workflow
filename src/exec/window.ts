@@ -137,7 +137,7 @@ export async function openStepTab(
 	);
 
 	// 本次新建窗口(经典模式首次派发,Ghostty new window 自带初始空白 tab)
-	// → 清理非业务 tab;master 模式无 created 标记(主控 tab 一步创建,无空白 tab)
+	// → 清理非业务 tab;master 模式无 created 标记(主控 tab 一步创建,无空白 tab)。
 	if (win.ok && "created" in win && win.created && tabId) {
 		await sweepInitialTabs(ghostctlBin, workflow.repo_path, win.winId, tabId);
 	}
