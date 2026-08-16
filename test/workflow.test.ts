@@ -272,7 +272,13 @@ async function main(): Promise<void> {
 		inPlugin.includes("node") && inPlugin.includes(fakePiEntry),
 		`pi 插件上下文复用 node+pi 入口(${inPlugin})`,
 	);
-	process.argv[1] = path.join(tmpDir, "extensions", "workflow", "src", "cli.ts");
+	process.argv[1] = path.join(
+		tmpDir,
+		"extensions",
+		"workflow",
+		"src",
+		"cli.ts",
+	);
 	fs.mkdirSync(path.join(tmpDir, "extensions", "workflow", "src"), {
 		recursive: true,
 	});
@@ -320,7 +326,8 @@ async function main(): Promise<void> {
 	});
 	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
+		dry.pointer!.includes("/wf context") &&
+			dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
@@ -403,7 +410,11 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
-	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
+	const boundWin = dbMod.getWorkflowMeta(
+		db2,
+		"scratch-wf",
+		"ghostty_window_id",
+	);
 	assert(
 		boundWin === "tab-group-aabbccddeeff",
 		"未绑定 → new-window 创建专属窗口并绑定(meta)",
@@ -560,7 +571,10 @@ async function main(): Promise<void> {
 		goneRes.error!.includes("绑定窗口") && goneRes.error!.includes("win-gone"),
 		`错误提及绑定窗口与 id(${goneRes.error})`,
 	);
-	assert(goneRes.error!.includes("rebind-window"), "错误提示 /wf rebind-window");
+	assert(
+		goneRes.error!.includes("rebind-window"),
+		"错误提示 /wf rebind-window",
+	);
 	assert(
 		dbMod.getStep(db2, "gonewin-wf-1")?.status === "failed",
 		"步骤回退 failed(可重派,不卡 dispatched)",
@@ -570,7 +584,8 @@ async function main(): Promise<void> {
 		"attempt 置 aborted",
 	);
 	assert(
-		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") === "win-gone",
+		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") ===
+			"win-gone",
 		"锁定不被焦点窗口覆盖",
 	);
 	const goneCalls = fs
@@ -684,7 +699,10 @@ async function main(): Promise<void> {
 	const cost = dbMod.workflowCost(db2, "demo-wf");
 	assert(cost === null, "无尝试的 workflow → 成本为 null");
 	const costScratch = dbMod.workflowCost(db2, "scratch-wf");
-	assert(costScratch !== null && costScratch.attempts === 1, "成本聚合(1 尝试)");
+	assert(
+		costScratch !== null && costScratch.attempts === 1,
+		"成本聚合(1 尝试)",
+	);
 	const kanban = db2
 		.prepare(
 			"SELECT * FROM v_workflow_kanban WHERE workflow_id = 'demo-wf' ORDER BY sort_order",
@@ -985,7 +1003,9 @@ async function main(): Promise<void> {
 	);
 	// 恢复状态(绕过状态机直接还原,不干扰后续测试)
 	db2
-		.prepare("UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'")
+		.prepare(
+			"UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'",
+		)
 		.run();
 	dbMod.setStepMeta(db2, "scratch-wf-1", "notify:reported", null);
 
@@ -1108,7 +1128,9 @@ async function main(): Promise<void> {
 	);
 	// merge --delete 后 worktree 已清理
 	assert(
-		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
+		!fs.existsSync(
+			path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1"),
+		),
 		"merge --delete 清理 worktree",
 	);
 	// skipped 步骤:不合并但 worktree/分支一并清理(合并主线后不留 gittree 残留)
@@ -1214,7 +1236,10 @@ async function main(): Promise<void> {
 	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
 	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
 	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
-	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
+	const budgetOk = orchMod.checkBudget(
+		db2,
+		dbMod.getWorkflow(db2, "merge-wf")!,
+	);
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
@@ -1766,7 +1791,10 @@ async function main(): Promise<void> {
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "running"), "done");
-		assert(!r.reached && r.unreachable.length === 0, "running 未达成不 reached");
+		assert(
+			!r.reached && r.unreachable.length === 0,
+			"running 未达成不 reached",
+		);
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "failed"), "done");
@@ -1914,7 +1942,9 @@ async function main(): Promise<void> {
 		"1",
 	]);
 	assert(
-		pr.code === 1 && pr.stdout.includes("超时") && pr.stderr.includes("未派发 3"),
+		pr.code === 1 &&
+			pr.stdout.includes("超时") &&
+			pr.stderr.includes("未派发 3"),
 		`poll 超时 → 退出 1(${pr.code} ${pr.stdout.trim().slice(0, 60)})`,
 	);
 	// 用法错误 → 3
@@ -2314,27 +2344,32 @@ async function main(): Promise<void> {
 	);
 	const cliNames = cmdMod.listCommands("cli").map((d) => d.name);
 	assert(
-		cliNames.length === 31 &&
+		cliNames.length === 34 &&
 			cliNames.includes("plan-init") &&
 			cliNames.includes("context") &&
 			cliNames.includes("skip") &&
 			cliNames.includes("resolve-conflict") &&
 			cliNames.includes("board") &&
-			cliNames.includes("fix-tab"),
-		`listCommands(cli) = 31 条(${cliNames.length})含 context/skip/resolve-conflict`,
+			cliNames.includes("fix-tab") &&
+			cliNames.includes("create") &&
+			cliNames.includes("master-merge") &&
+			cliNames.includes("master-fail"),
+		`listCommands(cli) = 34 条(${cliNames.length})含 context/skip/resolve-conflict/create/master-merge`,
 	);
 	const piNames = cmdMod.listCommands("pi").map((d) => d.name);
 	assert(
-		piNames.length === 21 &&
+		piNames.length === 24 &&
 			piNames.includes("steer") &&
 			piNames.includes("resume") &&
 			piNames.includes("resolve-conflict") &&
+			piNames.includes("create") &&
+			piNames.includes("master-merge") &&
 			!piNames.includes("poll"),
-		`listCommands(pi) = 21 条(${piNames.length})含 both 共享命令`,
+		`listCommands(pi) = 24 条(${piNames.length})含 both 共享命令`,
 	);
 	assert(
-		cmdMod.listCommands().length === 32,
-		`注册表共 32 条(${cmdMod.listCommands().length})`,
+		cmdMod.listCommands().length === 35,
+		`注册表共 35 条(${cmdMod.listCommands().length})`,
 	);
 	assert(
 		[...cliNames].sort().join(",") === cliNames.join(","),
@@ -2571,7 +2606,10 @@ async function main(): Promise<void> {
 	);
 	assert(stateMod.canTransition("running", "running"), "同态幂等合法");
 	assert(!stateMod.canTransition("done", "running"), "done → running 非法");
-	assert(!stateMod.canTransition("skipped", "reported"), "skipped 终态不可回退");
+	assert(
+		!stateMod.canTransition("skipped", "reported"),
+		"skipped 终态不可回退",
+	);
 	assert(
 		stateMod.canTransition("done", "conflict"),
 		"done → conflict(merge 冲突)合法",
@@ -2607,9 +2645,15 @@ async function main(): Promise<void> {
 	// 同态幂等 strict 不抛
 	let idemOk = true;
 	try {
-		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.done, undefined, {
-			strict: true,
-		});
+		dbMod.updateStepStatus(
+			db2,
+			"demo-wf-2",
+			dbMod.STEP_STATUS.done,
+			undefined,
+			{
+				strict: true,
+			},
+		);
 	} catch {
 		idemOk = false;
 	}
@@ -2617,7 +2661,9 @@ async function main(): Promise<void> {
 	// 关键入口:reportDone/reportFail/verifyStep 非法迁移 → 明确错误 + 合法目标
 	const re1 = orchMod.reportDone(db2, "demo-wf-2", { summary: "重报" });
 	assert(
-		!re1.ok && re1.error!.includes("状态迁移非法") && re1.error!.includes("允许"),
+		!re1.ok &&
+			re1.error!.includes("状态迁移非法") &&
+			re1.error!.includes("允许"),
 		`reportDone 终态拒绝(${re1.error})`,
 	);
 	const rf1 = orchMod.reportFail(db2, "demo-wf-2", "x");
@@ -3051,7 +3097,9 @@ async function main(): Promise<void> {
 	const legacyLines = legacy.render(120);
 	assert(
 		legacyLines[0]!.includes("<dim>") &&
-			legacyLines.some((l) => l.includes("<accent>/wf retry san-wf-1</accent>")),
+			legacyLines.some((l) =>
+				l.includes("<accent>/wf retry san-wf-1</accent>"),
+			),
 		"无 details 降级渲染(首行 dim + 命令高亮)",
 	);
 
@@ -3117,7 +3165,9 @@ async function main(): Promise<void> {
 	);
 	pr = runCli(["import", "bad-plan.json"], { cwd: tmpDir });
 	assert(
-		pr.code === 1 && pr.stderr.includes("导入失败") && pr.stderr.includes("点号"),
+		pr.code === 1 &&
+			pr.stderr.includes("导入失败") &&
+			pr.stderr.includes("点号"),
 		`非法 plan 校验错误逐条可读(${pr.stderr.slice(0, 80).replace(/\n/g, " ")})`,
 	);
 
@@ -3151,7 +3201,9 @@ async function main(): Promise<void> {
 		const msg = (e as Error).message;
 		assert(
 			msg.includes("非法状态迁移: san-wf-1 conflict → dispatched") &&
-				msg.includes("允许: conflict, done, failed, aborted, needs-fix, skipped"),
+				msg.includes(
+					"允许: conflict, done, failed, aborted, needs-fix, skipped",
+				),
 			`非法迁移报错含状态/允许集(${msg.slice(0, 60)}…)`,
 		);
 	}
@@ -3219,6 +3271,640 @@ async function main(): Promise<void> {
 	assert(
 		pr.code === 0 && dbMod.getStep(db2, "sm-wf-1")!.status === "skipped",
 		`needs-fix → skipped 人工终态合法(${pr.code} ${pr.stdout.trim().slice(0, 40)})`,
+	);
+
+	// ────────────────────────────────────────────────────────
+	// T27 master-agent 模式(主控 gittree 自主编排,发起方不阻塞)
+	// ────────────────────────────────────────────────────────
+	console.log("== T27 master-agent 模式 =");
+	const masterMod = await import("../src/master.ts");
+	const mRepo = path.join(tmpDir, "mrepo");
+	fs.mkdirSync(mRepo, { recursive: true });
+	execFileSync("git", ["init", "-q", mRepo]);
+	execFileSync("git", ["-C", mRepo, "config", "user.email", "test@test.local"]);
+	execFileSync("git", ["-C", mRepo, "config", "user.name", "test"]);
+	fs.writeFileSync(path.join(mRepo, "README.md"), "master\n");
+	execFileSync("git", ["-C", mRepo, "add", "-A"]);
+	execFileSync("git", ["-C", mRepo, "commit", "-q", "-m", "init"]);
+
+	// T27a 身份识别(master 优先于步骤,歧义按 workflow 存在性)
+	const mWfId = "m-demo";
+	process.env.PI_WF_MASTER = "env-master-wf";
+	const envIdent = cmdMod.resolveIdentity("/whatever", db2);
+	assert(
+		envIdent?.master === true && envIdent.workflowId === "env-master-wf",
+		"PI_WF_MASTER env → master 身份",
+	);
+	delete process.env.PI_WF_MASTER;
+	const cwdIdent = cmdMod.resolveIdentity(
+		path.join(mRepo, ".worktrees/gittree-wf-master-m-demo"),
+		db2,
+	);
+	assert(
+		cwdIdent?.master === true && cwdIdent.workflowId === "m-demo",
+		"cwd 段 wf-master-<id> → master 身份",
+	);
+	// 歧义:仅 workflow cache-2 存在 → wf-master-cache-2 是它的主控;
+	// 若 workflow master-cache 也存在 → 步骤解释优先(tie-break,文档化)
+	const ambImport1 = orchMod.importPlan(
+		db2,
+		{
+			name: "cache-2",
+			title: "c",
+			goal: "c",
+			repoPath: tmpDir,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(ambImport1.ok, "歧义测试 workflow cache-2 就绪");
+	const ambMaster = cmdMod.resolveIdentity(
+		"/r/.worktrees/gittree-wf-master-cache-2",
+		db2,
+	);
+	assert(
+		ambMaster?.master === true && ambMaster.workflowId === "cache-2",
+		`wf-master-cache-2 → workflow cache-2 的主控(${ambMaster?.workflowId}/${ambMaster?.master})`,
+	);
+	// 两个 workflow 同时存在 → 步骤解释优先(与无 db 旧行为一致)
+	const ambImport2 = orchMod.importPlan(
+		db2,
+		{
+			name: "master-cache",
+			title: "mc",
+			goal: "mc",
+			repoPath: tmpDir,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(ambImport2.ok, "歧义测试 workflow master-cache 就绪");
+	const ambBoth = cmdMod.resolveIdentity(
+		"/r/.worktrees/gittree-wf-master-cache-2",
+		db2,
+	);
+	assert(
+		!ambBoth?.master &&
+			ambBoth?.workflowId === "master-cache" &&
+			ambBoth.dotted === "2",
+		"两 workflow 并存 → 步骤解释优先(tie-break)",
+	);
+	const ambStep = cmdMod.resolveIdentity(
+		"/r/.worktrees/gittree-wf-master-foo-1.1",
+		db2,
+	);
+	assert(
+		!ambStep?.master &&
+			ambStep?.workflowId === "master-foo" &&
+			ambStep.dotted === "1.1",
+		`wf-master-foo-1.1 → workflow master-foo 的步骤(${ambStep?.workflowId}/${ambStep?.dotted})`,
+	);
+
+	// T27b createWorkflowWithMaster(真实 gittree + fake ghostctl)
+	const mWtPath = path.join(mRepo, ".worktrees", "gittree-wf-master-m-demo");
+	const fakeMCtl = path.join(tmpDir, "fake-ghostctl-master.sh");
+	const mLog = path.join(tmpDir, "ghostctl-master.log");
+	fs.writeFileSync(
+		fakeMCtl,
+		`#!/bin/bash\necho "$@" >> "${mLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[{"terminals":[{"id":"masterterm0001","cwd":"${mWtPath}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbccdd)"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-master)"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(mLog, "");
+	const mCreate = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: mWfId,
+		title: "master demo",
+		goal: "完成 demo 改造",
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(mCreate.ok, `create 成功: ${mCreate.error ?? ""}`);
+	assert(
+		mCreate.masterBranchName === "gittree-wf-master-m-demo",
+		`master 分支名(${mCreate.masterBranchName})`,
+	);
+	const mWfRow = dbMod.getWorkflow(db2, mWfId);
+	assert(
+		mWfRow?.status === "running" &&
+			mWfRow.owner_cwd === tmpDir &&
+			mWfRow.goal === "完成 demo 改造",
+		"workflow 落库(running + owner_cwd + goal)",
+	);
+	assert(
+		dbMod.getWorkflowMeta(db2, mWfId, "mode") === "master",
+		"mode=master 元数据",
+	);
+	assert(
+		dbMod.getWorkflowMeta(db2, mWfId, "ghostty_window_id") ===
+			"tab-group-aabbccdd",
+		"专属窗口绑定",
+	);
+	assert(
+		dbMod.getWorkflowMeta(db2, mWfId, "master_tab_id") === "masterterm0001",
+		"master tab id 落库",
+	);
+	assert(fs.existsSync(mWtPath), "master gittree 目录已创建");
+	const mBr = execFileSync(
+		"git",
+		["-C", mRepo, "branch", "--list", "gittree-wf-master-m-demo"],
+		{ encoding: "utf-8" },
+	);
+	assert(mBr.includes("gittree-wf-master-m-demo"), "master 分支已创建");
+	const mRaw = fs.readFileSync(mLog, "utf-8");
+	assert(
+		mRaw.includes("new-window") &&
+			mRaw.includes("--no-focus") &&
+			mRaw.includes(`--cwd ${mRepo}`),
+		"专属窗口后台创建(new-window --no-focus)",
+	);
+	assert(
+		mRaw.includes("new-tab") &&
+			mRaw.includes("--window-id tab-group-aabbccdd") &&
+			mRaw.includes(`--cwd ${mWtPath}`) &&
+			mRaw.includes("--at-end") &&
+			mRaw.includes("--no-focus"),
+		"主控 tab 开在专属窗口末尾(不抢焦点)",
+	);
+	assert(
+		mRaw.includes("PI_WF_MASTER=m-demo") &&
+			mRaw.includes("PI_WF_REPO") &&
+			mRaw.includes("/wf plan"),
+		"PI_WF_MASTER/PI_WF_REPO + 主控 pointer",
+	);
+	const mEvts = dbMod
+		.getEvents(db2, { workflowId: mWfId, limit: 100 })
+		.map((e) => e.type);
+	assert(
+		mEvts.includes("master_started"),
+		`master_started 事件(${mEvts.join(",")})`,
+	);
+	// dry-run 零副作用
+	const mDry = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-dry",
+		title: "dry",
+		goal: "dry",
+		dryRun: true,
+	});
+	assert(
+		mDry.ok &&
+			mDry.masterBranchName === "gittree-wf-master-m-dry" &&
+			!dbMod.getWorkflow(db2, "m-dry") &&
+			!fs.existsSync(path.join(mRepo, ".worktrees/gittree-wf-master-m-dry")),
+		"create dry-run 零副作用",
+	);
+	// 残留防护:master gittree 已存在 → 拒绝
+	const mDup = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-demo",
+		title: "t",
+		goal: "g",
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(!mDup.ok, "workflow 已存在拒绝创建");
+
+	// T27c 空 workflow 首 wave 自动创建(主控 /wf plan --workflow 落点)
+	const appRes = orchMod.appendSteps(
+		db2,
+		mWfId,
+		1,
+		{
+			name: "m-demo",
+			title: "t",
+			goal: "g",
+			steps: [
+				{ id: "1", title: "改造 A", agent: "worker", task: "实现 A" },
+				{
+					id: "2",
+					title: "改造 B",
+					agent: "worker",
+					task: "实现 B",
+					deps: ["1"],
+				},
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(
+		appRes.ok,
+		`空 workflow 首 wave 自动创建(${appRes.errors?.join("; ") ?? ""})`,
+	);
+	assert(dbMod.getWorkflow(db2, mWfId)?.current_wave === 1, "current_wave=1");
+	assert(dbMod.getStepsByWorkflow(db2, mWfId).length === 2, "2 步落库");
+	const appRes2 = orchMod.appendSteps(
+		db2,
+		mWfId,
+		1,
+		{
+			name: "m-demo",
+			title: "t",
+			goal: "g",
+			steps: [{ id: "3", title: "改造 C", agent: "worker", task: "实现 C" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(appRes2.ok && appRes2.added === 1, "已有 wave 追加照旧");
+
+	// T27d 子任务 gittree 基于主控分支创建
+	fs.writeFileSync(path.join(mWtPath, "MASTER.md"), "master work\n");
+	execFileSync("git", ["-C", mWtPath, "add", "-A"]);
+	execFileSync("git", ["-C", mWtPath, "commit", "-q", "-m", "master 首个提交"]);
+	const masterHead = execFileSync(
+		"git",
+		["-C", mRepo, "rev-parse", "gittree-wf-master-m-demo"],
+		{ encoding: "utf-8" },
+	).trim();
+	const subWt = path.join(mRepo, ".worktrees", "gittree-wf-m-demo-1");
+	const fakeSubCtl = path.join(tmpDir, "fake-ghostctl-sub.sh");
+	const subLog = path.join(tmpDir, "ghostctl-sub.log");
+	const fakeGittree = path.join(tmpDir, "fake-gittree.sh");
+	const gLog = path.join(tmpDir, "gittree-sub.log");
+	fs.writeFileSync(
+		fakeGittree,
+		`#!/bin/bash\necho "$@" >> "${gLog}"\nexec gittree "$@"\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(gLog, "");
+	fs.writeFileSync(
+		fakeSubCtl,
+		`#!/bin/bash\necho "$@" >> "${subLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[{"terminals":[{"id":"subterm0001","cwd":"${subWt}"}]}]}]}'\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sub)"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(subLog, "");
+	const dRes = await dispatchMod.dispatchStep(
+		db2,
+		dbMod.getWorkflow(db2, mWfId)!,
+		dbMod.getStep(db2, "m-demo-1")!,
+		{ gittreeBin: fakeGittree, ghostctlBin: fakeSubCtl },
+	);
+	assert(dRes.ok, `master 模式派发成功: ${dRes.error ?? ""}`);
+	assert(fs.existsSync(subWt), "子 worktree 已创建");
+	const subHead = execFileSync(
+		"git",
+		["-C", mRepo, "rev-parse", "gittree-wf-m-demo-1"],
+		{ encoding: "utf-8" },
+	).trim();
+	assert(subHead === masterHead, "子分支起点 = 主控分支 HEAD");
+	assert(dbMod.getStep(db2, "m-demo-1")?.status === "running", "步骤 running");
+	assert(
+		fs
+			.readFileSync(gLog, "utf-8")
+			.includes("create wf-m-demo-1 gittree-wf-master-m-demo"),
+		`gittree create 显式传主控分支为 base(${fs.readFileSync(gLog, "utf-8").split("\n").filter(Boolean).join(" | ")})`,
+	);
+
+	// T27e 子任务合并进主控分支(非主分支)
+	fs.writeFileSync(path.join(subWt, "FEATURE.md"), "feature A\n");
+	execFileSync("git", ["-C", subWt, "add", "-A"]);
+	execFileSync("git", ["-C", subWt, "commit", "-q", "-m", "feat A"]);
+	dbMod.updateStepStatus(db2, "m-demo-1", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "m-demo-2", dbMod.STEP_STATUS.done);
+	dbMod.updateStepStatus(db2, "m-demo-3", dbMod.STEP_STATUS.skipped);
+	const mainHeadBefore = execFileSync(
+		"git",
+		["-C", mRepo, "rev-parse", "HEAD"],
+		{ encoding: "utf-8" },
+	).trim();
+	const mwRow = dbMod.getWorkflow(db2, mWfId)!;
+	const mergeRes = await monitorMod.mergeWave(db2, mwRow, 1);
+	assert(mergeRes.ok, `wave 合并进主控分支: ${mergeRes.error ?? ""}`);
+	assert(
+		mergeRes.merged.includes("m-demo-1"),
+		"done 步骤已合并(未派发步骤不参与合并)",
+	);
+	const masterLog = execFileSync(
+		"git",
+		["-C", mWtPath, "log", "--oneline", "-3"],
+		{ encoding: "utf-8" },
+	);
+	assert(
+		masterLog.includes("feat A"),
+		`子提交合入主控分支(${masterLog.trim().split("\n").join(" | ")})`,
+	);
+	assert(
+		fs.existsSync(path.join(mWtPath, "FEATURE.md")),
+		"子功能文件已在主控 worktree",
+	);
+	assert(!fs.existsSync(subWt), "子 gittree 已删除(合并后)");
+	assert(
+		execFileSync("git", ["-C", mRepo, "rev-parse", "HEAD"], {
+			encoding: "utf-8",
+		}).trim() === mainHeadBefore,
+		"主分支未动(master-merge 之前)",
+	);
+	assert(dbMod.getWave(db2, mWfId, 1)?.status === "merged", "wave merged");
+	const wmEvts = dbMod
+		.getEvents(db2, { workflowId: mWfId, limit: 100 })
+		.map((e) => e.type);
+	assert(
+		wmEvts.includes("worktree_merged") && wmEvts.includes("wave_merged"),
+		"worktree_merged + wave_merged 事件",
+	);
+
+	// T27f goal-check master 模式 → awaiting-merge + master_done
+	const gc = orchMod.goalCheckApprove(db2, mWfId, "达标");
+	assert(
+		gc.ok && gc.status === "awaiting-merge",
+		`goal-check approve → awaiting-merge(${gc.status})`,
+	);
+	const mWf2 = dbMod.getWorkflow(db2, mWfId)!;
+	assert(
+		mWf2.status === "awaiting-merge" &&
+			mWf2.goal_check?.includes("passed") &&
+			!mWf2.completed_at,
+		"状态 awaiting-merge + goal_check 落库(未 completed)",
+	);
+	const gcEvts = dbMod
+		.getEvents(db2, { workflowId: mWfId, limit: 100 })
+		.map((e) => e.type);
+	assert(
+		gcEvts.includes("master_done") &&
+			gcEvts.includes("workflow_goal_check_passed"),
+		"master_done + workflow_goal_check_passed 事件",
+	);
+
+	// T27g 终局通知检测 + 会话角色过滤(mRepo 位于 tmpDir 内,前缀匹配会把
+	// 其他 workflow 的事件也带进来,故先按 workflowId 收敛到 m-demo)
+	const mOnly = (arr: NotifyItem[]): NotifyItem[] =>
+		arr.filter((i) => i.workflowId === mWfId);
+	const items = monitorMod.detectStateChanges(db2, { repoPath: mRepo });
+	const mdItem = mOnly(items).find((i) => i.kind === "master-done");
+	assert(
+		mdItem?.workflowId === mWfId &&
+			(mdItem.text.includes("/wf master-merge m-demo") ?? false),
+		"master-done 通知项(含可执行命令)",
+	);
+	const asMaster = monitorMod.filterNotifyItems(db2, items, mWfId);
+	assert(
+		!mOnly(asMaster).some((i) => i.kind === "master-done"),
+		"主控会话不接收自己的终局通知",
+	);
+	const asInitiator = monitorMod.filterNotifyItems(db2, items, null);
+	assert(
+		mOnly(asInitiator).some((i) => i.kind === "master-done"),
+		"发起方会话收到 master-done",
+	);
+	assert(
+		!mOnly(asInitiator).some(
+			(i) =>
+				i.kind === "reported" ||
+				i.kind === "wave-done" ||
+				i.kind === "workflow-done",
+		),
+		"发起方不收 step/wave 级事件(master 模式)",
+	);
+	// 主控会话收 step 级事件
+	dbMod.updateStepStatus(db2, "m-demo-3", dbMod.STEP_STATUS.reported);
+	const mItems2 = monitorMod.detectStateChanges(db2, { repoPath: mRepo });
+	const asMaster2 = monitorMod.filterNotifyItems(db2, mItems2, mWfId);
+	assert(
+		mOnly(asMaster2).some(
+			(i) => i.stepId === "m-demo-3" && i.kind === "reported",
+		),
+		"主控会话收到步骤级事件(reported)",
+	);
+	const asInitiator2 = monitorMod.filterNotifyItems(db2, mItems2, null);
+	assert(
+		!mOnly(asInitiator2).some((i) => i.stepId === "m-demo-3"),
+		"发起方会话不收步骤级事件",
+	);
+	// markNotified 去重
+	monitorMod.markNotified(db2, {
+		workflowId: mWfId,
+		kind: "master-done",
+		text: "",
+	});
+	const mItems3 = monitorMod.detectStateChanges(db2, { repoPath: mRepo });
+	assert(
+		!mItems3.some((i) => i.kind === "master-done" && i.workflowId === mWfId),
+		"markNotified 后 master-done 不再重复",
+	);
+
+	// T27h master-merge:发起方合并回主分支 + 清理
+	// 守卫:非 awaiting-merge 拒绝
+	dbMod.updateWorkflowStatus(db2, mWfId, "running");
+	const badMerge = await masterMod.mergeMaster(db2, mWfId, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(
+		!badMerge.ok && (badMerge.error?.includes("awaiting-merge") ?? false),
+		"非 awaiting-merge 拒绝合并",
+	);
+	dbMod.updateWorkflowStatus(db2, mWfId, "awaiting-merge");
+	const mRes = await masterMod.mergeMaster(db2, mWfId, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(mRes.ok, `master-merge 成功: ${mRes.error ?? ""}`);
+	const mWf3 = dbMod.getWorkflow(db2, mWfId)!;
+	assert(
+		mWf3.status === "completed" && Boolean(mWf3.completed_at),
+		"workflow completed",
+	);
+	assert(!fs.existsSync(mWtPath), "master gittree 已删除");
+	const mBr2 = execFileSync(
+		"git",
+		["-C", mRepo, "branch", "--list", "gittree-wf-master-m-demo"],
+		{ encoding: "utf-8" },
+	);
+	assert(!mBr2.includes("gittree-wf-master-m-demo"), "master 分支已删除");
+	const mainLog = execFileSync("git", ["-C", mRepo, "log", "--oneline", "-4"], {
+		encoding: "utf-8",
+	});
+	assert(
+		mainLog.includes("feat A") && mainLog.includes("master 首个提交"),
+		`主分支已包含主控全部提交(${mainLog.trim().split("\n").join(" | ")})`,
+	);
+	const mmEvts = dbMod
+		.getEvents(db2, { workflowId: mWfId, limit: 100 })
+		.map((e) => e.type);
+	assert(
+		mmEvts.includes("master_merged") && mmEvts.includes("workflow_completed"),
+		"master_merged + workflow_completed 事件",
+	);
+	// 幂等
+	const again = await masterMod.mergeMaster(db2, mWfId, {
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(again.ok, "重复 master-merge 幂等(ok)");
+
+	// T27i master-fail:主控放弃 → 通知发起方
+	const mfFail = masterMod.markMasterFailed(db2, mWfId, "x");
+	assert(!mfFail.ok, "已 completed 拒绝标记失败");
+	const fCreate = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-fail",
+		title: "f",
+		goal: "f",
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(fCreate.ok, "m-fail create");
+	const mfRes = masterMod.markMasterFailed(db2, "m-fail", "无法继续");
+	assert(mfRes.ok, "master-fail 标记成功");
+	assert(
+		dbMod.getWorkflow(db2, "m-fail")?.status === "failed",
+		"status=failed",
+	);
+	const fEvts = dbMod
+		.getEvents(db2, { workflowId: "m-fail", limit: 10 })
+		.map((e) => e.type);
+	assert(fEvts.includes("master_failed"), "master_failed 事件");
+	const fItems = monitorMod.detectStateChanges(db2, { repoPath: mRepo });
+	assert(
+		fItems.some((i) => i.kind === "master-failed" && i.workflowId === "m-fail"),
+		"master-failed 通知项(发起方可接管)",
+	);
+
+	// T27j CLI 双入口
+	pr = runCli(
+		["create", "CLI 目标", "--repo", mRepo, "--id", "cli-master", "--dry-run"],
+		{ cwd: tmpDir },
+	);
+	assert(
+		pr.code === 0 &&
+			pr.stdout.includes("cli-master") &&
+			pr.stdout.includes("gittree-wf-master-cli-master") &&
+			!dbMod.getWorkflow(db2, "cli-master"),
+		`CLI create --dry-run 零副作用(${pr.stdout.trim().slice(0, 60)})`,
+	);
+	pr = runCli(["master-merge", "m-demo"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 && pr.stdout.includes("已合并完成"),
+		`重复 master-merge 幂等(exit ${pr.code})`,
+	);
+	pr = runCli(["master-merge"], { cwd: tmpDir });
+	assert(pr.code === 3, "master-merge 缺参 → 退出 3");
+	pr = runCli(["master-fail"], { cwd: tmpDir });
+	assert(pr.code === 3, "master-fail 缺参 → 退出 3");
+	const plainWf = orchMod.importPlan(
+		db2,
+		{
+			name: "plain-wf",
+			title: "p",
+			goal: "p",
+			repoPath: mRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(plainWf.ok, "plain-wf 导入(对照)");
+	pr = runCli(["master-merge", "plain-wf"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("不是 master-agent 模式"),
+		"非 master 模式 master-merge 拒绝",
+	);
+	pr = runCli(["master-fail", "plain-wf", "x"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("不是 master-agent 模式"),
+		"非 master 模式 master-fail 拒绝",
+	);
+	// import --workflow:主控自研计划导入已有 workflow(空 workflow 自动建 wave 1)
+	const impWf = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-imp",
+		title: "imp",
+		goal: "imp",
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(impWf.ok, "m-imp create");
+	const impPlan = path.join(tmpDir, "m-imp-plan.json");
+	fs.writeFileSync(
+		impPlan,
+		JSON.stringify({
+			name: "m-imp",
+			title: "t",
+			goal: "g",
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		}),
+	);
+	pr = runCli(["import", impPlan, "--workflow", "m-imp"], { cwd: tmpDir });
+	assert(
+		pr.code === 0 &&
+			pr.stdout.includes("已向 m-imp 导入 1 个步骤") &&
+			dbMod.getStep(db2, "m-imp-1") !== undefined,
+		`import --workflow 追加到已有 workflow(${pr.stdout.trim().slice(0, 60)})`,
+	);
+	// 终态 workflow 拒绝追加
+	pr = runCli(["import", impPlan, "--workflow", "m-demo"], { cwd: tmpDir });
+	assert(
+		pr.code === 1 && pr.stderr.includes("已终态"),
+		"终态 workflow 拒绝追加步骤",
+	);
+
+	// T27k dead-master:主控 tab 消失 → 标记 + 通知(独立于 running 步骤)
+	const deadFake = path.join(tmpDir, "fake-ghostctl-dead.sh");
+	fs.writeFileSync(
+		deadFake,
+		`#!/bin/bash\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[]}]}'\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-dead)"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	const deadCreate = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-dead",
+		title: "d",
+		goal: "d",
+		gittreeBin: "gittree",
+		ghostctlBin: fakeMCtl,
+	});
+	assert(deadCreate.ok, "m-dead create(无 running 步骤场景)");
+	// 模拟已绑定的主控 tab(create 时 fake layout 的 cwd 不匹配,master_tab_id 未落库)
+	dbMod.setWorkflowMeta(db2, "m-dead", "master_tab_id", "deadterm0001");
+	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: deadFake });
+	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: deadFake });
+	assert(
+		dbMod.getWorkflowMeta(db2, "m-dead", "master_dead_at") !== undefined,
+		"连续 2 轮未命中 → master_dead_at 标记",
+	);
+	const deadEvts = dbMod
+		.getEvents(db2, { workflowId: "m-dead", limit: 10 })
+		.map((e) => e.type);
+	assert(
+		deadEvts.includes("master_tab_closed"),
+		"master_tab_closed 事件(dead-master)",
+	);
+	const deadItems = monitorMod.detectStateChanges(db2, { repoPath: mRepo });
+	assert(
+		deadItems.some(
+			(i) => i.kind === "master-failed" && i.workflowId === "m-dead",
+		),
+		"dead-master → master-failed 通知项(发起方可接管)",
+	);
+	// 主控恢复存活 → 计数清零,不再误报
+	const aliveFake = path.join(tmpDir, "fake-ghostctl-alive.sh");
+	fs.writeFileSync(
+		aliveFake,
+		`#!/bin/bash\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbccdd","front":true,"tabs":[{"terminals":[{"id":"deadterm0001","cwd":"x"}]}]}]}'\n    ;;\n  *)\n    echo "x"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	await monitorMod.pollOnce(db2, { repoPath: mRepo, ghostctlBin: aliveFake });
+	assert(
+		dbMod.getWorkflowMeta(db2, "m-dead", "master_tab_miss") === 0,
+		"主控恢复 → 未命中计数清零",
+	);
+
+	// status --json 不因新状态(awaiting-merge/completed/failed)崩溃
+	pr = runCli(["status", "--json"], { cwd: mRepo });
+	assert(
+		pr.code === 0 &&
+			pr.stdout.includes("m-demo") &&
+			pr.stdout.includes("m-fail"),
+		`status --json 全状态可渲染(${pr.stdout.slice(0, 60).replace(/\n/g, " ")})`,
 	);
 
 	// 清理

@@ -10,43 +10,43 @@
  *
  * 设计文档:../docs/DESIGN.md;实现契约:docs/arch-refactor.md
  */
+
+import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import type { DatabaseSync } from "node:sqlite";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 /** 本扩展目录(兼容 jiti 的 CJS/ESM 两种加载) */
 const EXT_DIR =
 	typeof __dirname !== "undefined"
 		? __dirname
 		: path.dirname(fileURLToPath(import.meta.url));
+
 import {
+	type CmdEnv,
 	getCommand,
 	listCommands,
-	UsageError,
 	resolveIdentity,
-	type CmdEnv,
+	UsageError,
 } from "./command.ts";
+import { getDb, StepTransitionError } from "./core/db.ts";
 import {
-	renderWorkflowStatus,
-	workflowStatusSegment,
-	togglePlanCollapsed,
-	hideCompletedFromPreviousTurn,
-	resetCompletedDisplayState,
-} from "./ui/status.ts";
-import {
-	getDb,
-	StepTransitionError,
-} from "./core/db.ts";
-import {
-	recoverStaleSteps,
-	startMonitor,
+	filterNotifyItems,
 	markNotified,
 	type NotifyItem,
+	recoverStaleSteps,
+	startMonitor,
 } from "./observe/monitor.ts";
+import {
+	hideCompletedFromPreviousTurn,
+	renderWorkflowStatus,
+	resetCompletedDisplayState,
+	togglePlanCollapsed,
+	workflowStatusSegment,
+} from "./ui/status.ts";
 
 // 兼容再导出(定义已移至 command.ts / ui/status.ts)
 export { resolveIdentity, type WfIdentity } from "./command.ts";
@@ -60,25 +60,21 @@ function notify(
 	ctx.ui.notify(message, type);
 }
 
+import { COLLAPSE_KEY_OFF, resolveCollapseKey } from "./config.ts";
 // ────────────────────────────────────────────────────────────
 // 主控自主编排通知(arch-refactor §3.3 / §4.1)
 // sendWorkflowNotifications 定义块已移至 ./ui/notify.ts(1.2 唯一改动区域),
 // 调用点(workflowExtension 内 onState)经本地 import 使用,此处再导出保持外部
 // 调用面(test/workflow.test.ts 等)零改动。
 // ────────────────────────────────────────────────────────────
-import {
-	sendWorkflowNotifications,
-	NOTIFY_MAX_LINES,
-} from "./ui/notify.ts";
-import {
-	COLLAPSE_KEY_OFF,
-	resolveCollapseKey,
-} from "./config.ts";
+import { NOTIFY_MAX_LINES, sendWorkflowNotifications } from "./ui/notify.ts";
+
 export {
-	sendWorkflowNotifications,
 	NOTIFY_MAX_LINES,
+	sendWorkflowNotifications,
 	type WorkflowNotifySender,
 } from "./ui/notify.ts";
+
 import { renderWorkflowNotify } from "./ui/renderers.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -171,12 +167,19 @@ export default function workflowExtension(pi: ExtensionAPI) {
 
 	// ── session_start:子 pi 设标题;编排者崩溃恢复 + 启动轮询 ─
 	pi.on("session_start", async (_event, ctx) => {
-		const ident = resolveIdentity(ctx.cwd);
+		const ident = resolveIdentity(ctx.cwd, db);
 		if (ident?.stepId) {
 			// 子任务会话(worker):只设标题,不渲染编排者面板/状态条、不启动 monitor
 			// (会话隔离强化:面板/通知/轮询只属于发起编排的会话,谁发起谁看)
 			ctx.ui.setTitle(`wf ${ident.workflowId}/${ident.dotted}`);
 			return;
+		}
+		// master-agent 模式:主控会话设专属标题(wf-master <id>);其余同编排者侧
+		// (monitor 按 cwd 会话隔离天然只看到本 workflow;通知按角色过滤:step 级
+		// 事件由主控处理,终局级 master-done/failed 只发给发起方)
+		const sessionMasterId = ident?.master ? ident.workflowId : null;
+		if (sessionMasterId) {
+			ctx.ui.setTitle(`wf-master ${sessionMasterId}`);
 		}
 		// 编排者侧:崩溃恢复 + 面板完成行跟踪重置(全新上下文)
 		try {
@@ -204,7 +207,7 @@ export default function workflowExtension(pi: ExtensionAPI) {
 				sendWorkflowNotifications(
 					db,
 					{ sendMessage: pi.sendMessage.bind(pi), ui: ctx.ui },
-					items,
+					filterNotifyItems(db, items, sessionMasterId),
 				),
 			onTick: () => renderWorkflowStatus(ctx, db),
 		});

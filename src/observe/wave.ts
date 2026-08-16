@@ -5,20 +5,28 @@
  *   冲突 → 步骤 conflict(事件 merge_conflict),wave → merged(事件 wave_merged);
  * - mergePreview:供测试/诊断的合并进度预览(不执行)。
  */
-import type { DatabaseSync } from "node:sqlite";
+
 import * as fs from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import {
-	EVT,
-	STEP_STATUS,
-	type StepRow,
-	type WorkflowRow,
 	addEvent,
 	buildUpdate,
+	EVT,
 	getStepsByWave,
 	getWave,
+	STEP_STATUS,
+	type StepRow,
 	updateStepStatus,
+	type WorkflowRow,
 } from "../core/db.ts";
-import { resolveBin, run, worktreeName, worktreePath } from "../exec/shell.ts";
+import {
+	type RunResult,
+	resolveBin,
+	run,
+	worktreeName,
+	worktreePath,
+} from "../exec/shell.ts";
+import { isMasterMode, masterWorktreePath } from "../master.ts";
 
 export interface MergeResult {
 	ok: boolean;
@@ -140,11 +148,13 @@ export async function mergeWave(
 			merged.push(s.id);
 			continue;
 		}
-		const res = await run(
-			gittreeBin,
-			["merge", s.worktree, "--delete"],
-			workflow.repo_path,
-		);
+		const res = isMasterMode(db, workflow.id)
+			? await mergeIntoMaster(workflow, s, gittreeBin)
+			: await run(
+					gittreeBin,
+					["merge", s.worktree, "--delete"],
+					workflow.repo_path,
+				);
 		if (res.code === 0) {
 			merged.push(s.id);
 			addEvent(db, {
@@ -211,6 +221,36 @@ export async function mergeWave(
 		skipped: 0,
 		error: `wave ${waveSeq} 存在冲突,解决后 /wf resolve-conflict`,
 	};
+}
+
+/**
+ * master-agent 模式合并:在主控 worktree 内 git merge 子分支(目标 = 主控分支),
+ * 成功后再从主仓库 gittree clean 子 worktree + 分支(与 merge --delete 等价)。
+ * 失败(冲突)→ 保留现场,步骤标 conflict 由主控自行解决。
+ */
+async function mergeIntoMaster(
+	workflow: WorkflowRow,
+	step: StepRow,
+	gittreeBin: string,
+): Promise<RunResult> {
+	const masterWt = masterWorktreePath(workflow.repo_path, workflow.id);
+	if (!fs.existsSync(masterWt)) {
+		return {
+			code: 1,
+			stdout: "",
+			stderr: `主控 worktree 不存在: ${masterWt}(workflow 是否已 master-merge?)`,
+		};
+	}
+	const branch = `gittree-${step.worktree}`;
+	const res = await run("git", ["merge", branch], masterWt);
+	if (res.code !== 0) return res;
+	// 合入主控分支成功 → 清理子 worktree + 分支(从主仓库 cwd 执行,路径解析正确)
+	await run(
+		gittreeBin,
+		["clean", step.worktree!, "--branch", "--force"],
+		workflow.repo_path,
+	);
+	return res;
 }
 
 /** 供测试/诊断:wave 合并进度预览(不执行) */

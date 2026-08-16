@@ -11,21 +11,21 @@
  * 入口特有逻辑(现状行为差异)仅允许在输出段或显式 kind 分支中体现,见
  * docs/arch-refactor.md §2.6 入口差异表。
  */
+
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import type { DatabaseSync } from "node:sqlite";
+import type { StepRow } from "./core/db.ts";
 import {
 	ATTEMPT_STATUS,
-	DB_PATH,
-	EVT,
-	STEP_STATUS,
-	WORKFLOW_STATUS,
 	addEvent,
 	buildUpdate,
 	createAttempt,
 	createWave,
+	DB_PATH,
+	EVT,
 	getAttemptsByStep,
 	getEvents,
 	getLatestAttempt,
@@ -37,13 +37,42 @@ import {
 	listActiveWorkflows,
 	listWaves,
 	listWorkflows,
+	STEP_STATUS,
 	setWorkflowMeta,
 	stepStatusCounts,
 	updateStepStatus,
 	updateWorkflowStatus,
+	WORKFLOW_STATUS,
 	workflowCost,
 } from "./core/db.ts";
-import type { StepRow } from "./core/db.ts";
+import { canTransition, legalTargets, stepIcon } from "./core/state.ts";
+import {
+	buildPointer,
+	dispatchStep,
+	findTerminalId,
+	openStepTab,
+	parseExpectations,
+	resolveBin,
+	run,
+	sendTextToTerminal,
+	WF_WINDOW_META_KEY,
+	worktreePath,
+} from "./exec/dispatch.ts";
+import {
+	createWorkflowWithMaster,
+	isMasterMode,
+	markMasterFailed,
+	masterBranch,
+	masterName,
+	mergeMaster,
+} from "./master.ts";
+import {
+	fetchLiveTabIds,
+	getReadySteps,
+	markNotified,
+	mergeWave,
+	pollTargetReached,
+} from "./observe/monitor.ts";
 import {
 	appendSteps,
 	checkBudget,
@@ -56,36 +85,16 @@ import {
 	reportFail,
 	verifyStep,
 } from "./orchestrator.ts";
-import {
-	buildPointer,
-	dispatchStep,
-	findTerminalId,
-	openStepTab,
-	parseExpectations,
-	resolveBin,
-	run,
-	sendTextToTerminal,
-	worktreePath,
-	WF_WINDOW_META_KEY,
-} from "./exec/dispatch.ts";
-import {
-	fetchLiveTabIds,
-	getReadySteps,
-	markNotified,
-	mergeWave,
-	pollTargetReached,
-} from "./observe/monitor.ts";
 import { planFromGoal } from "./planner.ts";
-import { buildBoard, renderBoardHtml, renderBoardText } from "./ui/board.ts";
+import { sanitizeTerminalLines, sanitizeTerminalText } from "./sanitize.ts";
 import {
 	encodeSessionDir,
 	findLatestSessionFile,
 	parseSessionLine,
 } from "./session.ts";
-import type { PlanInput } from "./validate.ts";
-import { stepIcon, canTransition, legalTargets } from "./core/state.ts";
+import { buildBoard, renderBoardHtml, renderBoardText } from "./ui/board.ts";
 import { statusCountsLine } from "./ui/status.ts";
-import { sanitizeTerminalText, sanitizeTerminalLines } from "./sanitize.ts";
+import type { PlanInput } from "./validate.ts";
 
 // ────────────────────────────────────────────────────────────
 // 空态引导(plan/import 无参时的 plan.json 模板,P0-5)
@@ -272,10 +281,21 @@ export interface WfIdentity {
 	workflowId: string;
 	dotted: string | null;
 	stepId: string | null;
+	/** master-agent 模式:该会话是 workflow 的主控 agent(非子步骤) */
+	master?: boolean;
 }
 
-/** 子 pi 身份:环境变量优先,cwd(worktree 路径)兜底 */
-export function resolveIdentity(cwd: string): WfIdentity | null {
+/**
+ * 子 pi 身份:环境变量优先,cwd(worktree 路径)兜底。
+ * 识别顺序:① 步骤 env(PI_WF_WORKFLOW/PI_WF_STEP)→ ② 主控 env(PI_WF_MASTER)
+ * → ③ cwd 段(步骤正则优先,主控正则兜底)。歧义场景(wf-master-<x>-<digits>
+ * 既可能是 workflow <x>-<digits> 的主控,也可能是 workflow master-<x> 的步骤)
+ * 有 db 时按 workflow 存在性判定;无 db 时优先步骤解释(与旧行为一致)。
+ */
+export function resolveIdentity(
+	cwd: string,
+	db?: DatabaseSync,
+): WfIdentity | null {
 	const envWf = process.env.PI_WF_WORKFLOW;
 	const envStep = process.env.PI_WF_STEP;
 	if (envWf && envStep) {
@@ -285,10 +305,42 @@ export function resolveIdentity(cwd: string): WfIdentity | null {
 			stepId: `${envWf}-${envStep}`,
 		};
 	}
+	const envMaster = process.env.PI_WF_MASTER;
+	if (envMaster) {
+		return { workflowId: envMaster, dotted: null, stepId: null, master: true };
+	}
 	for (const seg of cwd.split("/")) {
-		const m = /^(?:gittree-)?wf-(.+)-([0-9.]+)$/.exec(seg);
-		if (m) {
-			return { workflowId: m[1], dotted: m[2], stepId: `${m[1]}-${m[2]}` };
+		const masterM = /^(?:gittree-)?wf-master-(.+)$/.exec(seg);
+		if (masterM) {
+			const masterWfId = masterM[1];
+			// 歧义:形如 wf-master-<x>-<digits>(主控 id 以数字结尾)也可能是
+			// workflow master-<x> 的步骤。有 db 时按 workflow 存在性判定。
+			const stepM = /^(?:gittree-)?wf-(.+)-([0-9.]+)$/.exec(seg);
+			if (
+				stepM &&
+				stepM[1] !== masterWfId &&
+				(!db || !getWorkflow(db, masterWfId) || getWorkflow(db, stepM[1]))
+			) {
+				return {
+					workflowId: stepM[1],
+					dotted: stepM[2],
+					stepId: `${stepM[1]}-${stepM[2]}`,
+				};
+			}
+			return {
+				workflowId: masterWfId,
+				dotted: null,
+				stepId: null,
+				master: true,
+			};
+		}
+		const stepM = /^(?:gittree-)?wf-(.+)-([0-9.]+)$/.exec(seg);
+		if (stepM) {
+			return {
+				workflowId: stepM[1],
+				dotted: stepM[2],
+				stepId: `${stepM[1]}-${stepM[2]}`,
+			};
 		}
 	}
 	return null;
@@ -315,7 +367,7 @@ export function resolveWorkflowId(
 		// 无命中:原样返回,由下游报「workflow 不存在: <id>」(更准确的错误)
 		return explicit;
 	}
-	const ident = resolveIdentity(env.cwd);
+	const ident = resolveIdentity(env.cwd, env.db);
 	if (ident) return ident.workflowId;
 	const cwd = path.resolve(env.cwd);
 	const matches = listActiveWorkflows(env.db).filter((w) => {
@@ -423,10 +475,20 @@ function printStatusText(env: CmdEnv, wfId?: string): void {
 			(counts.conflict ?? 0) +
 			(counts["needs-fix"] ?? 0);
 		const costText =
-			cost && cost.cost_cents > 0 ? ` $${(cost.cost_cents / 100).toFixed(2)}` : "";
+			cost && cost.cost_cents > 0
+				? ` $${(cost.cost_cents / 100).toFixed(2)}`
+				: "";
 		env.info(
 			`[${w.id}] ${sanitizeTerminalText(w.title)} | ${w.status} | 进度 ${done}/${steps.length} 运行${running} 异常${abnormal}${costText}`,
 		);
+		if (w.goal) env.info(`  goal: ${sanitizeTerminalText(w.goal)}`);
+		if (isMasterMode(env.db, w.id)) {
+			const hint =
+				w.status === WORKFLOW_STATUS.awaitingMerge
+					? " → /wf master-merge 合并回主分支"
+					: "(主控 agent 自主编排中)";
+			env.info(`  mode: master(master gittree: ${masterBranch(w.id)})${hint}`);
+		}
 		env.info(
 			`  repo: ${w.repo_path} | base: ${w.base_sha ?? "-"} | 绑定窗口: ${winId ?? "-"}`,
 		);
@@ -492,10 +554,12 @@ register({
 // ── import(双入口)──────────────────────────────────────────
 register({
 	name: "import",
-	description: "校验 + 落库",
-	usage: "wf import <plan.json>",
+	description: "校验 + 落库(--workflow <id>:追加到已有 workflow 的当前 wave)",
+	usage: "wf import <plan.json> [--workflow <id>]",
 	run: (args, env) => {
-		const file = args[0];
+		const parsed = parseArgs(args, [{ name: "--workflow", value: true }]);
+		const explicitWf = parsed.value("--workflow");
+		const file = parsed.positionals[0];
 		if (!file) {
 			// 空态引导(P0-5):缺文件时给出 plan.json 模板,而非只报用法
 			if (env.kind === "cli") throw new UsageError(PLAN_TEMPLATE_HINT);
@@ -517,16 +581,50 @@ register({
 			}
 			throw e; // CLI:与现状一致,读取失败向上抛 → main catch("执行失败:" + exit 1)
 		}
-		const parsed = parseJsonArg(raw);
-		if (!parsed.ok) {
+		const parsedPlan = parseJsonArg(raw);
+		if (!parsedPlan.ok) {
 			env.fail(
 				env.kind === "cli"
-					? `✗ 计划文件不是合法 JSON: ${sanitizeTerminalText(parsed.error ?? "")}`
-					: sanitizeTerminalText(parsed.error ?? ""),
+					? `✗ 计划文件不是合法 JSON: ${sanitizeTerminalText(parsedPlan.error ?? "")}`
+					: sanitizeTerminalText(parsedPlan.error ?? ""),
 			);
 			return;
 		}
-		const result = importPlan(env.db, parsed.value as PlanInput, env.cwd);
+		const plan = parsedPlan.value as PlanInput;
+		// master-agent 模式:主控在 worktree 内自研拆解后,把计划导入已有
+		// workflow(空 workflow 自动建 wave 1;非空则追加到当前 wave)
+		if (explicitWf) {
+			const wf = getWorkflow(env.db, explicitWf);
+			if (!wf) {
+				env.fail(
+					`${env.kind === "cli" ? "✗ " : ""}workflow 不存在: ${explicitWf}`,
+				);
+				return;
+			}
+			const appRes = appendSteps(
+				env.db,
+				explicitWf,
+				wf.current_wave || 1,
+				plan,
+				env.cwd,
+			);
+			if (!appRes.ok) {
+				if (env.kind === "cli") {
+					env.fail("追加失败:");
+					for (const e of appRes.errors ?? []) env.fail(`  ✗ ${e}`);
+					return;
+				}
+				env.fail(`追加失败:\n${appRes.errors?.slice(0, 10).join("\n")}`);
+				return;
+			}
+			env.info(
+				env.kind === "cli"
+					? `✓ 已向 ${explicitWf} 导入 ${appRes.added} 个步骤(wave ${wf.current_wave || 1})`
+					: `已向 ${explicitWf} 导入 ${appRes.added} 个步骤(wave ${wf.current_wave || 1}),可 /wf dispatch 派发`,
+			);
+			return;
+		}
+		const result = importPlan(env.db, plan, env.cwd);
 		if (!result.ok) {
 			if (env.kind === "cli") {
 				env.fail("导入失败:");
@@ -541,6 +639,139 @@ register({
 				? `✓ 已导入 ${result.workflowId}:${result.stepCount} 个步骤(wave ${result.wave})`
 				: `已导入 ${result.workflowId}:${result.stepCount} 个步骤(wave ${result.wave}),可用 /wf dispatch 派发`,
 		);
+	},
+});
+
+// ── create(master-agent 模式,双入口)───────────────────────
+/** workflow id kebab 化(从标题/目标提取,唯一化后缀) */
+function kebabId(title: string): string {
+	const kebab = title
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 40);
+	return kebab || "wf";
+}
+
+function uniqueWorkflowId(db: DatabaseSync, base: string): string {
+	if (!getWorkflow(db, base)) return base;
+	for (let i = 2; ; i++) {
+		const cand = `${base}-${i}`;
+		if (!getWorkflow(db, cand)) return cand;
+	}
+}
+
+register({
+	name: "create",
+	description:
+		"创建 master-agent 模式 workflow(主控 agent 自主编排,发起方不阻塞)",
+	usage:
+		'wf create "<需求目标>" [--repo <path>] [--id <id>] [--title <title>] [--dry-run]',
+	run: async (args, env) => {
+		const parsed = parseArgs(args, [
+			{ name: "--dry-run" },
+			{ name: "--repo", value: true },
+			{ name: "--id", value: true },
+			{ name: "--title", value: true },
+		]);
+		const dryRun = parsed.bool("--dry-run");
+		const repoPath = path.resolve(parsed.value("--repo") ?? env.cwd);
+		const goal = parsed.positionals.join(" ").trim();
+		if (!goal) {
+			if (env.kind === "cli") throw new UsageError();
+			env.warn(
+				`用法: /wf create "<需求目标>" [--repo <path>] [--id <id>] [--title <title>]\n创建后主控 agent 在独立 gittree 自主完成:分析→拆解→派发→合并→目标把关;完成后通知你,由你决定 /wf master-merge <id> 合并回主分支。`,
+			);
+			return;
+		}
+		const explicitId = parsed.value("--id");
+		const title = parsed.value("--title") ?? goal.slice(0, 40);
+		const baseId = explicitId ?? kebabId(title);
+		if (!/^[a-z0-9][a-z0-9-]*$/.test(baseId)) {
+			env.fail(
+				`workflow id 不合法: ${baseId}(仅小写字母/数字/连字符,建议英文 kebab-case)`,
+			);
+			return;
+		}
+		const workflowId = explicitId ? baseId : uniqueWorkflowId(env.db, baseId);
+		const res = await createWorkflowWithMaster(env.db, {
+			repoPath,
+			ownerCwd: env.cwd,
+			workflowId,
+			title,
+			goal,
+			dryRun,
+		});
+		if (!res.ok) {
+			env.fail(`${env.kind === "cli" ? "✗ " : ""}${res.error}`);
+			return;
+		}
+		if (dryRun) {
+			env.info(`[dry-run] 将创建 workflow ${workflowId}(repo: ${repoPath}):`);
+			env.info(
+				`  master gittree: ${res.masterBranchName}(${res.masterWorktree})`,
+			);
+			env.info(
+				`  专属窗口开主控 tab,主控自主完成 plan→dispatch→merge→goal-check`,
+			);
+			return;
+		}
+		env.info(
+			`✓ workflow ${workflowId} 已创建,主控 agent 已在专属窗口启动(master gittree: ${res.masterBranchName})`,
+		);
+		env.info(
+			`  主控将自主完成:分析→拆解→派发子任务→合并→目标把关;全部完成后通知你,届时 /wf master-merge ${workflowId} 合并回主分支。`, //
+		);
+	},
+});
+
+// ── master-merge(发起方决策点,双入口)──────────────────────
+register({
+	name: "master-merge",
+	description: "合并主控 gittree 回主分支(主控完成后的发起方决策点)",
+	usage: "wf master-merge <id>",
+	run: async (args, env) => {
+		const [wfId] = args;
+		if (!wfId) {
+			if (env.kind === "cli") throw new UsageError();
+			env.warn(
+				"用法: /wf master-merge <id>\n把主控 gittree 分支合并回当前分支并清理(workflow 置 completed)。",
+			);
+			return;
+		}
+		const res = await mergeMaster(env.db, wfId);
+		if (!res.ok) {
+			env.fail(`${env.kind === "cli" ? "✗ " : ""}${res.error}`);
+			return;
+		}
+		env.info(
+			res.error
+				? `✓ ${res.error}`
+				: `✓ workflow ${wfId} 主控 gittree 已合并回主分支并清理(completed)`,
+		);
+	},
+});
+
+// ── master-fail(主控放弃/发起方确认结束,双入口)────────────
+register({
+	name: "master-fail",
+	description: "主控无法继续时标记失败(通知发起方人工介入)",
+	usage: "wf master-fail <id> <原因...>",
+	run: (args, env) => {
+		const [wfId, ...rest] = args;
+		if (!wfId) {
+			if (env.kind === "cli") throw new UsageError();
+			env.warn(
+				"用法: /wf master-fail <id> <原因...>\n把 workflow 置 failed,通知发起方人工介入(主控会话内使用)。",
+			);
+			return;
+		}
+		const res = markMasterFailed(env.db, wfId, rest.join(" "));
+		if (!res.ok) {
+			env.fail(`${env.kind === "cli" ? "✗ " : ""}${res.error}`);
+			return;
+		}
+		env.info(`✗ workflow ${wfId} 已标记失败(发起方将收到通知)`);
 	},
 });
 
@@ -565,8 +796,8 @@ register({
 		const showAll = parsed.bool("--all");
 		const lines: string[] = [];
 		const workflows = explicit
-			? [getWorkflow(env.db, explicit)].filter((w): w is NonNullable<typeof w> =>
-					Boolean(w),
+			? [getWorkflow(env.db, explicit)].filter(
+					(w): w is NonNullable<typeof w> => Boolean(w),
 				)
 			: showAll
 				? listWorkflows(env.db)
@@ -587,6 +818,16 @@ register({
 				`[${w.id}] ${w.title} | ${w.status} | repo: ${w.repo_path} | base: ${w.base_sha ?? "-"}`,
 				`  ${statusCountsLine(counts, steps.length)}${costText} | waves: ${waves.map((x) => `${x.seq}:${x.status}`).join(", ")}`,
 			);
+			if (w.goal) lines.push(`  goal: ${w.goal}`);
+			if (isMasterMode(env.db, w.id)) {
+				const hint =
+					w.status === WORKFLOW_STATUS.awaitingMerge
+						? " → /wf master-merge 合并回主分支"
+						: "(主控 agent 自主编排中)";
+				lines.push(
+					`  mode: master(master gittree: ${masterBranch(w.id)})${hint}`,
+				);
+			}
 			for (const s of getRunningSteps(env.db, w.id)) {
 				lines.push(`  ▶ ${s.id} ${s.title} tab=${s.tab_id ?? "?"}`);
 			}
@@ -818,7 +1059,8 @@ register({
 			return;
 		}
 		// pi:widget 渲染(无 follow)
-		const limit = args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
+		const limit =
+			args.length > 1 && /^\d+$/.test(args[1]) ? Number(args[1]) : 30;
 		const wfId =
 			args[0] && !/^\d+$/.test(args[0])
 				? resolveWorkflowId(env, args[0])
@@ -869,7 +1111,8 @@ register({
 		if (env.kind === "cli") {
 			// CLI:逐 token 输出;无参数 = 空循环(现状);per-token 错误只打印不置退出码(现状)
 			for (const token of tokens) {
-				const step = getStep(env.db, token) ?? getStep(env.db, `${wfId}-${token}`);
+				const step =
+					getStep(env.db, token) ?? getStep(env.db, `${wfId}-${token}`);
 				if (!step) {
 					env.warn(`✗ ${token}: 步骤不存在`);
 					continue;
@@ -877,7 +1120,9 @@ register({
 				const res = await dispatchStep(env.db, workflow, step, { dryRun });
 				if (res.ok) {
 					if (res.reused) {
-						env.info(`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
+						env.info(
+							`✓ ${token}: tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
+						);
 					} else {
 						env.info(
 							res.dryRun
@@ -910,7 +1155,9 @@ register({
 				? getReadySteps(env.db, wfId).map((s) => s.id.slice(wfId.length + 1))
 				: tokens;
 		if (readyTokens.length === 0) {
-			env.info(`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`);
+			env.info(
+				`wave ${workflow.current_wave} 无就绪步骤(依赖未完成或已全部派发)`,
+			);
 			return;
 		}
 		const results: string[] = [];
@@ -1078,7 +1325,9 @@ register({
 		const res = await dispatchStep(env.db, workflow, step, { fresh });
 		if (res.ok) {
 			if (res.reused) {
-				env.info(`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`);
+				env.info(
+					`✓ ${step.id} tab 仍存活(可能误判),已恢复 running,未重开新 tab`,
+				);
 			} else if (env.kind === "cli") {
 				env.info(
 					`✓ 已重派 ${step.id}${fresh ? "(--fresh)" : ""} tab=${res.tabId ? res.tabId.slice(0, 8) : "?"}`,
@@ -1158,8 +1407,9 @@ register({
 			return;
 		}
 		const old =
-			(getWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY) as string | undefined) ??
-			"(未绑定)";
+			(getWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY) as
+				| string
+				| undefined) ?? "(未绑定)";
 		setWorkflowMeta(env.db, wfId, WF_WINDOW_META_KEY, target.id);
 		addEvent(env.db, {
 			workflowId: wfId,
@@ -1296,7 +1546,10 @@ register({
 		if (action === undefined) {
 			if (env.kind === "cli") {
 				updateWorkflowStatus(env.db, wfId, WORKFLOW_STATUS.verifying);
-				addEvent(env.db, { workflowId: wfId, type: EVT.workflowGoalCheckStarted });
+				addEvent(env.db, {
+					workflowId: wfId,
+					type: EVT.workflowGoalCheckStarted,
+				});
 				env.info(`[${wfId}] 已进入目标核对(verifying)`);
 				env.info(`最初目标: ${workflow.goal}`);
 				for (const s of getStepsByWorkflow(env.db, wfId)) {
@@ -1346,14 +1599,28 @@ register({
 					},
 					{ id: wfId },
 				);
-				updateWorkflowStatus(env.db, wfId, WORKFLOW_STATUS.completed);
 				addEvent(env.db, {
 					workflowId: wfId,
 					type: EVT.workflowGoalCheckPassed,
 					payload: { reason: rest.join(" ") },
 				});
+				// master-agent 模式:目标把关通过 → awaiting-merge(等发起方决定合并)
+				if (isMasterMode(env.db, wfId)) {
+					updateWorkflowStatus(env.db, wfId, WORKFLOW_STATUS.awaitingMerge);
+					addEvent(env.db, {
+						workflowId: wfId,
+						type: EVT.masterDone,
+						payload: { reason: rest.join(" ") },
+					});
+				} else {
+					updateWorkflowStatus(env.db, wfId, WORKFLOW_STATUS.completed);
+				}
 				// 目标把关已完成 → 标记 workflow-done 已通知(防下次会话补发过时提醒)
-				markNotified(env.db, { workflowId: wfId, kind: "workflow-done", text: "" });
+				markNotified(env.db, {
+					workflowId: wfId,
+					kind: "workflow-done",
+					text: "",
+				});
 			} else {
 				const r = goalCheckApprove(env.db, wfId, rest.join(" "));
 				if (!r.ok) {
@@ -1361,7 +1628,11 @@ register({
 					return;
 				}
 			}
-			env.info(`✓ ${wfId} 目标核对通过 → completed`);
+			env.info(
+				isMasterMode(env.db, wfId)
+					? `✓ ${wfId} 目标核对通过 → 已通知发起方(awaiting-merge,发起方可 /wf master-merge ${wfId})`
+					: `✓ ${wfId} 目标核对通过 → completed`,
+			);
 			return;
 		}
 		if (action === "reject") {
@@ -1593,7 +1864,11 @@ register({
 		};
 		if (json) {
 			env.info(
-				JSON.stringify({ workflowId: workflow.id, steps: rows, summary }, null, 2),
+				JSON.stringify(
+					{ workflowId: workflow.id, steps: rows, summary },
+					null,
+					2,
+				),
 			);
 			return;
 		}
@@ -1821,7 +2096,9 @@ register({
 			path.join(os.homedir(), ".pi", "agent", "sessions");
 		const file = findLatestSessionFile(sessionsRoot, cwd);
 		if (!file) {
-			env.fail(`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`);
+			env.fail(
+				`✗ 无会话文件(${path.join(sessionsRoot, encodeSessionDir(cwd))})`,
+			);
 			return;
 		}
 		const messages: Array<{ ts: string; role: string; text: string }> = [];
@@ -1906,7 +2183,11 @@ register({
 			}
 		}
 		// 新 attempt 行(冻结 task_md + pointer),成功后由 openStepTab 回写 tab_id
-		const pointer = buildPointer(workflow.id, dotted, workflow.current_wave || 1);
+		const pointer = buildPointer(
+			workflow.id,
+			dotted,
+			workflow.current_wave || 1,
+		);
 		const attempt = createAttempt(env.db, step.id, {
 			taskMd: step.task_md,
 			pointer,
@@ -2033,7 +2314,10 @@ register({
 	usage: "wf cleanup [workflowId] [--dry-run] [--no-fix]",
 	entry: "cli",
 	run: async (args, env) => {
-		const parsed = parseArgs(args, [{ name: "--dry-run" }, { name: "--no-fix" }]);
+		const parsed = parseArgs(args, [
+			{ name: "--dry-run" },
+			{ name: "--no-fix" },
+		]);
 		const dryRun = parsed.bool("--dry-run");
 		const noFix = parsed.bool("--no-fix");
 		const wfArg = parsed.positionals[0];
@@ -2120,7 +2404,9 @@ register({
 		for (const s of steps) {
 			if (!s.worktree) continue;
 			if (ACTIVE_STATES.has(s.status)) {
-				env.info(`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`);
+				env.info(
+					`${prefix}跳过 .pi-glla: ${s.id} (状态 ${s.status},运行中不打扰)`,
+				);
 				continue;
 			}
 			const dotted = s.id.slice(workflow.id.length + 1);
@@ -2198,9 +2484,13 @@ register({
 			const wtPath = worktreePath(workflow.repo_path, workflow.id, dotted);
 			if (!fs.existsSync(wtPath)) continue;
 			try {
-				const out = execFileSync("git", ["-C", wtPath, "status", "--porcelain"], {
-					encoding: "utf-8",
-				}).trim();
+				const out = execFileSync(
+					"git",
+					["-C", wtPath, "status", "--porcelain"],
+					{
+						encoding: "utf-8",
+					},
+				).trim();
 				const dirty = out
 					.split("\n")
 					.filter(Boolean)
@@ -2265,7 +2555,11 @@ register({
 		const ver = (
 			env.db.prepare("PRAGMA user_version").get() as { user_version: number }
 		).user_version;
-		checks.push(["数据库可打开(user_version)", ver >= 1, `v${ver} @ ${DB_PATH}`]);
+		checks.push([
+			"数据库可打开(user_version)",
+			ver >= 1,
+			`v${ver} @ ${DB_PATH}`,
+		]);
 		let okAll = true;
 		for (const [name, ok, detail] of checks) {
 			env.info(`${ok ? "✓" : "✗"} ${name}${ok ? "" : " ← 需修复"}`);
@@ -2306,7 +2600,9 @@ register({
 		if (running.length > 0) {
 			env.info(`运行中(${running.length}):`);
 			for (const s of running) {
-				env.info(`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`);
+				env.info(
+					`  ${s.id} tab=${s.tab_id ?? "?"} worktree=${s.worktree ?? "?"}`,
+				);
 			}
 		}
 		const evtTotal = (
@@ -2344,10 +2640,16 @@ register({
 			}
 			stepLabel = step.id;
 		} else {
-			const ident = resolveIdentity(env.cwd);
+			const ident = resolveIdentity(env.cwd, env.db);
 			if (!ident) {
 				env.fail(
 					"无法确定任务身份:传 stepId,或设置 PI_WF_WORKFLOW/PI_WF_STEP,或在 wf worktree 内运行",
+				);
+				return;
+			}
+			if (ident.master) {
+				env.fail(
+					"你是主控 agent,没有自己的任务详情;查看 /wf status 获取 workflow 全景",
 				);
 				return;
 			}

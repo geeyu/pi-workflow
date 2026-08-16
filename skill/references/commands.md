@@ -4,11 +4,11 @@
 - `/wf <cmd>`(pi 插件内)与 `wf <cmd>`(CLI)共享同一注册表,行为一致
 - 退出码契约:`0` 成功 / `1` 业务错误 / `2` 不可达(poll)/ `3` 用法错误
 
-# 命令参考(32 条)
+# 命令参考(35 条)
 
 > 由 skill/SKILL.md 拆分,按需加载。
 
-## 2. 命令参考(32 条,按用途分组)
+## 2. 命令参考(35 条,按用途分组)
 
 > 退出码契约(CLI):`0` 成功 / `1` 业务错误 / `2` 不可达(poll)/ `3` 用法错误。
 > 用法错误统一格式:`用法: <usage>`(stderr)。
@@ -33,11 +33,47 @@ planner agent(headless 子进程)自动拆解成层级计划并落库。
 wf plan-init add-redis-cache "给 session store 加 Redis 缓存" --repo ~/server --steps 4
 ```
 
-**`wf import <plan.json>`**(both)
+**`wf import <plan.json> [--workflow <id>]`**(both)
 校验(§4.4)+ 事务落库。通过提示「已导入 N 个步骤(wave M)」。
+
+- 无 `--workflow`:新建 workflow(已存在则拒绝);
+- 有 `--workflow <id>`:追加到已有 workflow 的当前 wave(空 workflow 自动建 wave 1;
+  主控 agent 在 worktree 内自研拆解后走此路径);终态 workflow 拒绝追加。
 
 ```bash
 /wf import plan.json
+/wf import plan.json --workflow add-redis-cache   # master-agent 模式主控导入
+```
+
+**`wf create "<需求目标>" [--repo <path>] [--id <id>] [--title <title>] [--dry-run]`**(both)
+创建 **master-agent 模式** workflow(发起方一步创建,立即返回,不阻塞):
+
+1. workflow 落库(running + owner_cwd=发起方)+ mode=master 元数据
+2. 基于当前分支创建主控 gittree(`gittree-wf-master-<id>`,--fresh 防残留)
+3. 专属窗口(后台创建不抢焦点)开主控 pi tab(`PI_WF_MASTER=<id>` 身份,标题 `wf-master <id>`)
+4. 主控会话自主完成:分析→拆解(`/wf plan --workflow <id>` / `wf import --workflow`)→
+   派发子任务(子 gittree 基于主控分支)→核对/重试→wave 合并进主控分支→目标把关
+5. 全部完成 → awaiting-merge + 通知发起方;发起方 `/wf master-merge <id>` 合并回主分支
+
+```bash
+/wf create "给 session store 加 Redis 缓存,登录/登出全量覆盖" --repo ~/server
+/wf create "补接口文档" --repo ~/server --id docs-wave2   # 多个 workflow 可同时跑
+```
+
+**`wf master-merge <id>`**(both)
+发起方决策点:把主控 gittree 分支合并回**当前分支**并清理(gittree merge --delete),
+workflow → completed。前置:workflow 状态 = awaiting-merge(主控已完成目标把关)。
+
+```bash
+/wf master-merge add-redis-cache
+```
+
+**`wf master-fail <id> <原因...>`**(both)
+主控无法继续时标记 workflow failed(事件 master_failed),发起方收到通知后人工介入
+(接管核对/合并,或确认结束)。主控会话内使用。
+
+```bash
+/wf master-fail add-redis-cache "依赖的 SDK 未发布,无法继续"
 ```
 
 ### 2.2 派发与子任务

@@ -8,18 +8,16 @@
  * - mergeWave:wave 全部终态后按 sort_order 串行 gittree merge --delete,
  *   冲突 → 步骤 conflict(事件 merge_conflict),wave → merged(事件 wave_merged)
  */
-import type { DatabaseSync } from "node:sqlite";
+
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import {
 	ATTEMPT_STATUS,
-	DB_PATH,
-	EVT,
-	STEP_STATUS,
-	WORKFLOW_STATUS,
-	type StepRow,
 	addEvent,
 	buildUpdate,
+	DB_PATH,
+	EVT,
 	getLatestAttempt,
 	getRunningSteps,
 	getStepMeta,
@@ -28,12 +26,16 @@ import {
 	getWorkflowMeta,
 	listActiveWorkflows,
 	listWaves,
+	STEP_STATUS,
+	type StepRow,
 	setStepMeta,
 	setWorkflowMeta,
 	updateStepStatus,
+	WORKFLOW_STATUS,
 } from "../core/db.ts";
 import { depsDone } from "../exec/dispatch.ts";
 import { resolveBin, run } from "../exec/shell.ts";
+import { isMasterMode, MASTER_TAB_KEY } from "../master.ts";
 
 // ────────────────────────────────────────────────────────────
 // tab 存活检测
@@ -125,19 +127,37 @@ export async function pollOnce(
 	let running = getRunningSteps(db);
 	if (opts.repoPath) {
 		// 会话隔离:只轮询 cwd 所在仓库的步骤(谁发起谁看)
-		const mine = new Set(listActiveWorkflows(db, opts.repoPath).map((w) => w.id));
+		const mine = new Set(
+			listActiveWorkflows(db, opts.repoPath).map((w) => w.id),
+		);
 		running = running.filter((s) => mine.has(s.workflow_id));
 	}
-	if (running.length === 0) return { closed: [], timedOut: [] };
+	// dead-master 检测对象:master 模式 + running + 已记录主控 tab。
+	// 独立于 running 步骤:主控可能在 wave 间隙死亡(无 running 步骤也要检测)。
+	const scopeWfs = opts.repoPath
+		? listActiveWorkflows(db, opts.repoPath)
+		: listActiveWorkflows(db);
+	const masterWfs = scopeWfs.filter(
+		(w) =>
+			isMasterMode(db, w.id) &&
+			w.status === WORKFLOW_STATUS.running &&
+			getWorkflowMeta(db, w.id, MASTER_TAB_KEY) !== undefined,
+	);
+	if (running.length === 0 && masterWfs.length === 0) {
+		return { closed: [], timedOut: [] };
+	}
 
 	const ghostctlBin = opts.ghostctlBin ?? resolveBin("ghostctl");
-	// 按仓库分组,每个仓库一次 layout
+	// 按仓库分组,每个仓库一次 layout(主控检测对象的仓库也纳入,保证拿到 layout)
 	const byRepo = new Map<string, StepRow[]>();
 	for (const s of running) {
 		const repo = getRepoOfStep(db, s.id);
 		if (!repo) continue;
 		if (!byRepo.has(repo)) byRepo.set(repo, []);
 		byRepo.get(repo)!.push(s);
+	}
+	for (const w of masterWfs) {
+		if (!byRepo.has(w.repo_path)) byRepo.set(w.repo_path, []);
 	}
 
 	const closed: string[] = [];
@@ -229,6 +249,39 @@ export async function pollOnce(
 				payload: { tabId: s.tab_id },
 			});
 			closed.push(s.id);
+		}
+
+		// dead-master 检测(master-agent 模式):主控 tab 消失且 workflow 仍 running
+		// → 无人编排,标记 master_dead_at(不改状态:用户可能主动关 tab 接管),
+		//   detectStateChanges 据此发 master-failed 通知给发起方。
+		for (const wf of listActiveWorkflows(db, repo)) {
+			if (!isMasterMode(db, wf.id) || wf.status !== WORKFLOW_STATUS.running) {
+				continue;
+			}
+			const masterTab = getWorkflowMeta(db, wf.id, MASTER_TAB_KEY) as
+				| string
+				| undefined;
+			if (!masterTab) continue;
+			if (live.has(masterTab)) {
+				const miss = getWorkflowMeta(db, wf.id, MASTER_MISS_KEY);
+				if (miss !== undefined && miss !== null) {
+					setWorkflowMeta(db, wf.id, MASTER_MISS_KEY, 0);
+				}
+				continue;
+			}
+			const prev =
+				(getWorkflowMeta(db, wf.id, MASTER_MISS_KEY) as number | null) ?? 0;
+			if (prev + 1 < TAB_MISS_LIMIT) {
+				setWorkflowMeta(db, wf.id, MASTER_MISS_KEY, prev + 1);
+				continue;
+			}
+			setWorkflowMeta(db, wf.id, MASTER_MISS_KEY, 0);
+			setWorkflowMeta(db, wf.id, MASTER_DEAD_KEY, Date.now());
+			addEvent(db, {
+				workflowId: wf.id,
+				type: EVT.masterTabClosed,
+				payload: { tabId: masterTab, reason: "dead-master" },
+			});
 		}
 	}
 	return { closed, timedOut };
@@ -341,7 +394,10 @@ export type NotifyKind =
 	| "conflict"
 	| "needs-fix"
 	| "wave-done"
-	| "workflow-done";
+	| "workflow-done"
+	// master-agent 模式:终局级(只发给发起方/旁观会话,主控会话不回传自己)
+	| "master-done"
+	| "master-failed";
 
 /** 关键状态事件(步骤级;stepId 缺省时按 kind 区分 wave/workflow 级) */
 export interface NotifyItem {
@@ -391,6 +447,12 @@ function stepNotifyText(kind: NotifyKind, stepId: string): string {
 }
 
 const NOTIFY_WF_DONE_KEY = "notify:workflow:done";
+const NOTIFY_MASTER_DONE_KEY = "notify:master:done";
+const NOTIFY_MASTER_FAILED_KEY = "notify:master:failed";
+/** dead-master 标记(pollOnce 写入,detectStateChanges 读):主控 tab 消失时 workflow 无人编排 */
+export const MASTER_DEAD_KEY = "master_dead_at";
+/** 主控 tab 未命中计数(与 TAB_MISS_KEY 同构,抗布局抖动) */
+export const MASTER_MISS_KEY = "master_tab_miss";
 
 function waveDoneKey(seq: number): string {
 	return `notify:wave:${seq}:done`;
@@ -435,7 +497,8 @@ export function detectStateChanges(
 			if (steps.length === 0) continue;
 			if (
 				!steps.every(
-					(s) => s.status === STEP_STATUS.done || s.status === STEP_STATUS.skipped,
+					(s) =>
+						s.status === STEP_STATUS.done || s.status === STEP_STATUS.skipped,
 				)
 			) {
 				continue;
@@ -444,7 +507,9 @@ export function detectStateChanges(
 				continue;
 			}
 			const mergeCmd =
-				wave.seq === wf.current_wave ? "/wf merge" : `/wf merge --wave ${wave.seq}`;
+				wave.seq === wf.current_wave
+					? "/wf merge"
+					: `/wf merge --wave ${wave.seq}`;
 			items.push({
 				workflowId: wf.id,
 				waveSeq: wave.seq,
@@ -465,6 +530,38 @@ export function detectStateChanges(
 				kind: "workflow-done",
 				text: `workflow ${wf.id} 所有 wave 已合并 → 请执行 /wf goal-check approve`,
 			});
+		}
+		// 4) master-agent 模式终局级事件(发起方决策点)
+		if (!isMasterMode(db, wf.id)) continue;
+		if (
+			wf.status === WORKFLOW_STATUS.awaitingMerge &&
+			getWorkflowMeta(db, wf.id, NOTIFY_MASTER_DONE_KEY) === undefined
+		) {
+			items.push({
+				workflowId: wf.id,
+				kind: "master-done",
+				text: `workflow ${wf.id} 改造完成,主控已把全部功能合入自己的 gittree → 请执行 /wf master-merge ${wf.id} 合并回主分支`,
+			});
+		}
+		if (getWorkflowMeta(db, wf.id, NOTIFY_MASTER_FAILED_KEY) === undefined) {
+			const deadAt = getWorkflowMeta(db, wf.id, MASTER_DEAD_KEY);
+			if (wf.status === WORKFLOW_STATUS.failed) {
+				items.push({
+					workflowId: wf.id,
+					kind: "master-failed",
+					text: `workflow ${wf.id} 主控执行失败 → 请 /wf status ${wf.id} 查看原因;可自行接管或 /wf master-fail ${wf.id} <原因> 确认结束`,
+				});
+			} else if (
+				wf.status === WORKFLOW_STATUS.running &&
+				deadAt !== undefined
+			) {
+				// dead-master:主控 tab 已消失且 workflow 仍在 running(无人编排)
+				items.push({
+					workflowId: wf.id,
+					kind: "master-failed",
+					text: `workflow ${wf.id} 主控会话已关闭(${new Date(Number(deadAt)).toLocaleTimeString()}),无人编排 → 请 /wf status ${wf.id} 查看;可自行接管(/wf verify /wf merge /wf goal-check)或 /wf master-fail ${wf.id} <原因> 结束`,
+				});
+			}
 		}
 	}
 	return items;
@@ -494,6 +591,14 @@ export function markNotified(
 	}
 	if (item.kind === "workflow-done") {
 		setWorkflowMeta(db, item.workflowId, NOTIFY_WF_DONE_KEY, { at });
+		return;
+	}
+	if (item.kind === "master-done") {
+		setWorkflowMeta(db, item.workflowId, NOTIFY_MASTER_DONE_KEY, { at });
+		return;
+	}
+	if (item.kind === "master-failed") {
+		setWorkflowMeta(db, item.workflowId, NOTIFY_MASTER_FAILED_KEY, { at });
 	}
 }
 
@@ -515,10 +620,41 @@ export function getReadySteps(
 }
 
 // ────────────────────────────────────────────────────────────
+// 会话角色通知过滤(master-agent 模式)
+// ────────────────────────────────────────────────────────────
+/** 终局级通知 kind:只发给发起方/旁观会话,主控会话不接收自己的终局消息 */
+export const MASTER_LEVEL_KINDS: ReadonlySet<NotifyKind> = new Set([
+	"master-done",
+	"master-failed",
+]);
 
+/**
+ * 按会话角色过滤通知项(sessionMasterId = 该会话是哪个 workflow 的主控,null = 非主控):
+ * - 终局级(master-done/master-failed):发给发起方与旁观会话;主控自己不收自己的终局消息;
+ * - 步骤/wave/workflow 级:master 模式 workflow 只发给其主控会话(发起方零打扰);
+ *   非 master 模式 workflow 保持原行为(谁发起谁看,不过滤)。
+ */
+export function filterNotifyItems(
+	db: DatabaseSync,
+	items: NotifyItem[],
+	sessionMasterId: string | null,
+): NotifyItem[] {
+	return items.filter((item) => {
+		if (MASTER_LEVEL_KINDS.has(item.kind)) {
+			return item.workflowId !== sessionMasterId;
+		}
+		if (isMasterMode(db, item.workflowId)) {
+			return item.workflowId === sessionMasterId;
+		}
+		return true;
+	});
+}
+
+// ────────────────────────────────────────────────────────────
+
+export type { MergeResult } from "./wave.ts";
 // ────────────────────────────────────────────────────────────
 // 兼容再导出壳(arch-refactor §3.9)
 // mergeWave/mergePreview 已移至 observe/wave.ts,同名再导出保持外部调用面不变。
 // ────────────────────────────────────────────────────────────
-export { mergeWave, mergePreview } from "./wave.ts";
-export type { MergeResult } from "./wave.ts";
+export { mergePreview, mergeWave } from "./wave.ts";

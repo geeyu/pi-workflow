@@ -10,11 +10,12 @@
  * - NOTIFY_MAX_LINES:单次聚合通知的最大行数,超出留到下一轮。
  */
 import type { DatabaseSync } from "node:sqlite";
-import { markNotified, type NotifyItem, type NotifyKind } from "../observe/monitor.ts";
+import { getStepsByWorkflow, stepStatusCounts } from "../core/db.ts";
 import {
-	getStepsByWorkflow,
-	stepStatusCounts,
-} from "../core/db.ts";
+	markNotified,
+	type NotifyItem,
+	type NotifyKind,
+} from "../observe/monitor.ts";
 import { PLAN_ICON } from "./status.ts";
 
 /** 通知发送通道的最小类型面(pi.sendMessage + ctx.ui.notify,便于测试注入) */
@@ -46,6 +47,8 @@ export const NOTIFY_GLYPH: Record<NotifyKind, string> = {
 	"needs-fix": PLAN_ICON.needsFix, // ↻
 	"wave-done": PLAN_ICON.done, // ✓
 	"workflow-done": PLAN_ICON.done,
+	"master-done": PLAN_ICON.done,
+	"master-failed": PLAN_ICON.abnormal,
 };
 
 /** 渲染器用的结构化载荷(对话流组件渲染;无渲染器时降级 content markdown) */
@@ -64,10 +67,7 @@ export interface WorkflowNotifyDetails {
 }
 
 /** 单 workflow 进度段:● <id> done/total ✓d 🔄r ◐v ✗a(与面板标题同构) */
-function progressText(
-	db: DatabaseSync,
-	workflowId: string,
-): string | null {
+function progressText(db: DatabaseSync, workflowId: string): string | null {
 	const steps = getStepsByWorkflow(db, workflowId);
 	if (steps.length === 0) return null;
 	const counts = stepStatusCounts(db, workflowId);
@@ -79,10 +79,7 @@ function progressText(
 		(counts.aborted ?? 0) +
 		(counts.conflict ?? 0) +
 		(counts["needs-fix"] ?? 0);
-	const parts = [
-		`● ${workflowId}`,
-		`${done}/${steps.length}`,
-	];
+	const parts = [`● ${workflowId}`, `${done}/${steps.length}`];
 	if (running > 0) parts.push(`${PLAN_ICON.running}${running}`);
 	if (verify > 0) parts.push(`${PLAN_ICON.verify}${verify}`);
 	if (abnormal > 0) parts.push(`${PLAN_ICON.abnormal}${abnormal}`);

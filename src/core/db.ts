@@ -8,10 +8,11 @@
  *
  * 测试可用环境变量 WF_DB_PATH 覆盖数据库位置。
  */
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { canTransition, legalTargets } from "./state.ts";
 
 export const DB_DIR = path.join(os.homedir(), ".pi", "agent", "workflows");
@@ -34,6 +35,12 @@ export const EVT = {
 	workflowGoalCheckPassed: "workflow_goal_check_passed",
 	workflowGoalCheckFailed: "workflow_goal_check_failed",
 	workflowWindowRebound: "workflow_window_rebound",
+	// master-agent 模式(主控 agent 独立 gittree 自主编排)
+	masterStarted: "master_started",
+	masterDone: "master_done",
+	masterMerged: "master_merged",
+	masterFailed: "master_failed",
+	masterTabClosed: "master_tab_closed", // 主控会话 tab 消失(dead-master 检测)
 	// wave
 	waveStarted: "wave_started",
 	waveCompleted: "wave_completed",
@@ -88,6 +95,8 @@ export const WORKFLOW_STATUS = {
 	running: "running",
 	paused: "paused",
 	verifying: "verifying",
+	/** master-agent 模式终局:主控已全部完成并合入自己的 gittree,等发起方决定合并回主分支 */
+	awaitingMerge: "awaiting-merge",
 	completed: "completed",
 	failed: "failed",
 	aborted: "aborted",
@@ -486,20 +495,18 @@ export function now(): number {
 // 事件
 // ────────────────────────────────────────────────────────────
 export function addEvent(db: DatabaseSync, input: EventInput): void {
-	db
-		.prepare(
-			`INSERT INTO workflow_events (workflow_id, wave_id, step_id, attempt_id, type, payload, created_at)
+	db.prepare(
+		`INSERT INTO workflow_events (workflow_id, wave_id, step_id, attempt_id, type, payload, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			input.workflowId,
-			input.waveId ?? null,
-			input.stepId ?? null,
-			input.attemptId ?? null,
-			input.type,
-			input.payload === undefined ? null : JSON.stringify(input.payload),
-			now(),
-		);
+	).run(
+		input.workflowId,
+		input.waveId ?? null,
+		input.stepId ?? null,
+		input.attemptId ?? null,
+		input.type,
+		input.payload === undefined ? null : JSON.stringify(input.payload),
+		now(),
+	);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -510,25 +517,23 @@ export function createWorkflow(
 	input: NewWorkflowInput,
 ): WorkflowRow {
 	const ts = now();
-	db
-		.prepare(
-			`INSERT INTO workflow (id, title, goal, context, description, repo_path, owner_cwd, concurrency, budget_cents, max_steps, created_at, updated_at)
+	db.prepare(
+		`INSERT INTO workflow (id, title, goal, context, description, repo_path, owner_cwd, concurrency, budget_cents, max_steps, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			input.id,
-			input.title,
-			input.goal,
-			null,
-			input.description ?? "",
-			input.repoPath,
-			input.ownerCwd ?? null,
-			input.concurrency ?? 4,
-			input.budgetCents ?? null,
-			input.maxSteps ?? 50,
-			ts,
-			ts,
-		);
+	).run(
+		input.id,
+		input.title,
+		input.goal,
+		null,
+		input.description ?? "",
+		input.repoPath,
+		input.ownerCwd ?? null,
+		input.concurrency ?? 4,
+		input.budgetCents ?? null,
+		input.maxSteps ?? 50,
+		ts,
+		ts,
+	);
 	addEvent(db, {
 		workflowId: input.id,
 		type: EVT.workflowCreated,
@@ -552,7 +557,9 @@ export function listWorkflows(
 ): WorkflowRow[] {
 	if (status) {
 		return db
-			.prepare("SELECT * FROM workflow WHERE status = ? ORDER BY created_at DESC")
+			.prepare(
+				"SELECT * FROM workflow WHERE status = ? ORDER BY created_at DESC",
+			)
 			.all(status) as unknown as WorkflowRow[];
 	}
 	return db
@@ -616,12 +623,10 @@ export function buildUpdate(
 	const whereSql = Object.keys(where)
 		.map((k) => `${k} = ?`)
 		.join(" AND ");
-	db
-		.prepare(`UPDATE ${table} SET ${setSql} WHERE ${whereSql}`)
-		.run(
-			...keys.map((k) => patch[k] as SQLInputValue),
-			...(Object.values(where) as SQLInputValue[]),
-		);
+	db.prepare(`UPDATE ${table} SET ${setSql} WHERE ${whereSql}`).run(
+		...keys.map((k) => patch[k] as SQLInputValue),
+		...(Object.values(where) as SQLInputValue[]),
+	);
 }
 
 // ────────────────────────────────────────────────────────────
@@ -633,12 +638,10 @@ export function createWave(
 	seq: number,
 	note?: string,
 ): WaveRow {
-	db
-		.prepare(
-			`INSERT INTO workflow_waves (workflow_id, seq, status, note, created_at)
+	db.prepare(
+		`INSERT INTO workflow_waves (workflow_id, seq, status, note, created_at)
 		 VALUES (?, ?, 'planned', ?, ?)`,
-		)
-		.run(workflowId, seq, note ?? null, now());
+	).run(workflowId, seq, note ?? null, now());
 	return db
 		.prepare("SELECT * FROM workflow_waves WHERE workflow_id = ? AND seq = ?")
 		.get(workflowId, seq) as unknown as WaveRow;
@@ -666,29 +669,27 @@ export function listWaves(db: DatabaseSync, workflowId: string): WaveRow[] {
 export function createStep(db: DatabaseSync, input: NewStepInput): StepRow {
 	const ts = now();
 	const id = `${input.workflowId}-${input.dotted}`;
-	db
-		.prepare(
-			`INSERT INTO workflow_steps (id, workflow_id, parent_id, wave_id, title, agent, status, gate, expectations, task_md, retries_done, max_retries, timeout_min, sort_order, created_at, updated_at)
+	db.prepare(
+		`INSERT INTO workflow_steps (id, workflow_id, parent_id, wave_id, title, agent, status, gate, expectations, task_md, retries_done, max_retries, timeout_min, sort_order, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
-		)
-		.run(
-			id,
-			input.workflowId,
-			input.parentId ?? null,
-			input.waveId ?? null,
-			input.title,
-			input.agent,
-			input.gate ? 1 : 0,
-			input.expectations && input.expectations.length > 0
-				? JSON.stringify(input.expectations)
-				: null,
-			input.task,
-			input.maxRetries ?? 1,
-			input.timeoutMin ?? 60,
-			input.sortOrder,
-			ts,
-			ts,
-		);
+	).run(
+		id,
+		input.workflowId,
+		input.parentId ?? null,
+		input.waveId ?? null,
+		input.title,
+		input.agent,
+		input.gate ? 1 : 0,
+		input.expectations && input.expectations.length > 0
+			? JSON.stringify(input.expectations)
+			: null,
+		input.task,
+		input.maxRetries ?? 1,
+		input.timeoutMin ?? 60,
+		input.sortOrder,
+		ts,
+		ts,
+	);
 	addEvent(db, {
 		workflowId: input.workflowId,
 		stepId: id,
@@ -717,7 +718,9 @@ export function getStepsByWorkflow(
 
 export function getStepsByWave(db: DatabaseSync, waveId: number): StepRow[] {
 	return db
-		.prepare("SELECT * FROM workflow_steps WHERE wave_id = ? ORDER BY sort_order")
+		.prepare(
+			"SELECT * FROM workflow_steps WHERE wave_id = ? ORDER BY sort_order",
+		)
 		.all(waveId) as unknown as StepRow[];
 }
 
@@ -794,23 +797,21 @@ export function updateStepReport(
 	report: Record<string, unknown>,
 ): void {
 	const ts = now();
-	db
-		.prepare(
-			`UPDATE workflow_steps
+	db.prepare(
+		`UPDATE workflow_steps
 		 SET report = ?, summary = ?, files_changed = ?, issues = ?, tests = ?, updated_at = ?
 		 WHERE id = ?`,
-		)
-		.run(
-			JSON.stringify(report),
-			typeof report.summary === "string" ? report.summary : null,
-			Array.isArray(report.filesChanged)
-				? JSON.stringify(report.filesChanged)
-				: null,
-			Array.isArray(report.issues) ? JSON.stringify(report.issues) : null,
-			typeof report.tests === "string" ? report.tests : null,
-			ts,
-			stepId,
-		);
+	).run(
+		JSON.stringify(report),
+		typeof report.summary === "string" ? report.summary : null,
+		Array.isArray(report.filesChanged)
+			? JSON.stringify(report.filesChanged)
+			: null,
+		Array.isArray(report.issues) ? JSON.stringify(report.issues) : null,
+		typeof report.tests === "string" ? report.tests : null,
+		ts,
+		stepId,
+	);
 }
 
 export function stepStatusCounts(
@@ -859,12 +860,17 @@ export function createAttempt(
 		)
 		.get(stepId) as { next_no: number };
 	const attemptNo = row.next_no;
-	db
-		.prepare(
-			`INSERT INTO workflow_attempts (step_id, attempt_no, status, task_md, pointer, tab_id, started_at)
+	db.prepare(
+		`INSERT INTO workflow_attempts (step_id, attempt_no, status, task_md, pointer, tab_id, started_at)
 		 VALUES (?, ?, 'running', ?, ?, ?, ?)`,
-		)
-		.run(stepId, attemptNo, opts.taskMd, opts.pointer, opts.tabId ?? null, now());
+	).run(
+		stepId,
+		attemptNo,
+		opts.taskMd,
+		opts.pointer,
+		opts.tabId ?? null,
+		now(),
+	);
 	return db
 		.prepare(
 			"SELECT * FROM workflow_attempts WHERE step_id = ? AND attempt_no = ?",
@@ -932,12 +938,10 @@ export function setWorkflowMeta(
 	key: string,
 	value: unknown,
 ): void {
-	db
-		.prepare(
-			`INSERT INTO workflow_metadata (workflow_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+	db.prepare(
+		`INSERT INTO workflow_metadata (workflow_id, key, value, updated_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(workflow_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		)
-		.run(workflowId, key, JSON.stringify(value), now());
+	).run(workflowId, key, JSON.stringify(value), now());
 }
 
 export function getWorkflowMeta(
@@ -964,12 +968,10 @@ export function setStepMeta(
 	key: string,
 	value: unknown,
 ): void {
-	db
-		.prepare(
-			`INSERT INTO workflow_step_metadata (step_id, key, value, updated_at) VALUES (?, ?, ?, ?)
+	db.prepare(
+		`INSERT INTO workflow_step_metadata (step_id, key, value, updated_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT(step_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		)
-		.run(stepId, key, JSON.stringify(value), now());
+	).run(stepId, key, JSON.stringify(value), now());
 }
 
 export function getStepMeta(

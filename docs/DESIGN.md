@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS workflow (
   repo_path     TEXT NOT NULL,                -- 仓库根
   base_sha      TEXT,                         -- 首次派发时冻结的 HEAD
   status        TEXT NOT NULL DEFAULT 'idle',
-      -- idle|running|paused|verifying|completed|failed|aborted
+      -- idle|running|paused|verifying|awaiting-merge|completed|failed|aborted
   current_wave  INTEGER NOT NULL DEFAULT 0,   -- 冗余:widget/看板快速取当前批次
   concurrency   INTEGER NOT NULL DEFAULT 4,
   budget_cents  INTEGER,                      -- 成本上限(美分),NULL=不限
@@ -404,6 +404,7 @@ merge 冲突 ──► conflict ──(人工解决)──► /wf resolve-confli
 
 ```text
 idle ──(import/plan 后首派发)──► running ──(全部 wave 合并完成)──► verifying ──(目标核对通过)──► completed
+                     │  └─(master 模式:目标核对通过)──► awaiting-merge ──(/wf master-merge)──► completed
                      │                                └──(未达成)──► running(拆 gap wave 补齐)
                      │  ├──(/wf pause / 预算超)──► paused ──(/wf resume)──► running
                      │  ├──(不可恢复失败)──► failed(修复后 /wf retry 或重跑)
@@ -583,10 +584,13 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 
 ## 9. 命令与 UI
 
-### 9.1 命令族(32 条,双入口共享;/wf 与 wf CLI 同一注册表)
+### 9.1 命令族(35 条,双入口共享;/wf 与 wf CLI 同一注册表)
 
 | 命令 | 入口 | 作用 |
 | --- | --- | --- |
+| `/wf create "<目标>" [--repo] [--id] [--title] [--dry-run]` | both | **master-agent 模式**:创建即开跑 —— 落库 + 主控 gittree + 专属窗口开主控 tab,立即返回(不阻塞发起方) |
+| `/wf master-merge <id>` | both | 发起方决策点:主控 gittree 合并回当前分支 + 清理 + completed |
+| `/wf master-fail <id> <原因>` | both | 主控放弃/结束 → failed + 通知发起方人工介入 |
 | `/wf plan "<目标>" [--repo] [--workflow] [--dry-run]` | both | planner agent 自动拆解(无 id=新建,有 id=追加 gap wave) |
 | `/wf import <plan.json>` | both | 手工 JSON 走同一校验通道(不经过 planner) |
 | `/wf plan-init` | cli | 生成 plan.json 模板 |
@@ -659,11 +663,70 @@ wave 全部终态后,按 `sort_order`(点号层级序)串行 `gittree merge --de
 - **P3 期望核对 ✅(2026-08)** — retry 上下文注入/max_retries/--fresh/steer/resolve-conflict/usage 自报/预算护栏/超时;
 - **P4 智能编排 ✅(2026-08)** — src/planner.ts(headless planner 自动拆解,JSON 契约)+ goal-check 目标把关(verifying→completed/gap wave)+ /wf next wave 滚动 + appendSteps(gap wave 追加);真实链路:一条需求目标 → 5 步计划落库;
 - **P5 看板 ✅(2026-08)** — src/ui/board.ts(buildBoard 5 列数据 + 文本列布局 + 单文件 HTML 导出 + XSS 转义);/wf board + wf board [--html];思源同步(P5b)待实施;
-- 验收:129 断言。
+- **P6 master-agent 模式 ✅(2026-08)** — src/master.ts(create/mergeMaster/markMasterFailed/身份识别)+ 子任务 base=主控分支(dispatch)+ 合并进主控分支(wave)+ awaiting-merge 状态 + master 级通知与角色过滤 + dead-master 兜底;/wf create、/wf master-merge、/wf master-fail、import --workflow;验收:463 断言。
+- 验收:463 断言。
 
 ---
 
-## 12. 已定决策与待确认
+## 12. master-agent 模式(主控 agent 独立 gittree 自主编排)
+
+> 用户需求:创建 workflow 只需要一步 —— 主控 agent 基于当前分支建自己的 gittree,
+> 自主分析拆解、开 tab 派发子任务(子任务基于主控 gittree 再建自己的 gittree)、
+> 子任务回报后主控关 tab 合并删子 gittree、迭代到全部完成、通知发起方由发起方
+> 决定是否合并回主分支。**关键前提:不阻塞发起方**(发起方可能同时创建多个 workflow)。
+
+### 12.1 流程(与 §2 经典模式的差异)
+
+```text
+发起方(一步,立即返回):
+  /wf create "<目标>" [--repo <path>]
+  ├─ workflow 落库(status=running, owner_cwd=发起方)+ workflow_metadata.mode=master
+  ├─ gittree create wf-master-<id>(基于当前分支,--fresh 防残留)  → 分支 gittree-wf-master-<id>
+  ├─ 专属窗口(new-window --no-focus 绑定)开主控 tab:
+  │    env PI_WF_MASTER=<id> PI_WF_REPO=<repo> pi '<master pointer>'
+  └─ 事件 master_started
+
+主控会话(标题 wf-master <id>,cwd=主控 worktree):
+  ① /wf status 看目标 → 探索仓库 → 拆解
+  ② /wf plan "<目标>" --workflow <id>(空 workflow 自动建 wave 1)
+     或自研 plan.json 后 /wf import plan.json --workflow <id>
+  ③ /wf dispatch —— 子 gittree 基于主控分支:
+      gittree create wf-<id>-<dotted> gittree-wf-master-<id>
+  ④ 回报 → /wf verify;失败 → /wf retry;冲突 → 在主控 worktree 内解决提交
+  ⑤ wave 全终态 → wf cleanup && /wf merge
+      —— 在主控 worktree 内 git merge 子分支(合入主控分支),再 gittree clean 子 gittree
+  ⑥ /wf next 拆下一 wave … 直到全部完成
+  ⑦ /wf goal-check approve → 目标把关通过 → status=awaiting-merge + 事件 master_done
+      (经典模式为 completed;master 模式终局由发起方拍板)
+  主控可自行关闭本 tab
+
+发起方(终局决策点):
+  monitor 检测到 awaiting-merge → 通知 master-done
+  → /wf master-merge <id>:关主控 tab → gittree merge wf-master-<id> --delete
+    (合并回发起方当前分支)→ workflow completed + master_merged / workflow_completed
+```
+
+### 12.2 关键机制
+
+| 机制 | 实现 |
+| --- | --- |
+| 身份识别 | env `PI_WF_MASTER` 优先;cwd 段 `gittree-wf-master-<id>` 兜底;识别顺序在步骤正则之前(主控 id 以数字结尾时步骤正则也会命中),歧义按 DB workflow 存在性判定(两 workflow 并存时步骤解释优先) |
+| 会话隔离 | 主控 cwd 在 repo 内 → monitor/面板天然只看到本 workflow;发起方经 owner_cwd 通道可见 |
+| 子任务 base | dispatch 检测 mode=master → `gittree create <name> <masterBranch>` |
+| 合并目标 | mergeWave 检测 mode=master → 在主控 worktree 内 `git merge <子分支>`(目标=主控分支),成功后 `gittree clean <name> --branch --force`(等价 merge --delete) |
+| 通知角色过滤 | `filterNotifyItems`:终局级(master-done/master-failed)发给发起方/旁观会话,主控不收自己的终局消息;step/wave/workflow 级只发给主控会话(发起方零打扰);非 master 模式不过滤 |
+| dead-master 兜底 | pollOnce 独立于 running 步骤检测(wave 间隙也生效):主控 tab 连续 2 轮未命中 → master_dead_at + master_tab_closed 事件 → 发起方收 master-failed 通知,可自行接管 |
+| 状态机 | 新增 workflow 状态 `awaiting-merge`:running/verifying → awaiting-merge(主控目标把关通过)→ completed(master-merge)/ failed / aborted;`goalCheckApprove` master 模式不置 completed |
+| 终态保护 | 终态 workflow 拒绝 appendSteps 追加步骤;master-merge 仅 awaiting-merge 可执行;残留 master gittree 拒绝复用(引导 clean) |
+
+### 12.3 事件与元数据
+
+- 事件:`master_started` / `master_done` / `master_merged` / `master_failed` / `master_tab_closed`
+- metadata:`mode=master`(模式标记)/ `master_tab_id`(主控 tab,dead-master 检测 + master-merge 关闭)/
+  `master_dead_at` / `master_tab_miss` / `notify:master:done` / `notify:master:failed`(通知去重)
+- 通知 kind:`master-done` / `master-failed`(NOTIFY_GLYPH 字形已扩展)
+
+## 13. 已定决策与待确认
 
 ### 已定(用户拍板)
 

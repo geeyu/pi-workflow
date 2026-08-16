@@ -138,9 +138,18 @@ export function legalTargets(from: string): string[] {
 /** workflow 状态合法迁移(初稿,本期不接线) */
 export const WORKFLOW_TRANSITIONS: Record<string, readonly string[]> = {
 	idle: ["running"],
-	running: ["paused", "verifying", "completed", "failed", "aborted"],
+	running: [
+		"paused",
+		"verifying",
+		"completed",
+		"failed",
+		"aborted",
+		"awaiting-merge",
+	],
 	paused: ["running"],
-	verifying: ["completed", "running"],
+	verifying: ["completed", "running", "awaiting-merge"],
+	/** master-agent 模式终局:主控完成 → awaiting-merge;发起方 /wf master-merge → completed */
+	"awaiting-merge": ["completed", "failed", "aborted"],
 	completed: [],
 	failed: [],
 	aborted: [],

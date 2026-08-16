@@ -61,10 +61,13 @@ test/workflow.test.ts # 验收测试(T1-T25b,276 断言)
 ## 使用(编排者侧,仓库根目录)
 
 ```text
-/wf import plan.json             导入计划(JSON:workflow + steps,见下)
-/wf dispatch 1.1 1.2 [--dry-run] 派发步骤:建 worktree + 开 tab + 任务写库
-/wf status / /wf tree           全景 / 层级任务树(widget 显示)
-/wf step <id> / /wf events      单步详情(含 attempts)/ 审计流
+/wf create "<目标>" [--repo <path>]  创建即开跑:主控 agent 独立 gittree 自主编排
+                                       (不阻塞发起方,可同时创建多个 workflow)
+/wf master-merge <id>                主控完成后,把主控 gittree 合并回当前分支
+/wf import plan.json                 导入计划(JSON:workflow + steps,见下)
+/wf dispatch 1.1 1.2 [--dry-run]     派发步骤:建 worktree + 开 tab + 任务写库
+/wf status / /wf tree               全景 / 层级任务树(widget 显示)
+/wf step <id> / /wf events          单步详情(含 attempts)/ 审计流
 /wf verify <id> [approve|reject <原因>]  期望核对(gate 执行后更新)
 ```
 
@@ -99,6 +102,21 @@ test/workflow.test.ts # 验收测试(T1-T25b,276 断言)
 - id 为层级点号(1、1.1、1.2.3),父子由前缀推导;
 - agent 必须存在于 `~/.pi/agent/agents/*.md`(planner/worker/reviewer 已内置);
 - `gate: true` = 回报后必须 `/wf verify` 才能进合并。
+
+## master-agent 模式
+
+```text
+/wf create "给 session store 加 Redis 缓存" --repo ~/server
+→ 创建主控 gittree(基于当前分支)+ 专属窗口开主控 pi tab,立即返回
+→ 主控自主:拆解(/wf plan --workflow <id> 或 wf import --workflow)→ 派发
+  (子 gittree 基于主控分支)→ 核对/重试 → wave 合并进主控分支 → 目标把关
+→ 全部完成 → awaiting-merge + 通知发起方
+→ /wf master-merge <id> 合并回当前分支(删主控 gittree,workflow completed)
+```
+
+- 发起方不阻塞:编排全在主控会话推进;发起方 monitor 只收终局通知(master-done / master-failed)
+- 主控无法继续:`/wf master-fail <id> <原因>`;主控 tab 消失 → dead-master 检测并通知发起方
+- 详见 skill 手册 `references/lifecycle.md §3.5`
 
 ## 测试
 

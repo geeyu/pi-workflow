@@ -19,18 +19,19 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import {
-	EVT,
-	type StepRow,
-	type WorkflowRow,
 	addEvent,
 	buildUpdate,
 	createAttempt,
+	EVT,
 	getStep,
 	getStepDeps,
+	type StepRow,
+	type WorkflowRow,
 } from "../core/db.ts";
+import { isMasterMode, masterBranch } from "../master.ts";
 import { resolveBin, run, worktreeName, worktreePath } from "./shell.ts";
-import { openStepTab } from "./window.ts";
 import { buildPointer, renderTaskMd } from "./template.ts";
+import { openStepTab } from "./window.ts";
 
 export interface DispatchResult {
 	ok: boolean;
@@ -244,9 +245,14 @@ export async function dispatchStep(
 	}
 
 	// 1. worktree(事件 worktree_created)
+	// master-agent 模式:子任务 gittree 基于主控分支创建(gittree create <name> <base>),
+	// 后续 /wf merge 在主控 worktree 内 git merge → 全部功能合入主控自己的 gittree。
+	const createArgs = isMasterMode(db, workflow.id)
+		? ["create", wtName, masterBranch(workflow.id)]
+		: ["create", wtName];
 	const createRes = await run(
 		opts.gittreeBin ?? resolveBin("gittree"),
-		["create", wtName],
+		createArgs,
 		workflow.repo_path,
 	);
 	if (
@@ -302,8 +308,16 @@ export async function dispatchStep(
 	});
 	if (!tabRes.ok) {
 		// 绑定窗口不可用(含已关闭)/ new-tab 失败 → 中止派发
-		const reason = tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
-		abortDispatch(db, attempt.id, step, workflow.id, reason, tabRes.error ?? "");
+		const reason =
+			tabRes.phase === "window" ? "绑定窗口不可用" : "new-tab 失败";
+		abortDispatch(
+			db,
+			attempt.id,
+			step,
+			workflow.id,
+			reason,
+			tabRes.error ?? "",
+		);
 		return {
 			ok: false,
 			stepId: step.id,
@@ -354,33 +368,33 @@ export async function ensureBaseSha(
 	}
 }
 
+export {
+	piInvocation,
+	type RunResult,
+	resolveBin,
+	run,
+	worktreeName,
+	worktreePath,
+} from "./shell.ts";
+export {
+	buildPointer,
+	type DepSummary,
+	getDepSummaries,
+	injectDeps,
+	parseExpectations,
+	renderTaskMd,
+} from "./template.ts";
 // ────────────────────────────────────────────────────────────
 // 兼容再导出壳(arch-refactor §3.9)
 // 被拆函数同名再导出,外部调用面(cli/index/monitor/test)零改动;
 // 新文件内部 import 一律指向新文件,不经本壳中转。
 // ────────────────────────────────────────────────────────────
 export {
-	sendTextToTerminal,
-	openStepTab,
 	findTerminalId,
+	type OpenStepTabOptions,
+	type OpenStepTabResult,
+	openStepTab,
+	sendTextToTerminal,
 	shellQuote,
 	WF_WINDOW_META_KEY,
-	type OpenStepTabResult,
-	type OpenStepTabOptions,
 } from "./window.ts";
-export {
-	run,
-	resolveBin,
-	piInvocation,
-	worktreeName,
-	worktreePath,
-	type RunResult,
-} from "./shell.ts";
-export {
-	getDepSummaries,
-	injectDeps,
-	parseExpectations,
-	renderTaskMd,
-	buildPointer,
-	type DepSummary,
-} from "./template.ts";

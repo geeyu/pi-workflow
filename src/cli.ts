@@ -7,11 +7,7 @@
  *
  * 运行:node --experimental-strip-types src/cli.ts(入口 bin/wf)
  */
-import {
-	getCommand,
-	UsageError,
-	type CmdEnv,
-} from "./command.ts";
+import { type CmdEnv, getCommand, UsageError } from "./command.ts";
 import { getDb } from "./core/db.ts";
 
 /** help 文本与重构前逐字一致(静态文本;命令清单与注册表一致性由测试保证) */
@@ -21,6 +17,9 @@ const HELP_TEXT = `pi-workflow CLI — 创建/执行/排查(设计 §6 skill 手
   wf plan "<需求目标>" [--repo <path>] [--workflow <id>]      planner 自动拆解(无 id=新建,有 id=追加 gap wave)
   wf plan-init <name> "<目标>" [--repo <path>] [--steps N]   生成 plan.json 模板
   wf import <plan.json>                                      校验 + 落库
+  wf create "<需求目标>" [--repo <path>] [--id <id>]          创建 master-agent 模式 workflow(主控 agent 独立 gittree 自主编排,发起方不阻塞)
+  wf master-merge <id>                                       主控完成后把其 gittree 合并回主分支(发起方决策点)
+  wf master-fail <id> <原因...>                              主控无法继续时标记失败(通知发起方人工介入)
   wf status [--json] [wfId]                                  状态全景
   wf tree [wfId]                                             层级任务树
   wf board [wfId] [--wave N] [--html out.html]                   看板(终端列布局/导出 HTML)

@@ -37,6 +37,13 @@ description: >
 ## 30 秒速览(三步)
 
 ```bash
+/wf create "目标" --repo ~/repo        # ① 创建即开跑:主控 agent 独立 gittree 自主编排(不阻塞发起方)
+/wf master-merge <id>                  # ② 主控完成后通知发起方,决定合并回主分支
+```
+
+经典编排(发起方即编排者):
+
+```bash
 /wf plan "目标" --repo ~/repo     # ① planner 自动拆解(或 wf import plan.json)
 /wf dispatch 1.1 1.2              # ② 派发(自动开子 tab;依赖 done 后可并行)
 /wf verify 1.1 approve            # ③ 回报后核对 → wf cleanup && /wf merge → /wf goal-check approve
@@ -51,6 +58,7 @@ description: >
 | 场景 | 命令 |
 | --- | --- |
 | 拆解计划 | `/wf plan "<目标>"` / `wf plan-init` + `/wf import plan.json` |
+| **master-agent 模式** | `/wf create "<目标>"`(主控 agent 独立 gittree 自主编排,不阻塞发起方)→ 完成后 `/wf master-merge <id>` 合并回主分支 |
 | 派发/重派 | `/wf dispatch 1.1 1.2` / `/wf retry <id> [--fresh]`(tab 存活自动复用不重开) |
 | 引导子 agent | `/wf steer <id> <英文指令>`(CLI: `wf inject <target> <text...>`) |
 | 核对/驳回 | `/wf verify <id> approve\|reject <原因>` |

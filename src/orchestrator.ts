@@ -7,35 +7,36 @@
  * - verifyStep:期望核对(供 /wf verify,gate 前后对照的执行后环节)
  */
 import type { DatabaseSync } from "node:sqlite";
+import { type AgentConfig, discoverAgents } from "./agents.ts";
 import {
 	ATTEMPT_STATUS,
-	EVT,
-	STEP_STATUS,
-	WORKFLOW_STATUS,
-	type WorkflowRow,
 	addEvent,
 	addStepDeps,
 	buildUpdate,
 	createStep,
 	createWave,
 	createWorkflow,
+	EVT,
 	getLatestAttempt,
 	getStep,
 	getStepsByWorkflow,
 	getWave,
 	getWorkflow,
 	listWaves,
+	STEP_STATUS,
 	setStepMeta,
 	updateStepReport,
 	updateStepStatus,
 	updateWorkflowStatus,
+	WORKFLOW_STATUS,
+	type WorkflowRow,
 	workflowCost,
 } from "./core/db.ts";
 import { canTransition, legalTargets } from "./core/state.ts";
-import { discoverAgents, type AgentConfig } from "./agents.ts";
-import { validatePlan, type PlanInput } from "./validate.ts";
-import { sanitizeTerminalText } from "./sanitize.ts";
+import { isMasterMode } from "./master.ts";
 import { markNotified } from "./observe/monitor.ts";
+import { sanitizeTerminalText } from "./sanitize.ts";
+import { type PlanInput, validatePlan } from "./validate.ts";
 
 export interface ImportResult {
 	ok: boolean;
@@ -154,9 +155,36 @@ export function appendSteps(
 	if (!workflow) {
 		return { ok: false, errors: [`workflow 不存在: ${workflowId}`] };
 	}
-	const wave = getWave(db, workflowId, waveSeq);
+	if (
+		workflow.status === "completed" ||
+		workflow.status === "failed" ||
+		workflow.status === "aborted"
+	) {
+		return {
+			ok: false,
+			errors: [`workflow ${workflowId} 已终态(${workflow.status}),不能再追加步骤`],
+		};
+	}
+	// 空 workflow(如 master-agent 模式 /wf create 后首拆):自动创建 wave 1
+	let wave = getWave(db, workflowId, waveSeq);
 	if (!wave) {
-		return { ok: false, errors: [`wave ${waveSeq} 不存在,先 /wf next 创建`] };
+		const waves = listWaves(db, workflowId);
+		if (waves.length > 0) {
+			return { ok: false, errors: [`wave ${waveSeq} 不存在,先 /wf next 创建`] };
+		}
+		wave = createWave(db, workflowId, 1, "wave 1");
+		buildUpdate(
+			db,
+			"workflow",
+			{ current_wave: 1, updated_at: Date.now() },
+			{ id: workflowId },
+		);
+		addEvent(db, {
+			workflowId,
+			waveId: wave.id,
+			type: EVT.waveStarted,
+			payload: { wave: 1, note: "自动创建(空 workflow 首 wave)" },
+		});
 	}
 	const agentList = agents ?? discoverAgents(cwd, "user").agents;
 	// 步骤 id 前缀用现有 workflow id
@@ -537,6 +565,24 @@ export function goalCheckApprove(
 		},
 		{ id: workflowId },
 	);
+	// master-agent 模式:目标把关通过 ≠ workflow 完成 —— 终局是主控已把全部
+	// 功能合入自己的 gittree,置 awaiting-merge 等发起方决定合并回主分支。
+	if (isMasterMode(db, workflowId)) {
+		updateWorkflowStatus(db, workflowId, WORKFLOW_STATUS.awaitingMerge);
+		addEvent(db, {
+			workflowId,
+			type: EVT.workflowGoalCheckPassed,
+			payload: { reason: reason ?? "" },
+		});
+		addEvent(db, {
+			workflowId,
+			type: EVT.masterDone,
+			payload: { reason: reason ?? "" },
+		});
+		// 目标把关已完成 → 标记 workflow-done 已通知(防下次会话补发过时提醒)
+		markNotified(db, { workflowId, kind: "workflow-done", text: "" });
+		return { ok: true, status: WORKFLOW_STATUS.awaitingMerge };
+	}
 	updateWorkflowStatus(db, workflowId, WORKFLOW_STATUS.completed);
 	addEvent(db, {
 		workflowId,

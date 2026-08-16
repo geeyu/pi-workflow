@@ -90,6 +90,39 @@ monitor 每 5s 检测关键状态,经 `pi.sendMessage(followUp, triggerTurn)` �
 | wave 完成 | `wf cleanup && /wf merge` |
 | 全流程完成 | `/wf goal-check approve` |
 
+### 3.5 master-agent 模式(主控 agent 独立 gittree,发起方不阻塞)
+
+`/wf create "<目标>"` 一步创建即开跑:发起方继续干自己的事(可同时创建多个
+workflow),主控 agent 在独立 gittree 里全自主完成全流程,完成后通知发起方。
+
+```text
+发起方(不阻塞):                                     主控会话(wf-master <id> tab):
+/wf create "目标" --repo ~/repo                   ① /wf status → 探索仓库 → 拆解
+   ├─ 落库(mode=master)                          ② /wf plan "<目标>" --workflow <id>
+   ├─ gittree create wf-master-<id>(当前分支)        或自研 plan.json 后 wf import --workflow <id>
+   └─ 专属窗口开主控 tab(不抢焦点)                ③ /wf dispatch 派发子任务
+  (继续自己的工作;多 workflow 并行)                  (子 gittree 基于主控分支创建)
+  ...                                              ④ 回报→/wf verify;失败→/wf retry;冲突自解
+  monitor 收到 master-done 通知                    ⑤ wave 完成→ wf cleanup && /wf merge
+  → /wf master-merge <id>                            (合并进主控分支,删子 gittree)
+  (合并回当前分支,删主控 gittree,completed)       ⑥ /wf next 拆下一 wave,直到全部完成
+                                                    ⑦ /wf goal-check approve → awaiting-merge
+                                                    (通知发起方,可自行关 tab)
+```
+
+关键点:
+
+- **不阻塞**:创建后编排全在主控会话推进;发起方 monitor 只收终局级通知
+  (master-done / master-failed),step 级事件只推给主控会话
+- **子任务基于主控 gittree**:`gittree create wf-<id>-<dotted> gittree-wf-master-<id>`;
+  `/wf merge` 在主控 worktree 内 `git merge` → 全部功能合入主控分支
+- **终局**:目标把关通过 → `awaiting-merge`(非 completed);发起方 `/wf master-merge <id>`
+  才合并回主分支并置 completed
+- **失败兜底**:主控无法继续 → `/wf master-fail <id> <原因>`;主控 tab 消失(dead-master)
+  → monitor 检测并通知发起方,可自行接管(/wf verify /wf merge /wf goal-check)
+- **会话隔离**:主控 cwd 在 repo 内天然可见本 workflow;身份识别
+  `PI_WF_MASTER` / cwd 段 `gittree-wf-master-<id>`(歧义按 DB workflow 存在性判定)
+
 > 去重:每种事件每步骤每 attempt 只通知一次;手动 `/wf status` 不受影响。
 > 通知可能延迟投递(如执行中):收到后先核实状态再动作,不盲信单条通知。
 

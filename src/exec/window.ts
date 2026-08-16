@@ -8,23 +8,24 @@
  * - resolveWorkflowWindow / parseLayout:workflow 绑定窗口解析(按 id 定位,绝不回退焦点窗口);
  * - findTerminalId:反查 terminal id(优先 tab id,兜底 cwd / 终端名)。
  */
-import type { DatabaseSync } from "node:sqlite";
+
 import * as path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import {
-	EVT,
-	type StepRow,
-	type WorkflowRow,
 	addEvent,
 	buildUpdate,
+	EVT,
 	getWorkflowMeta,
+	type StepRow,
 	setWorkflowMeta,
+	type WorkflowRow,
 } from "../core/db.ts";
 import {
 	piInvocation,
+	type RunResult,
 	resolveBin,
 	run,
 	worktreePath,
-	type RunResult,
 } from "./shell.ts";
 import { buildPointer } from "./template.ts";
 
@@ -193,7 +194,7 @@ const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
  * 窗口开合不会漂移;
  * 绑定窗口已关闭则返回错误,绝不静默回退(重建由 /wf rebind-window 或清 meta 重试)。
  */
-async function resolveWorkflowWindow(
+export async function resolveWorkflowWindow(
 	db: DatabaseSync,
 	ghostctlBin: string,
 	cwd: string,

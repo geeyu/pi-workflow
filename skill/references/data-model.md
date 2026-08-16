@@ -24,6 +24,7 @@ merge 冲突 ──► conflict ──(resolve-conflict)──► done
 
 ```text
 idle ──(import/plan 后首派发)──► running ──(全部 wave 合并)──► verifying ──(goal-check approve)──► completed
+      (master 模式:目标把关通过 → awaiting-merge → /wf master-merge → completed)
                                   │                              └──(reject)──► running(拆 gap wave)
                                   ├──(预算超限)──► paused ──(resume)──► running
                                   └──(不可恢复失败)──► failed
@@ -33,7 +34,7 @@ idle ──(import/plan 后首派发)──► running ──(全部 wave 合并
 
 | 域 | 事件 |
 | --- | --- |
-| workflow | created / started / paused / resumed / completed / failed / aborted / goal_check_started / goal_check_passed / goal_check_failed / window_rebound |
+| workflow | created / started / paused / resumed / completed / failed / aborted / goal_check_started / goal_check_passed / goal_check_failed / window_rebound / master_started / master_done / master_merged / master_failed / master_tab_closed |
 | wave | started / completed / merged |
 | step | created / decomposed / dispatched / tab_opened / tab_reused / tab_closed / tab_fixed / reported / verified / needs_fix / failed / retrying / aborted / skipped / conflict / resolved |
 | worktree | created / merged / cleaned;merge_conflict / merge_resolved |
