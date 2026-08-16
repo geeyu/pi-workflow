@@ -1486,6 +1486,23 @@ async function main(): Promise<void> {
 		doneFilter(monitorMod.detectStateChanges(db2)).length === 0,
 		"workflow-done 去重",
 	);
+	// 已 completed(goal-check approve 后)→ 不再补发 workflow-done(过时提醒)
+	db2
+		.prepare(
+			"UPDATE workflow_waves SET status='planned' WHERE workflow_id='notify-done-wf' AND seq=1",
+		)
+		.run();
+	db2
+		.prepare(
+			"UPDATE workflow_waves SET status='merged' WHERE workflow_id='notify-done-wf' AND seq=1",
+		)
+		.run();
+	const gcr = await orchMod.goalCheckApprove(db2, "notify-done-wf", "通过");
+	assert(gcr.ok, "goal-check approve 成功");
+	assert(
+		doneFilter(monitorMod.detectStateChanges(db2)).length === 0,
+		"completed 后不再补发 workflow-done(approve 已标记)",
+	);
 
 	console.log("== T20c 聚合发送 sendWorkflowNotifications =");
 	const sent: Array<{ content: string; options: unknown }> = [];

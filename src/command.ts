@@ -71,6 +71,7 @@ import {
 import {
 	fetchLiveTabIds,
 	getReadySteps,
+	markNotified,
 	mergeWave,
 	pollTargetReached,
 } from "./observe/monitor.ts";
@@ -1321,6 +1322,8 @@ register({
 					type: EVT.workflowGoalCheckPassed,
 					payload: { reason: rest.join(" ") },
 				});
+				// 目标把关已完成 → 标记 workflow-done 已通知(防下次会话补发过时提醒)
+				markNotified(env.db, { workflowId: wfId, kind: "workflow-done", text: "" });
 			} else {
 				const r = goalCheckApprove(env.db, wfId, rest.join(" "));
 				if (!r.ok) {

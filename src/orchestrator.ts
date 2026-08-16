@@ -35,6 +35,7 @@ import { canTransition, legalTargets } from "./core/state.ts";
 import { discoverAgents, type AgentConfig } from "./agents.ts";
 import { validatePlan, type PlanInput } from "./validate.ts";
 import { sanitizeTerminalText } from "./sanitize.ts";
+import { markNotified } from "./observe/monitor.ts";
 
 export interface ImportResult {
 	ok: boolean;
@@ -71,7 +72,9 @@ export function importPlan(
 			goal: sanitizeTerminalText(plan.goal ?? ""),
 			repoPath: plan.repoPath ?? cwd,
 			ownerCwd: cwd,
-			description: plan.description ? sanitizeTerminalText(plan.description) : undefined,
+			description: plan.description
+				? sanitizeTerminalText(plan.description)
+				: undefined,
 			concurrency: plan.concurrency,
 			budgetCents: plan.budgetCents,
 			maxSteps: plan.maxSteps,
@@ -416,7 +419,13 @@ export function reportFail(
 			{ id: attempt.id },
 		);
 	}
-	updateStepStatus(db, stepId, STEP_STATUS.failed, { error: reason }, { strict: true });
+	updateStepStatus(
+		db,
+		stepId,
+		STEP_STATUS.failed,
+		{ error: reason },
+		{ strict: true },
+	);
 	addEvent(db, {
 		workflowId: step.workflow_id,
 		stepId: step.id,
@@ -455,7 +464,13 @@ export function verifyStep(
 	}
 	if (action === "reject") {
 		const why = reason?.trim() || "(未说明)";
-		updateStepStatus(db, stepId, STEP_STATUS.needsFix, { error: why }, { strict: true });
+		updateStepStatus(
+			db,
+			stepId,
+			STEP_STATUS.needsFix,
+			{ error: why },
+			{ strict: true },
+		);
 		addEvent(db, {
 			workflowId: step.workflow_id,
 			stepId: step.id,
@@ -522,6 +537,8 @@ export function goalCheckApprove(
 		type: EVT.workflowGoalCheckPassed,
 		payload: { reason: reason ?? "" },
 	});
+	// 目标把关已完成 → 标记 workflow-done 已通知(防下次会话补发过时提醒)
+	markNotified(db, { workflowId, kind: "workflow-done", text: "" });
 	return { ok: true, status: WORKFLOW_STATUS.completed };
 }
 

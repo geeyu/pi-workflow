@@ -13,6 +13,7 @@ import {
 	ATTEMPT_STATUS,
 	EVT,
 	STEP_STATUS,
+	WORKFLOW_STATUS,
 	type StepRow,
 	addEvent,
 	buildUpdate,
@@ -422,8 +423,10 @@ export function detectStateChanges(
 				text: `wave ${wave.seq} 全部完成 → 请执行 ${mergeCmd}(前置可先 wf cleanup)`,
 			});
 		}
-		// 3) workflow 级:所有 wave 已合并 → 提示目标把关
+		// 3) workflow 级:所有 wave 已合并且未完成目标把关 → 提示目标把关
+		// (已 completed / 已 reject 进入 gap wave 后不再补发过时提醒)
 		if (
+			wf.status !== WORKFLOW_STATUS.completed &&
 			waves.length > 0 &&
 			waves.every((w) => w.status === "merged") &&
 			getWorkflowMeta(db, wf.id, NOTIFY_WF_DONE_KEY) === undefined
