@@ -56,9 +56,11 @@ export function run(
  * 子 pi 启动命令(绝对路径,子 tab 的非交互 shell PATH 不可靠):
  * - 运行在 pi 插件内(argv[1] 为 pi 入口,如 dist/cli.js):复用当前进程的 node + pi 脚本;
  * - 运行在 wf CLI 下(argv[1] 为 src/cli.ts):解析真实 pi 入口
- *   (env PI_BIN → PATH → ~/.local/bin),若为 js 脚本则 realpath 后交给显式 node 启动——
- *   pi 通常是指向 dist/cli.js 的符号链接,其 shebang 为 `#!/usr/bin/env node`,
- *   子 shell PATH 无 node 时直接启动失败(tab 秒关)。
+ *   (env PI_BIN → PATH → ~/.local/bin → fnm 安装目录),若为 js 脚本则 realpath 后交给
+ *   显式 node 启动——pi 通常是指向 dist/cli.js 的符号链接,其 shebang 为
+ *   `#!/usr/bin/env node`,子 shell PATH 无 node 时直接启动失败(tab 秒关);
+ * - 兜底链走完仍找不到 → 返回裸 pi(Ghostty login shell 大概率也找不到,tab 秒关),
+ *   但 fnm 扫描覆盖了本机 pi 的真实安装位,正常情况不会走到这一步。
  */
 export function piInvocation(): string {
 	const script = process.argv[1];
@@ -75,15 +77,54 @@ export function piInvocation(): string {
 		// 显式覆盖:信任调用方,不做存在性校验
 		return `"${envBin}"`;
 	}
-	const found =
-		resolveOnPath("pi") ?? path.join(os.homedir(), ".local", "bin", "pi");
-	try {
-		fs.accessSync(found, fs.constants.X_OK);
-		const real = fs.realpathSync(found);
-		return real.endsWith(".js") ? `"${process.execPath}" "${real}"` : `"${real}"`;
-	} catch {
-		return "pi";
+	// 兜底链:PATH → ~/.local/bin/pi → fnm node-versions 各版本安装位(取最新)
+	// 主控会话的 bash 工具 PATH 极简(无 npm 全局 bin),~/.local/bin 软链也可能缺失
+	// (曾出现:dispatch 返回裸 pi → Ghostty env:pi: No such file → 子 tab 秒关)。
+	for (const c of [
+		resolveOnPath("pi"),
+		path.join(os.homedir(), ".local", "bin", "pi"),
+		...fnmPiCandidates(),
+	]) {
+		if (!c) continue;
+		try {
+			fs.accessSync(c, fs.constants.X_OK);
+			const real = fs.realpathSync(c);
+			return real.endsWith(".js")
+				? `"${process.execPath}" "${real}"`
+				: `"${real}"`;
+		} catch {
+			/* 尝试下一个 */
+		}
 	}
+	return "pi";
+}
+
+/**
+ * fnm 各版本 node 安装目录下的 pi(版本号倒序,优先最新)。
+ * ~/.local/share/fnm/node-versions/<v>/installation/bin/pi。
+ */
+function fnmPiCandidates(): string[] {
+	const fnmRoot = path.join(
+		os.homedir(),
+		".local",
+		"share",
+		"fnm",
+		"node-versions",
+	);
+	let versions: string[] = [];
+	try {
+		versions = fs
+			.readdirSync(fnmRoot)
+			.filter((v) => /^v?\d+\.\d+\.\d+$/.test(v))
+			.sort((a, b) =>
+				b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" }),
+			); // 版本号数字倒序,优先最新
+	} catch {
+		return [];
+	}
+	return versions.map((v) =>
+		path.join(fnmRoot, v, "installation", "bin", "pi"),
+	);
 }
 
 /** 在 PATH 上找可执行文件(返回绝对路径;找不到返回 null) */
