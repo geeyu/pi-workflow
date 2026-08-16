@@ -361,14 +361,15 @@ interface FocusState {
 }
 
 /**
- * 捕获当前焦点状态:窗口级 + app 级。
+ * 捕获当前焦点状态:窗口级 + app 级(needApp=false 时跳过 app 查询,
+ * 避免 System Events 权限依赖——restoreAppFocus=false 的配置场景)。
  * 实测:创建动作(Ghostty new window/new tab)即使窗口级焦点能恢复,
  * app 级激活也会被抢走(用户在 Finder/浏览器时 frontmost 变 Ghostty)
  * ——必须把 app 激活一并捕获并恢复,才能真正"静默"。
  */
-async function captureFocusState(): Promise<FocusState> {
+async function captureFocusState(needApp: boolean): Promise<FocusState> {
 	const terminalId = captureFocus(await layoutJson());
-	const app = await frontmostApp();
+	const app = needApp ? await frontmostApp() : null;
 	return { terminalId, app };
 }
 
@@ -379,7 +380,10 @@ async function captureFocusState(): Promise<FocusState> {
  * 直接 activate 原 app 会被迟到的 Ghostty 激活抢回 → activate 后确认
  * frontmost,未生效则重试。
  */
-async function restoreFocusState(state: FocusState): Promise<void> {
+async function restoreFocusState(
+	state: FocusState,
+	restoreApp: boolean,
+): Promise<void> {
 	if (state.terminalId) {
 		// 单脚本枚举 + focus:一次 osascript 完成,创建→恢复的抖动窗口最小
 		const script = String.raw`
@@ -404,7 +408,8 @@ end tell
 	}
 	// app 级还原:创建动作会让 Ghostty 变成 frontmost,把激活还给原 app。
 	// 异步竞态兜底:activate 后轮询确认,最多 3 轮。
-	if (state.app && state.app !== "Ghostty") {
+	// restoreApp=false(配置 restoreAppFocus)时跳过,只还原窗口级焦点。
+	if (restoreApp && state.app && state.app !== "Ghostty") {
 		for (let i = 0; i < 3; i++) {
 			try {
 				await osa(`tell application "${esc(state.app)}" to activate`);
@@ -422,7 +427,7 @@ end tell
 // 创建:new-window / new-tab
 // ────────────────────────────────────────────────────────────
 
-export interface SurfaceOptions {
+interface SurfaceOptions {
 	/** 初始工作目录 */
 	cwd?: string;
 	/** 启动命令(替代 shell,如 env PI_WF_* pi '<pointer>') */
@@ -463,7 +468,9 @@ function parseSurfaceId(stdout: string, re: RegExp, label: string): string {
  * 只按窗口 id 定位,不依赖 cwd/name 匹配(layout 的 cwd 字段常为空,AppleScript
  * 限制);新窗口刚创建时引用可能未就绪,短退避重试(~2s)。
  */
-export async function firstTerminalInWindow(winId: string): Promise<string | null> {
+export async function firstTerminalInWindow(
+	winId: string,
+): Promise<string | null> {
 	for (let i = 0; i < 5; i++) {
 		try {
 			const layout = await layoutJson();
@@ -478,21 +485,30 @@ export async function firstTerminalInWindow(winId: string): Promise<string | nul
 	return null;
 }
 
+export interface NewWindowOptions extends SurfaceOptions {
+	/** 创建后把输入焦点恢复到原终端 */
+	noFocus?: boolean;
+	/** 焦点恢复时是否还原 app 级激活(默认 true;false 只还原窗口级) */
+	restoreApp?: boolean;
+}
+
 /**
  * 新建窗口(--no-focus:创建后把输入焦点恢复到原终端,不打扰当前工作)。
  * 返回新窗口 id。
  */
 export async function newWindow(
-	opts: SurfaceOptions & { noFocus?: boolean } = {},
+	opts: NewWindowOptions = {},
 ): Promise<{ windowId: string }> {
-	const focus = opts.noFocus ? await captureFocusState() : null;
+	const focus = opts.noFocus
+		? await captureFocusState(opts.restoreApp !== false)
+		: null;
 	const cfg = surfaceConfigScript(opts);
 	let script = `tell application "Ghostty"\n${cfg}\nset w to new window`;
 	if (cfg) script += " with configuration cfg";
 	script += "\nreturn id of w\nend tell";
 	const out = await osa(script);
 	const windowId = parseSurfaceId(out, WINDOW_ID_RE, "new-window");
-	if (focus) await restoreFocusState(focus);
+	if (focus) await restoreFocusState(focus, opts.restoreApp !== false);
 	return { windowId };
 }
 
@@ -503,6 +519,8 @@ export interface NewTabOptions extends SurfaceOptions {
 	atEnd?: boolean;
 	/** 创建后把输入焦点恢复到原终端 */
 	noFocus?: boolean;
+	/** 焦点恢复时是否还原 app 级激活(默认 true;false 只还原窗口级) */
+	restoreApp?: boolean;
 }
 
 /**
@@ -513,7 +531,9 @@ export interface NewTabOptions extends SurfaceOptions {
  */
 export async function newTab(opts: NewTabOptions): Promise<{ tabId: string }> {
 	const layout = await layoutJson();
-	const focus = opts.noFocus ? await captureFocusState() : null;
+	const focus = opts.noFocus
+		? await captureFocusState(opts.restoreApp !== false)
+		: null;
 	if (layout.windows.length === 0) {
 		throw new GhosttyError("Ghostty 当前没有任何窗口");
 	}
@@ -557,7 +577,7 @@ export async function newTab(opts: NewTabOptions): Promise<{ tabId: string }> {
 		`tell application "Ghostty"\n${parts.join("\n")}\nend tell`,
 	);
 	const tabId = parseSurfaceId(out, TAB_ID_RE, "new-tab");
-	if (focus) await restoreFocusState(focus);
+	if (focus) await restoreFocusState(focus, opts.restoreApp !== false);
 	return { tabId };
 }
 

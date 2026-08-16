@@ -5,6 +5,14 @@
  * - maxWidgetLines:计划概览面板内容行预算(含标题行),默认 10,floor 3
  * - collapseKey:面板折叠/展开快捷键(pi 键位语法,如 ctrl+shift+t),默认
  *   ctrl+shift+t;"off" 禁用(不注册快捷键)
+ * - silentWindows:静默开窗总开关(创建后恢复窗口级 + app 级焦点),默认 true
+ * - restoreAppFocus:app 级焦点还原(需 System Events 权限;关掉则只还原
+ *   窗口级焦点,避免首次授权弹窗),默认 true
+ * - masterPathExtra:主控 tab 的 PATH 追加目录(默认已含 brew/~/.local/bin/
+ *   wf skill bin),如 ["/opt/homebrew/bin/nvm-versions"]
+ * - monitorIntervalMs:存活轮询间隔 ms,默认 5000
+ * - plannerTimeoutMs:planner 自动拆解超时 ms,默认 10 分钟
+ * - defaultTimeoutMin:步骤默认超时(分钟),默认 60
  *
  * 每次调用现读(per-render / per-registration,无需 /reload):
  * - getMaxWidgetLines:面板渲染时调用,改配置立即生效
@@ -22,6 +30,18 @@ export interface WfConfig {
 	maxWidgetLines?: number;
 	/** 折叠快捷键键位(pi KeyId 语法);"off" 禁用 */
 	collapseKey?: string;
+	/** 静默开窗总开关(创建后恢复窗口级 + app 级焦点),默认 true */
+	silentWindows?: boolean;
+	/** app 级焦点还原(需 System Events 权限;false 只还原窗口级),默认 true */
+	restoreAppFocus?: boolean;
+	/** 主控 tab 的 PATH 追加目录(默认已含 brew/~/.local/bin/wf skill bin) */
+	masterPathExtra?: string[];
+	/** 存活轮询间隔 ms,默认 5000 */
+	monitorIntervalMs?: number;
+	/** planner 自动拆解超时 ms,默认 10 分钟 */
+	plannerTimeoutMs?: number;
+	/** 步骤默认超时(分钟),默认 60 */
+	defaultTimeoutMin?: number;
 }
 
 /** 默认内容行预算(含标题行,原硬编码 10 保留为默认值) */
@@ -60,6 +80,53 @@ export function loadConfig(): WfConfig {
 	} catch {
 		return {};
 	}
+}
+
+/** 默认存活轮询间隔 ms */
+export const DEFAULT_MONITOR_INTERVAL_MS = 5000;
+
+/** 默认 planner 拆解超时 ms(10 分钟) */
+export const DEFAULT_PLANNER_TIMEOUT_MS = 10 * 60_000;
+
+/** 默认步骤超时(分钟) */
+export const DEFAULT_STEP_TIMEOUT_MIN = 60;
+
+/** 静默开窗开关:创建后恢复窗口级 + app 级焦点(默认开) */
+export function getSilentWindows(): boolean {
+	const v = loadConfig().silentWindows;
+	return typeof v === "boolean" ? v : true;
+}
+
+/** app 级焦点还原(需 System Events 权限;默认开) */
+export function getRestoreAppFocus(): boolean {
+	const v = loadConfig().restoreAppFocus;
+	return typeof v === "boolean" ? v : true;
+}
+
+/** 主控 tab PATH 追加目录(字符串数组,默认空) */
+export function getMasterPathExtra(): string[] {
+	const v = loadConfig().masterPathExtra;
+	return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0)
+		? v
+		: [];
+}
+
+/** 存活轮询间隔 ms(非正数回退默认) */
+export function getMonitorIntervalMs(): number {
+	const v = loadConfig().monitorIntervalMs;
+	return typeof v === "number" && v > 0 ? v : DEFAULT_MONITOR_INTERVAL_MS;
+}
+
+/** planner 拆解超时 ms(非正数回退默认) */
+export function getPlannerTimeoutMs(): number {
+	const v = loadConfig().plannerTimeoutMs;
+	return typeof v === "number" && v > 0 ? v : DEFAULT_PLANNER_TIMEOUT_MS;
+}
+
+/** 步骤默认超时分钟(非正数回退默认) */
+export function getDefaultTimeoutMin(): number {
+	const v = loadConfig().defaultTimeoutMin;
+	return typeof v === "number" && v > 0 ? v : DEFAULT_STEP_TIMEOUT_MIN;
 }
 
 /**

@@ -4,11 +4,27 @@
 - `/wf <cmd>`(pi 插件内)与 `wf <cmd>`(CLI)共享同一注册表,行为一致
 - 退出码契约:`0` 成功 / `1` 业务错误 / `2` 不可达(poll)/ `3` 用法错误
 
-# 命令参考(35 条)
+# 命令参考(36 条)
+
+## 1. 配置文件(`~/.config/pi-workflow/config.json`,XDG_CONFIG_HOME 优先)
+
+> 每次调用现读,改配置即生效(快捷键需 /reload 重绑)。只读配置,绝不写文件。
+
+| 键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `maxWidgetLines` | number | 10 | 计划概览面板内容行预算(含标题行,floor 3) |
+| `collapseKey` | string | `ctrl+shift+t` | 面板折叠快捷键(pi 键位语法);`"off"` 禁用 |
+| `silentWindows` | boolean | true | 静默开窗总开关:创建窗口/tab 后恢复窗口级 + app 级焦点 |
+| `restoreAppFocus` | boolean | true | app 级焦点还原(需 System Events 权限;false 只还原窗口级,避免授权弹窗) |
+| `masterPathExtra` | string[] | `[]` | 主控 tab 的 PATH 追加目录(默认已含 brew / ~/.local/bin / wf skill bin) |
+| `monitorIntervalMs` | number | 5000 | 存活轮询间隔(ms) |
+| `plannerTimeoutMs` | number | 600000 | planner 自动拆解超时(ms,默认 10 分钟) |
+| `defaultTimeoutMin` | number | 60 | 步骤默认超时(分钟;单步可用 timeoutMin 覆盖) |
+
 
 > 由 skill/SKILL.md 拆分,按需加载。
 
-## 2. 命令参考(35 条,按用途分组)
+## 2. 命令参考(36 条,按用途分组)
 
 > 退出码契约(CLI):`0` 成功 / `1` 业务错误 / `2` 不可达(poll)/ `3` 用法错误。
 > 用法错误统一格式:`用法: <usage>`(stderr)。

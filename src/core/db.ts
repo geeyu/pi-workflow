@@ -12,6 +12,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getDefaultTimeoutMin } from "../config.ts";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { canTransition, legalTargets } from "./state.ts";
 
@@ -691,7 +692,7 @@ export function createStep(db: DatabaseSync, input: NewStepInput): StepRow {
 			: null,
 		input.task,
 		input.maxRetries ?? 1,
-		input.timeoutMin ?? 60,
+		input.timeoutMin ?? getDefaultTimeoutMin(),
 		input.sortOrder,
 		ts,
 		ts,

@@ -38,8 +38,13 @@ import {
 	updateWorkflowStatus,
 	WORKFLOW_STATUS,
 } from "./core/db.ts";
+import { getMasterPathExtra, getRestoreAppFocus, getSilentWindows } from "./config.ts";
 import { piInvocation, resolveBin, run } from "./exec/shell.ts";
-import { firstTerminalInWindow, newWindow, closeTerminal } from "./exec/ghostty.ts";
+import {
+	firstTerminalInWindow,
+	newWindow,
+	closeTerminal,
+} from "./exec/ghostty.ts";
 import { shellQuote } from "./exec/window.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -75,30 +80,30 @@ export function isMasterMode(db: DatabaseSync, workflowId: string): boolean {
 function buildMasterPointer(workflowId: string, goal: string): string {
 	return [
 		`[wf-master] You are the master agent of workflow ${workflowId}`,
-		`(own gittree, branch ${masterBranch(workflowId)}; repo is your cwd)`, 
+		`(own gittree, branch ${masterBranch(workflowId)}; repo is your cwd)`,
 		``,
 		`Goal: ${goal.trim() || "(see wf status)"}`,
 		``,
-		`Strict execution loop — every command is the wf CLI (this is a shell session:`, 
-		`run wf <cmd> via bash; /wf is a pi plugin command and does NOT work here).`, 
-		`Use wf commands ONLY — never touch database files or sqlite, and never`, 
-		`invent commands: wf help lists everything that exists.`, 
+		`Strict execution loop — every command is the wf CLI (this is a shell session:`,
+		`run wf <cmd> via bash; /wf is a pi plugin command and does NOT work here).`,
+		`Use wf commands ONLY — never touch database files or sqlite, and never`,
+		`invent commands: wf help lists everything that exists.`,
 		``,
 		`1. wf status   — check workflow state (goal/plan)`,
-		`2. wf plan "<goal>" --workflow ${workflowId}   — auto-decompose and persist`, 
-		`   (no --dry-run, no manual plan.json, no wf import unless plan fails;`, 
-		`   if you DO write plan.json: flat ids 1/2/3 or hierarchical ids whose`, 
+		`2. wf plan "<goal>" --workflow ${workflowId}   — auto-decompose and persist`,
+		`   (no --dry-run, no manual plan.json, no wf import unless plan fails;`,
+		`   if you DO write plan.json: flat ids 1/2/3 or hierarchical ids whose`,
 		`   parent steps exist in the same plan)`,
 		`3. wf dispatch  — dispatch ALL ready steps (auto opens sub tabs + gittrees)`,
-		`4. Loop: wf status / wf board to watch; on step report: wf verify <id> approve`, 
-		`   (reject with reason for rework); on failure: wf retry <id> [--fresh];`, 
+		`4. Loop: wf status / wf board to watch; on step report: wf verify <id> approve`,
+		`   (reject with reason for rework); on failure: wf retry <id> [--fresh];`,
 		`   resolve merge conflicts yourself and commit in this worktree`,
-		`5. When the wave is fully merged: wf merge (merges into YOUR gittree branch,`, 
+		`5. When the wave is fully merged: wf merge (merges into YOUR gittree branch,`,
 		`   auto-deletes sub gittrees). More waves: wf next, then plan again.`,
 		`6. When everything is merged and the goal is met: wf goal-check approve`,
 		``,
-		`After step 6 the initiator is notified and decides whether to merge your`, 
-		`gittree back to the main branch. You may then close this tab yourself.`, 
+		`After step 6 the initiator is notified and decides whether to merge your`,
+		`gittree back to the main branch. You may then close this tab yourself.`,
 		`If you cannot continue: wf master-fail ${workflowId} <reason>`,
 	].join("\n");
 }
@@ -215,12 +220,20 @@ export async function createWorkflowWithMaster(
 			"skill",
 			"bin",
 		),
+		...getMasterPathExtra(),
 	].join(":");
 	const cmd = `env PATH=${masterPath} PI_WF_MASTER=${workflowId} PI_WF_REPO=${repoPath} ${piInvocation()} ${shellQuote(pointer)}`;
 	let winId: string;
 	try {
-		// 后台创建(不抢焦点,不打扰当前开发)
-		winId = (await newWindow({ cwd: wtPath, command: cmd, noFocus: true })).windowId;
+		// 静默创建(不抢焦点,配置可关)
+		winId = (
+			await newWindow({
+				cwd: wtPath,
+				command: cmd,
+				noFocus: getSilentWindows(),
+				restoreApp: getRestoreAppFocus(),
+			})
+		).windowId;
 	} catch (e) {
 		return {
 			ok: false,
@@ -345,11 +358,7 @@ export async function mergeMaster(
 	try {
 		const gi = path.join(masterWt, ".gitignore");
 		if (fs.existsSync(gi)) {
-			await run(
-				"git",
-				["-C", masterWt, "add", ".gitignore"],
-				masterWt,
-			);
+			await run("git", ["-C", masterWt, "add", ".gitignore"], masterWt);
 			await run(
 				"git",
 				["-C", masterWt, "commit", "-q", "-m", "chore: ignore .pi-glla (wf)"],

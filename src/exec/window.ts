@@ -35,6 +35,7 @@ import {
 	sendKey,
 	type GhosttyLayout,
 } from "./ghostty.ts";
+import { getRestoreAppFocus, getSilentWindows } from "../config.ts";
 import { piInvocation, worktreePath } from "./shell.ts";
 import { buildPointer } from "./template.ts";
 
@@ -115,13 +116,14 @@ export async function openStepTab(
 
 	let tabIdFromOutput: string;
 	try {
-		// 顺序开 tab(--at-end 插在窗口末尾)+ 后台创建(--no-focus 不抢焦点)
+		// 顺序开 tab(--at-end 插在窗口末尾)+ 静默创建(不抢焦点,配置可关)
 		const res = await newTab({
 			windowId: win.winId,
 			cwd: wtPath,
 			command: cmd,
 			atEnd: true,
-			noFocus: true,
+			noFocus: getSilentWindows(),
+			restoreApp: getRestoreAppFocus(),
 		});
 		tabIdFromOutput = res.tabId;
 	} catch (e) {
@@ -259,9 +261,13 @@ export async function resolveWorkflowWindow(
 		};
 	}
 
-	// 未绑定 → 创建 workflow 专属窗口(后台创建,不抢焦点,不打扰当前开发)
+	// 未绑定 → 创建 workflow 专属窗口(静默创建,不抢焦点,配置可关)
 	try {
-		const { windowId } = await newWindow({ cwd, noFocus: true });
+		const { windowId } = await newWindow({
+			cwd,
+			noFocus: getSilentWindows(),
+			restoreApp: getRestoreAppFocus(),
+		});
 		setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, windowId);
 		return { ok: true, winId: windowId, created: true };
 	} catch (e) {

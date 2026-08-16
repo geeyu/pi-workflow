@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAgents } from "./agents.ts";
+import { getPlannerTimeoutMs } from "./config.ts";
 import { resolvePiCommand } from "./exec/shell.ts";
 
 export const PLANNER_TASK_TEMPLATE = `你的任务:把下面的需求目标拆解成可执行的 workflow 计划。
@@ -102,7 +103,7 @@ export async function runPlanner(
 	opts: PlannerOptions = {},
 ): Promise<string> {
 	const agent = findPlannerAgent(cwd);
-	const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+	const timeoutMs = opts.timeoutMs ?? getPlannerTimeoutMs();
 	const invocation = opts.plannerBin ?? piCommand();
 
 	const args = [
@@ -158,10 +159,7 @@ export async function runPlanner(
 				} catch {
 					return;
 				}
-				if (
-					event.type === "message_end" &&
-					event.message?.role === "assistant"
-				) {
+				if (event.type === "message_end" && event.message?.role === "assistant") {
 					const text = (event.message.content ?? [])
 						.filter((p) => p.type === "text" && p.text)
 						.map((p) => p.text)

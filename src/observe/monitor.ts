@@ -36,6 +36,7 @@ import {
 	WORKFLOW_STATUS,
 } from "../core/db.ts";
 import { depsDone } from "../exec/dispatch.ts";
+import { getMonitorIntervalMs } from "../config.ts";
 import { collectTerminalIds, layoutJson } from "../exec/ghostty.ts";
 import { isMasterMode } from "../master.ts";
 
@@ -312,7 +313,7 @@ export function startMonitor(
 	db: DatabaseSync,
 	opts: MonitorOptions = {},
 ): () => void {
-	const intervalMs = opts.intervalMs ?? 5000;
+	const intervalMs = opts.intervalMs ?? getMonitorIntervalMs();
 	let timer: ReturnType<typeof setInterval> | null = null;
 	let ticking = false;
 	// ── fs.watch 事件驱动(WAL 模式写 .db-wal,故监听 DB 目录)──

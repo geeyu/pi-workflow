@@ -787,10 +787,7 @@ register({
 		const masterTab = getWorkflowMeta(env.db, wfId, MASTER_TAB_KEY) as
 			| string
 			| undefined;
-		for (const tid of [
-			masterTab,
-			...steps.map((s) => s.tab_id ?? null),
-		]) {
+		for (const tid of [masterTab, ...steps.map((s) => s.tab_id ?? null)]) {
 			if (!tid) continue;
 			try {
 				await closeTerminal(tid);
@@ -805,18 +802,18 @@ register({
 			...steps.map((s) => s.worktree ?? null),
 		].filter((n): n is string => Boolean(n));
 		for (const n of gittrees) {
-			await run(
-				gittreeBin,
-				["clean", n, "--branch", "--force"],
-				wf.repo_path,
-			);
+			await run(gittreeBin, ["clean", n, "--branch", "--force"], wf.repo_path);
 		}
 		// 3. 级联删库(按引用依赖序,禁手动改库的替代品)
 		env.db.exec("BEGIN");
 		try {
 			env.db.prepare("DELETE FROM workflow_events WHERE workflow_id=?").run(wfId);
-			env.db.prepare("DELETE FROM workflow_goal_items WHERE workflow_id=?").run(wfId);
-			env.db.prepare("DELETE FROM workflow_metadata WHERE workflow_id=?").run(wfId);
+			env.db
+				.prepare("DELETE FROM workflow_goal_items WHERE workflow_id=?")
+				.run(wfId);
+			env.db
+				.prepare("DELETE FROM workflow_metadata WHERE workflow_id=?")
+				.run(wfId);
 			env.db
 				.prepare(
 					"DELETE FROM workflow_step_metadata WHERE step_id IN (SELECT id FROM workflow_steps WHERE workflow_id=?)",
@@ -838,7 +835,9 @@ register({
 			env.db.exec("COMMIT");
 		} catch (e) {
 			env.db.exec("ROLLBACK");
-			env.fail(`${env.kind === "cli" ? "✗ " : ""}删除失败: ${(e as Error).message}`);
+			env.fail(
+				`${env.kind === "cli" ? "✗ " : ""}删除失败: ${(e as Error).message}`,
+			);
 			return;
 		}
 		env.info(`✓ workflow ${wfId} 已删除(tab/数据库/worktree 已清理)`);

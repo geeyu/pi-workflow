@@ -114,9 +114,7 @@ export function resolvePiCommand(): PiCommand {
 
 export function piInvocation(): string {
 	const c = resolvePiCommand();
-	return c.args.length > 0
-		? `"${c.command}" "${c.args[0]}"`
-		: `"${c.command}"`;
+	return c.args.length > 0 ? `"${c.command}" "${c.args[0]}"` : `"${c.command}"`;
 }
 
 /**
