@@ -38,6 +38,7 @@ import {
 	findTerminalId,
 	resolveWorkflowWindow,
 	shellQuote,
+	sweepInitialTabs,
 } from "./exec/window.ts";
 
 // ────────────────────────────────────────────────────────────
@@ -63,8 +64,8 @@ export function masterWorktreePath(
 }
 
 /** workflow_metadata:master 模式标记(mode=master) */
-export const MASTER_MODE_KEY = "mode";
-export const MASTER_MODE_VALUE = "master";
+const MASTER_MODE_KEY = "mode";
+const MASTER_MODE_VALUE = "master";
 /** workflow_metadata:主控会话 tab/terminal id(dead-master 检测 + master-merge 关 tab) */
 export const MASTER_TAB_KEY = "master_tab_id";
 
@@ -73,24 +74,10 @@ export function isMasterMode(db: DatabaseSync, workflowId: string): boolean {
 	return getWorkflowMeta(db, workflowId, MASTER_MODE_KEY) === MASTER_MODE_VALUE;
 }
 
-/**
- * 主控会话身份识别:env PI_WF_MASTER 优先,cwd 段 `gittree-wf-master-<id>` 兜底。
- * 必须在步骤正则之前识别(wf-master-<id> 以数字结尾时步骤正则也会命中)。
- */
-export function resolveMasterId(cwd: string): string | null {
-	const envMaster = process.env.PI_WF_MASTER;
-	if (envMaster) return envMaster;
-	for (const seg of cwd.split("/")) {
-		const m = /^(?:gittree-)?wf-master-(.+)$/.exec(seg);
-		if (m) return m[1];
-	}
-	return null;
-}
-
 // ────────────────────────────────────────────────────────────
 // 主控 pointer(注入主控 pi 首条消息)
 // ────────────────────────────────────────────────────────────
-export function buildMasterPointer(workflowId: string, goal: string): string {
+function buildMasterPointer(workflowId: string, goal: string): string {
 	return [
 		`[wf-master] You are the master agent of workflow ${workflowId}`,
 		`(own gittree, branch ${masterBranch(workflowId)}; repo is your cwd)`,
@@ -249,6 +236,10 @@ export async function createWorkflowWithMaster(
 	);
 	if (tabId) {
 		setWorkflowMeta(db, workflowId, MASTER_TAB_KEY, tabId);
+	}
+	// 本次新建窗口(Ghostty new window 自带初始空白 tab)→ 清理非业务 tab
+	if (win.created && tabId) {
+		await sweepInitialTabs(ghostctlBin, repoPath, win.winId, tabId);
 	}
 	addEvent(db, {
 		workflowId,

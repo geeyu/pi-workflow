@@ -123,6 +123,16 @@ export async function openStepTab(
 		wtPath,
 	);
 
+	// 本次新建窗口(Ghostty new window 自带初始空白 tab)→ 清理非业务 tab
+	if (win.created && tabId) {
+		await sweepInitialTabs(
+			ghostctlBin,
+			workflow.repo_path,
+			win.winId,
+			tabId,
+		);
+	}
+
 	if (opts.attemptId !== undefined) {
 		buildUpdate(
 			db,
@@ -193,13 +203,18 @@ const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
  * 开进该窗口 —— 按窗口 id 定位(ghostctl new-tab --window-id),不依赖窗口序号/焦点,
  * 窗口开合不会漂移;
  * 绑定窗口已关闭则返回错误,绝不静默回退(重建由 /wf rebind-window 或清 meta 重试)。
+ * created=true 表示本次新建窗口(含 Ghostty 自带的初始空白 tab,调用方开完业务
+ * tab 后应 sweepInitialTabs 清理,否则窗口会多一个空白 tab)。
  */
 export async function resolveWorkflowWindow(
 	db: DatabaseSync,
 	ghostctlBin: string,
 	cwd: string,
 	workflowId: string,
-): Promise<{ ok: true; winId: string } | { ok: false; error: string }> {
+): Promise<
+	| { ok: true; winId: string; created?: boolean }
+	| { ok: false; error: string }
+> {
 	const bound = getWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY) as
 		| string
 		| undefined;
@@ -242,7 +257,40 @@ export async function resolveWorkflowWindow(
 		};
 	}
 	setWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY, m[1]);
-	return { ok: true, winId: m[1] };
+	return { ok: true, winId: m[1], created: true };
+}
+
+/**
+ * 清理窗口内非业务 tab(Ghostty new window 自带一个初始空白 tab,会在专属窗口
+ * 里多出一个空白 tab)。按 terminal id 判定保留 tab:keepTerminalId 为 null 时
+ * 不清理(无法定位业务 tab,宁留不误关)。清理失败不影响主流程。
+ */
+export async function sweepInitialTabs(
+	ghostctlBin: string,
+	cwd: string,
+	winId: string,
+	keepTerminalId: string | null,
+): Promise<void> {
+	if (!keepTerminalId) return;
+	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+	if (res.code !== 0) return;
+	try {
+		const layout = JSON.parse(res.stdout) as {
+			windows: Array<{
+				id: string;
+				tabs: Array<{ id: string; terminals: Array<{ id: string }> }>;
+			}>;
+		};
+		const win = layout.windows.find((w) => w.id === winId);
+		if (!win) return;
+		for (const t of win.tabs) {
+			const termIds = t.terminals.map((x) => x.id);
+			if (termIds.includes(keepTerminalId)) continue;
+			await run(ghostctlBin, ["close-tab", t.id], cwd);
+		}
+	} catch {
+		/* 解析/清理失败不影响主流程 */
+	}
 }
 
 /**

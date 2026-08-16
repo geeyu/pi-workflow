@@ -3469,6 +3469,36 @@ async function main(): Promise<void> {
 	});
 	assert(!mDup.ok, "workflow 已存在拒绝创建");
 
+	// T27b2 新建专属窗口的初始空白 tab 清理(Ghostty new window 自带一个空 tab)
+	const sweepFake = path.join(tmpDir, "fake-ghostctl-sweep.sh");
+	const sweepLog = path.join(tmpDir, "ghostctl-sweep.log");
+	const sweepWt = path.join(mRepo, ".worktrees", "gittree-wf-master-m-sweep");
+	fs.writeFileSync(
+		sweepFake,
+		`#!/bin/bash\necho "$@" >> "${sweepLog}"\ncase "$1" in\n  layout)\n    echo '{"windows":[{"id":"tab-group-aabbcc11","front":true,"tabs":[{"id":"tab-sweep-empty","terminals":[{"id":"emptyterm0001","cwd":"${mRepo}"}]},{"id":"tab-sweep-biz","terminals":[{"id":"sweterm0001","cwd":"${sweepWt}"}]}]}]}'\n    ;;\n  new-window)\n    echo "已创建窗口 (id=tab-group-aabbcc11)"\n    ;;\n  close-tab)\n    echo "已关闭标签页 $2"\n    ;;\n  *)\n    echo "已创建标签页 (id=tab-sweep-biz)"\n    ;;\nesac\n`,
+		{ mode: 0o755 },
+	);
+	fs.writeFileSync(sweepLog, "");
+	const sweepRes = await masterMod.createWorkflowWithMaster(db2, {
+		repoPath: mRepo,
+		ownerCwd: tmpDir,
+		workflowId: "m-sweep",
+		title: "sweep",
+		goal: "sweep",
+		gittreeBin: "gittree",
+		ghostctlBin: sweepFake,
+	});
+	assert(sweepRes.ok, `sweep create 成功: ${sweepRes.error ?? ""}`);
+	const sweepRaw = fs.readFileSync(sweepLog, "utf-8");
+	assert(
+		sweepRaw.includes("close-tab tab-sweep-empty"),
+		`初始空白 tab 已清理(${sweepRaw.split("\n").filter(Boolean).join(" | ")})`,
+	);
+	assert(
+		!sweepRaw.includes("close-tab tab-sweep-biz"),
+		"业务 tab 保留(不误关)",
+	);
+
 	// T27c 空 workflow 首 wave 自动创建(主控 /wf plan --workflow 落点)
 	const appRes = orchMod.appendSteps(
 		db2,
