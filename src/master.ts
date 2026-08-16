@@ -27,6 +27,7 @@ import {
 	addEvent,
 	createWorkflow,
 	EVT,
+	getStepsByWorkflow,
 	getWorkflow,
 	getWorkflowMeta,
 	setWorkflowMeta,
@@ -335,6 +336,18 @@ export async function mergeMaster(
 		}
 	}
 
+	// 1.5 清理主控 worktree 的 pi 运行时目录(.pi-glla 等非代码产出,会拦截
+	// gittree merge 的干净检查——真实现象:主控会话残留 .pi-glla 导致合并失败)
+	const masterWt = masterWorktreePath(wf.repo_path, workflowId);
+	const gllaDir = path.join(masterWt, ".pi-glla");
+	if (fs.existsSync(gllaDir)) {
+		try {
+			fs.rmSync(gllaDir, { recursive: true, force: true });
+		} catch {
+			/* 清理失败交给 gittree 的报错兜底 */
+		}
+	}
+
 	// 2. 合并主控 gittree 到发起方当前分支(--delete 删 worktree+分支)
 	const mergeRes = await run(
 		gittreeBin,
@@ -347,6 +360,21 @@ export async function mergeMaster(
 			workflowId,
 			error: `主控 gittree 合并失败: ${mergeRes.stderr || mergeRes.stdout}`,
 		};
+	}
+
+	// 2.5 兜底清理:终态步骤残留的 tab/worktree(主控未清理干净的场景;
+	// 占用中的由 gittree clean 跳过,不阻断合并)
+	for (const st of getStepsByWorkflow(db, workflowId)) {
+		if (st.tab_id && (st.status === "done" || st.status === "skipped")) {
+			await run(ghostctlBin, ["close-terminal", st.tab_id], wf.repo_path);
+		}
+		if (st.worktree) {
+			await run(
+				gittreeBin,
+				["clean", st.worktree, "--branch", "--force"],
+				wf.repo_path,
+			);
+		}
 	}
 
 	// 3. 终态
