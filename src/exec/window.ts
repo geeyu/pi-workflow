@@ -125,12 +125,7 @@ export async function openStepTab(
 
 	// 本次新建窗口(Ghostty new window 自带初始空白 tab)→ 清理非业务 tab
 	if (win.created && tabId) {
-		await sweepInitialTabs(
-			ghostctlBin,
-			workflow.repo_path,
-			win.winId,
-			tabId,
-		);
+		await sweepInitialTabs(ghostctlBin, workflow.repo_path, win.winId, tabId);
 	}
 
 	if (opts.attemptId !== undefined) {
@@ -212,8 +207,7 @@ export async function resolveWorkflowWindow(
 	cwd: string,
 	workflowId: string,
 ): Promise<
-	| { ok: true; winId: string; created?: boolean }
-	| { ok: false; error: string }
+	{ ok: true; winId: string; created?: boolean } | { ok: false; error: string }
 > {
 	const bound = getWorkflowMeta(db, workflowId, WF_WINDOW_META_KEY) as
 		| string

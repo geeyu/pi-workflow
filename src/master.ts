@@ -195,12 +195,7 @@ export async function createWorkflowWithMaster(
 	}
 
 	// 3. 专属窗口绑定 + 开主控 tab
-	const win = await resolveWorkflowWindow(
-		db,
-		ghostctlBin,
-		repoPath,
-		workflowId,
-	);
+	const win = await resolveWorkflowWindow(db, ghostctlBin, repoPath, workflowId);
 	if (!win.ok) {
 		return { ok: false, workflowId, error: win.error };
 	}

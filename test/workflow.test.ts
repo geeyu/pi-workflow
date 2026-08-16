@@ -272,13 +272,7 @@ async function main(): Promise<void> {
 		inPlugin.includes("node") && inPlugin.includes(fakePiEntry),
 		`pi 插件上下文复用 node+pi 入口(${inPlugin})`,
 	);
-	process.argv[1] = path.join(
-		tmpDir,
-		"extensions",
-		"workflow",
-		"src",
-		"cli.ts",
-	);
+	process.argv[1] = path.join(tmpDir, "extensions", "workflow", "src", "cli.ts");
 	fs.mkdirSync(path.join(tmpDir, "extensions", "workflow", "src"), {
 		recursive: true,
 	});
@@ -326,8 +320,7 @@ async function main(): Promise<void> {
 	});
 	assert(dry.ok && dry.dryRun === true, "dry-run 通过");
 	assert(
-		dry.pointer!.includes("/wf context") &&
-			dry.pointer!.includes("/wf done 1.1"),
+		dry.pointer!.includes("/wf context") && dry.pointer!.includes("/wf done 1.1"),
 		"pointer 指向 /wf context 与 /wf done",
 	);
 	assert(
@@ -410,11 +403,7 @@ async function main(): Promise<void> {
 		ghostctlBin: fakeGhostctl,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
-	const boundWin = dbMod.getWorkflowMeta(
-		db2,
-		"scratch-wf",
-		"ghostty_window_id",
-	);
+	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
 	assert(
 		boundWin === "tab-group-aabbccddeeff",
 		"未绑定 → new-window 创建专属窗口并绑定(meta)",
@@ -571,10 +560,7 @@ async function main(): Promise<void> {
 		goneRes.error!.includes("绑定窗口") && goneRes.error!.includes("win-gone"),
 		`错误提及绑定窗口与 id(${goneRes.error})`,
 	);
-	assert(
-		goneRes.error!.includes("rebind-window"),
-		"错误提示 /wf rebind-window",
-	);
+	assert(goneRes.error!.includes("rebind-window"), "错误提示 /wf rebind-window");
 	assert(
 		dbMod.getStep(db2, "gonewin-wf-1")?.status === "failed",
 		"步骤回退 failed(可重派,不卡 dispatched)",
@@ -584,8 +570,7 @@ async function main(): Promise<void> {
 		"attempt 置 aborted",
 	);
 	assert(
-		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") ===
-			"win-gone",
+		dbMod.getWorkflowMeta(db2, "gonewin-wf", "ghostty_window_id") === "win-gone",
 		"锁定不被焦点窗口覆盖",
 	);
 	const goneCalls = fs
@@ -699,10 +684,7 @@ async function main(): Promise<void> {
 	const cost = dbMod.workflowCost(db2, "demo-wf");
 	assert(cost === null, "无尝试的 workflow → 成本为 null");
 	const costScratch = dbMod.workflowCost(db2, "scratch-wf");
-	assert(
-		costScratch !== null && costScratch.attempts === 1,
-		"成本聚合(1 尝试)",
-	);
+	assert(costScratch !== null && costScratch.attempts === 1, "成本聚合(1 尝试)");
 	const kanban = db2
 		.prepare(
 			"SELECT * FROM v_workflow_kanban WHERE workflow_id = 'demo-wf' ORDER BY sort_order",
@@ -1003,9 +985,7 @@ async function main(): Promise<void> {
 	);
 	// 恢复状态(绕过状态机直接还原,不干扰后续测试)
 	db2
-		.prepare(
-			"UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'",
-		)
+		.prepare("UPDATE workflow_steps SET status='running' WHERE id='scratch-wf-1'")
 		.run();
 	dbMod.setStepMeta(db2, "scratch-wf-1", "notify:reported", null);
 
@@ -1128,9 +1108,7 @@ async function main(): Promise<void> {
 	);
 	// merge --delete 后 worktree 已清理
 	assert(
-		!fs.existsSync(
-			path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1"),
-		),
+		!fs.existsSync(path.join(scratchRepo, ".worktrees", "gittree-wf-merge-wf-1")),
 		"merge --delete 清理 worktree",
 	);
 	// skipped 步骤:不合并但 worktree/分支一并清理(合并主线后不留 gittree 残留)
@@ -1236,10 +1214,7 @@ async function main(): Promise<void> {
 	dbMod.buildUpdate(db2, "workflow", { budget_cents: 100 }, { id: "ready-wf" });
 	const budget = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "ready-wf")!);
 	assert(!budget.ok && budget.reason!.includes("预算"), "预算超限拒绝");
-	const budgetOk = orchMod.checkBudget(
-		db2,
-		dbMod.getWorkflow(db2, "merge-wf")!,
-	);
+	const budgetOk = orchMod.checkBudget(db2, dbMod.getWorkflow(db2, "merge-wf")!);
 	assert(budgetOk.ok, "无预算放行");
 
 	console.log("== T15 超时检查 ==");
@@ -1791,10 +1766,7 @@ async function main(): Promise<void> {
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "running"), "done");
-		assert(
-			!r.reached && r.unreachable.length === 0,
-			"running 未达成不 reached",
-		);
+		assert(!r.reached && r.unreachable.length === 0, "running 未达成不 reached");
 	}
 	{
 		const r = pollMod.pollTargetReached(mkSteps("done", "failed"), "done");
@@ -1942,9 +1914,7 @@ async function main(): Promise<void> {
 		"1",
 	]);
 	assert(
-		pr.code === 1 &&
-			pr.stdout.includes("超时") &&
-			pr.stderr.includes("未派发 3"),
+		pr.code === 1 && pr.stdout.includes("超时") && pr.stderr.includes("未派发 3"),
 		`poll 超时 → 退出 1(${pr.code} ${pr.stdout.trim().slice(0, 60)})`,
 	);
 	// 用法错误 → 3
@@ -2606,10 +2576,7 @@ async function main(): Promise<void> {
 	);
 	assert(stateMod.canTransition("running", "running"), "同态幂等合法");
 	assert(!stateMod.canTransition("done", "running"), "done → running 非法");
-	assert(
-		!stateMod.canTransition("skipped", "reported"),
-		"skipped 终态不可回退",
-	);
+	assert(!stateMod.canTransition("skipped", "reported"), "skipped 终态不可回退");
 	assert(
 		stateMod.canTransition("done", "conflict"),
 		"done → conflict(merge 冲突)合法",
@@ -2645,15 +2612,9 @@ async function main(): Promise<void> {
 	// 同态幂等 strict 不抛
 	let idemOk = true;
 	try {
-		dbMod.updateStepStatus(
-			db2,
-			"demo-wf-2",
-			dbMod.STEP_STATUS.done,
-			undefined,
-			{
-				strict: true,
-			},
-		);
+		dbMod.updateStepStatus(db2, "demo-wf-2", dbMod.STEP_STATUS.done, undefined, {
+			strict: true,
+		});
 	} catch {
 		idemOk = false;
 	}
@@ -2661,9 +2622,7 @@ async function main(): Promise<void> {
 	// 关键入口:reportDone/reportFail/verifyStep 非法迁移 → 明确错误 + 合法目标
 	const re1 = orchMod.reportDone(db2, "demo-wf-2", { summary: "重报" });
 	assert(
-		!re1.ok &&
-			re1.error!.includes("状态迁移非法") &&
-			re1.error!.includes("允许"),
+		!re1.ok && re1.error!.includes("状态迁移非法") && re1.error!.includes("允许"),
 		`reportDone 终态拒绝(${re1.error})`,
 	);
 	const rf1 = orchMod.reportFail(db2, "demo-wf-2", "x");
@@ -3097,9 +3056,7 @@ async function main(): Promise<void> {
 	const legacyLines = legacy.render(120);
 	assert(
 		legacyLines[0]!.includes("<dim>") &&
-			legacyLines.some((l) =>
-				l.includes("<accent>/wf retry san-wf-1</accent>"),
-			),
+			legacyLines.some((l) => l.includes("<accent>/wf retry san-wf-1</accent>")),
 		"无 details 降级渲染(首行 dim + 命令高亮)",
 	);
 
@@ -3165,9 +3122,7 @@ async function main(): Promise<void> {
 	);
 	pr = runCli(["import", "bad-plan.json"], { cwd: tmpDir });
 	assert(
-		pr.code === 1 &&
-			pr.stderr.includes("导入失败") &&
-			pr.stderr.includes("点号"),
+		pr.code === 1 && pr.stderr.includes("导入失败") && pr.stderr.includes("点号"),
 		`非法 plan 校验错误逐条可读(${pr.stderr.slice(0, 80).replace(/\n/g, " ")})`,
 	);
 
@@ -3201,9 +3156,7 @@ async function main(): Promise<void> {
 		const msg = (e as Error).message;
 		assert(
 			msg.includes("非法状态迁移: san-wf-1 conflict → dispatched") &&
-				msg.includes(
-					"允许: conflict, done, failed, aborted, needs-fix, skipped",
-				),
+				msg.includes("允许: conflict, done, failed, aborted, needs-fix, skipped"),
 			`非法迁移报错含状态/允许集(${msg.slice(0, 60)}…)`,
 		);
 	}
@@ -3494,10 +3447,7 @@ async function main(): Promise<void> {
 		sweepRaw.includes("close-tab tab-sweep-empty"),
 		`初始空白 tab 已清理(${sweepRaw.split("\n").filter(Boolean).join(" | ")})`,
 	);
-	assert(
-		!sweepRaw.includes("close-tab tab-sweep-biz"),
-		"业务 tab 保留(不误关)",
-	);
+	assert(!sweepRaw.includes("close-tab tab-sweep-biz"), "业务 tab 保留(不误关)");
 
 	// T27b3 sweep 重试:刚创建窗口的 tab 在 AppleScript 侧引用未就绪(-1728),
 	// close-tab 失败后按退避重试,最终关闭空白 tab 且不误关业务 tab
@@ -3512,18 +3462,21 @@ async function main(): Promise<void> {
 	);
 	fs.writeFileSync(retryLog, "");
 	fs.rmSync(retryFlag, { force: true });
-	await wndMod.sweepInitialTabs(retryFake, mRepo, "tab-group-sweepwin", "sweterm0001", {
-		retryDelaysMs: [10, 10],
-	});
+	await wndMod.sweepInitialTabs(
+		retryFake,
+		mRepo,
+		"tab-group-sweepwin",
+		"sweterm0001",
+		{
+			retryDelaysMs: [10, 10],
+		},
+	);
 	const retryRaw = fs.readFileSync(retryLog, "utf-8");
 	assert(
 		(retryRaw.match(/close-tab tab-sweep-empty/g) ?? []).length === 2,
 		`close-tab 失败后重试至成功(${retryRaw.split("\n").filter(Boolean).join(" | ")})`,
 	);
-	assert(
-		!retryRaw.includes("close-tab tab-sweep-biz"),
-		"重试不误关业务 tab",
-	);
+	assert(!retryRaw.includes("close-tab tab-sweep-biz"), "重试不误关业务 tab");
 
 	// T27c 空 workflow 首 wave 自动创建(主控 /wf plan --workflow 落点)
 	const appRes = orchMod.appendSteps(
@@ -3816,10 +3769,7 @@ async function main(): Promise<void> {
 	assert(fCreate.ok, "m-fail create");
 	const mfRes = masterMod.markMasterFailed(db2, "m-fail", "无法继续");
 	assert(mfRes.ok, "master-fail 标记成功");
-	assert(
-		dbMod.getWorkflow(db2, "m-fail")?.status === "failed",
-		"status=failed",
-	);
+	assert(dbMod.getWorkflow(db2, "m-fail")?.status === "failed", "status=failed");
 	const fEvts = dbMod
 		.getEvents(db2, { workflowId: "m-fail", limit: 10 })
 		.map((e) => e.type);
@@ -3909,6 +3859,25 @@ async function main(): Promise<void> {
 		"终态 workflow 拒绝追加步骤",
 	);
 
+	// T27j2 .pi-glla 启动即忽略(会话启动时确保进 .gitignore,防 merge 干净检查拦截)
+	assert(
+		cmdMod.ensureGllaIgnored(mRepo) === true,
+		"ensureGllaIgnored 首次追加 .gitignore 条目",
+	);
+	const giAfter = fs.readFileSync(path.join(mRepo, ".gitignore"), "utf-8");
+	assert(
+		giAfter.includes(".pi-glla/"),
+		".gitignore 含 .pi-glla/ 条目",
+	);
+	assert(
+		cmdMod.ensureGllaIgnored(mRepo) === false,
+		"ensureGllaIgnored 幂等(已存在不再追加)",
+	);
+	assert(
+		cmdMod.ensureGllaIgnored(path.join(tmpDir, "no-such-dir")) === false,
+		"非 git 仓库静默跳过",
+	);
+
 	// T27k dead-master:主控 tab 消失 → 标记 + 通知(独立于 running 步骤)
 	const deadFake = path.join(tmpDir, "fake-ghostctl-dead.sh");
 	fs.writeFileSync(
@@ -3964,9 +3933,7 @@ async function main(): Promise<void> {
 	// status --json 不因新状态(awaiting-merge/completed/failed)崩溃
 	pr = runCli(["status", "--json"], { cwd: mRepo });
 	assert(
-		pr.code === 0 &&
-			pr.stdout.includes("m-demo") &&
-			pr.stdout.includes("m-fail"),
+		pr.code === 0 && pr.stdout.includes("m-demo") && pr.stdout.includes("m-fail"),
 		`status --json 全状态可渲染(${pr.stdout.slice(0, 60).replace(/\n/g, " ")})`,
 	);
 

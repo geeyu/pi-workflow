@@ -775,6 +775,44 @@ register({
 	},
 });
 
+// ────────────────────────────────────────────────────────────
+// .pi-glla 启动即忽略(根治 gittree merge 干净检查拦截)
+// ────────────────────────────────────────────────────────────
+/**
+ * 确保仓库根 .gitignore 包含 .pi-glla/(子 pi 运行时目录,非代码产出)。
+ * 任何 pi 会话启动时调用:主控/子任务会话在 worktree 内启动会生成 .pi-glla,
+ * 若未被忽略,git status 会出现 untracked 改动,拦截 gittree merge 的干净检查
+ * (master-merge 卡点之一)。幂等;非 git 仓库/写入失败静默跳过。
+ * @returns 本次是否追加了条目
+ */
+export function ensureGllaIgnored(repoPath: string): boolean {
+	let root: string;
+	try {
+		root = execFileSync(
+			"git",
+			["rev-parse", "--show-toplevel"],
+			{ cwd: repoPath, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+		)
+			.trim();
+	} catch {
+		return false; // 非 git 仓库
+	}
+	if (!root) return false;
+	try {
+		const giPath = path.join(root, ".gitignore");
+		const giContent = fs.existsSync(giPath) ? fs.readFileSync(giPath, "utf-8") : "";
+		const hasEntry = giContent
+			.split("\n")
+			.some((l) => l.trim() === ".pi-glla/" || l.trim() === ".pi-glla");
+		if (hasEntry) return false;
+		const add = `${giContent && !giContent.endsWith("\n") ? "\n" : ""}# pi-workflow: 子 pi 运行时状态(防 merge 冲突)\n.pi-glla/\n`;
+		fs.appendFileSync(giPath, add);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // ── status(双入口)──────────────────────────────────────────
 register({
 	name: "status",

@@ -167,6 +167,13 @@ export default function workflowExtension(pi: ExtensionAPI) {
 
 	// ── session_start:子 pi 设标题;编排者崩溃恢复 + 启动轮询 ─
 	pi.on("session_start", async (_event, ctx) => {
+		// 任何会话启动都确保 .pi-glla 被仓库忽略(子 pi 运行时目录,非代码产出;
+		// 否则 git status 的 untracked 改动会拦截 gittree merge 的干净检查)
+		try {
+			ensureGllaIgnored(ctx.cwd);
+		} catch {
+			/* 忽略失败,cleanup 的合并前置修复兜底 */
+		}
 		const ident = resolveIdentity(ctx.cwd, db);
 		if (ident?.stepId) {
 			// 子任务会话(worker):只设标题,不渲染编排者面板/状态条、不启动 monitor

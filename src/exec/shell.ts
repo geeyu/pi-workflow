@@ -122,9 +122,7 @@ function fnmPiCandidates(): string[] {
 	} catch {
 		return [];
 	}
-	return versions.map((v) =>
-		path.join(fnmRoot, v, "installation", "bin", "pi"),
-	);
+	return versions.map((v) => path.join(fnmRoot, v, "installation", "bin", "pi"));
 }
 
 /** 在 PATH 上找可执行文件(返回绝对路径;找不到返回 null) */
