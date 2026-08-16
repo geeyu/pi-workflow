@@ -90,6 +90,12 @@ export const STEP_STATUS = {
 } as const;
 export type StepStatus = (typeof STEP_STATUS)[keyof typeof STEP_STATUS];
 
+/** workflow_metadata:master-agent 模式标记(mode=master)——主控 agent 独立 gittree 自主编排 */
+export const MASTER_MODE_KEY = "mode";
+export const MASTER_MODE_VALUE = "master";
+/** workflow_metadata:主控会话 tab/terminal id(dead-master 检测 + 子任务窗口定位 + master-merge 关 tab) */
+export const MASTER_TAB_KEY = "master_tab_id";
+
 export const WORKFLOW_STATUS = {
 	idle: "idle",
 	running: "running",

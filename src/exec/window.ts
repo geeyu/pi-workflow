@@ -16,6 +16,9 @@ import {
 	buildUpdate,
 	EVT,
 	getWorkflowMeta,
+	MASTER_MODE_KEY,
+	MASTER_MODE_VALUE,
+	MASTER_TAB_KEY,
 	type StepRow,
 	setWorkflowMeta,
 	type WorkflowRow,
@@ -95,12 +98,22 @@ export async function openStepTab(
 		// 后台创建,不抢焦点(恢复原终端焦点,不打扰当前开发)
 		"--no-focus",
 	];
-	const win = await resolveWorkflowWindow(
-		db,
-		ghostctlBin,
-		workflow.repo_path,
-		workflow.id,
-	);
+	// master-agent 模式:子任务 tab 直接开在主控所在窗口(主控只需在自己窗口
+	// 创建 tab,无需专属窗口绑定);经典模式:workflow 专属窗口(首次 new-window 绑定)。
+	const win =
+		getWorkflowMeta(db, workflow.id, MASTER_MODE_KEY) === MASTER_MODE_VALUE
+			? await resolveMasterWindow(
+					db,
+					ghostctlBin,
+					workflow.repo_path,
+					workflow.id,
+				)
+			: await resolveWorkflowWindow(
+					db,
+					ghostctlBin,
+					workflow.repo_path,
+					workflow.id,
+				);
 	if (!win.ok) return { ok: false, phase: "window", error: win.error };
 	tabArgs.splice(1, 0, "--window-id", win.winId);
 
@@ -123,8 +136,9 @@ export async function openStepTab(
 		wtPath,
 	);
 
-	// 本次新建窗口(Ghostty new window 自带初始空白 tab)→ 清理非业务 tab
-	if (win.created && tabId) {
+	// 本次新建窗口(经典模式首次派发,Ghostty new window 自带初始空白 tab)
+	// → 清理非业务 tab;master 模式无 created 标记(主控 tab 一步创建,无空白 tab)
+	if (win.ok && "created" in win && win.created && tabId) {
 		await sweepInitialTabs(ghostctlBin, workflow.repo_path, win.winId, tabId);
 	}
 
@@ -190,6 +204,56 @@ function parseLayout(raw: string): WfWindowInfo[] | null {
 
 /** new-window 输出的窗口 id(与 new-tab 同构,稳定) */
 const WINDOW_ID_RE = /id=(tab-group-[0-9a-f]+)/;
+
+/**
+ * master-agent 模式:反查主控 tab 所在窗口(主控在自己所在窗口创建子任务 tab)。
+ * 按 master_tab_id(主控 terminal id)在 layout 中定位;找不到 → 报错(主控
+ * 会话可能已关闭,绝不在其他窗口裸开)。
+ */
+export async function resolveMasterWindow(
+	db: DatabaseSync,
+	ghostctlBin: string,
+	cwd: string,
+	workflowId: string,
+): Promise<{ ok: true; winId: string } | { ok: false; error: string }> {
+	const masterTab = getWorkflowMeta(db, workflowId, MASTER_TAB_KEY) as
+		| string
+		| undefined;
+	if (!masterTab) {
+		return {
+			ok: false,
+			error: `workflow ${workflowId} 未记录主控 tab(master_tab_id),无法定位窗口`,
+		};
+	}
+	const res = await run(ghostctlBin, ["layout", "--json"], cwd);
+	if (res.code !== 0) {
+		return {
+			ok: false,
+			error: `ghostctl layout 失败: ${res.stderr || res.stdout}`,
+		};
+	}
+	try {
+		const layout = JSON.parse(res.stdout) as {
+			windows: Array<{
+				id: string;
+				tabs: Array<{ terminals: Array<{ id: string }> }>;
+			}>;
+		};
+		for (const w of layout.windows) {
+			for (const t of w.tabs) {
+				if (t.terminals.some((x) => x.id === masterTab)) {
+					return { ok: true, winId: w.id };
+				}
+			}
+		}
+	} catch {
+		return { ok: false, error: "ghostctl layout 解析失败" };
+	}
+	return {
+		ok: false,
+		error: `主控 tab(${masterTab.slice(0, 8)}…) 不在 Ghostty 布局中,无法定位窗口;主控会话可能已关闭`,
+	};
+}
 
 /**
  * workflow 绑定窗口(设计:一次 workflow 一个专属窗口):

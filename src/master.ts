@@ -30,17 +30,15 @@ import {
 	getStepsByWorkflow,
 	getWorkflow,
 	getWorkflowMeta,
+	MASTER_MODE_KEY,
+	MASTER_MODE_VALUE,
+	MASTER_TAB_KEY,
 	setWorkflowMeta,
 	updateWorkflowStatus,
 	WORKFLOW_STATUS,
 } from "./core/db.ts";
 import { piInvocation, resolveBin, run } from "./exec/shell.ts";
-import {
-	findTerminalId,
-	resolveWorkflowWindow,
-	shellQuote,
-	sweepInitialTabs,
-} from "./exec/window.ts";
+import { findTerminalId, shellQuote } from "./exec/window.ts";
 
 // ────────────────────────────────────────────────────────────
 // 命名与 mode 元数据
@@ -63,12 +61,6 @@ export function masterWorktreePath(
 ): string {
 	return path.join(repoPath, ".worktrees", `gittree-${masterName(workflowId)}`);
 }
-
-/** workflow_metadata:master 模式标记(mode=master) */
-const MASTER_MODE_KEY = "mode";
-const MASTER_MODE_VALUE = "master";
-/** workflow_metadata:主控会话 tab/terminal id(dead-master 检测 + master-merge 关 tab) */
-export const MASTER_TAB_KEY = "master_tab_id";
 
 /** 该 workflow 是否为 master-agent 模式(主控独立 gittree 自主编排) */
 export function isMasterMode(db: DatabaseSync, workflowId: string): boolean {
@@ -194,48 +186,28 @@ export async function createWorkflowWithMaster(
 		};
 	}
 
-	// 3. 专属窗口绑定 + 开主控 tab
-	const win = await resolveWorkflowWindow(db, ghostctlBin, repoPath, workflowId);
-	if (!win.ok) {
-		return { ok: false, workflowId, error: win.error };
-	}
+	// 3. 一步创建主控 tab:new-window --command 让 Ghostty 自带的初始 tab 直接
+	// 成为主控(带 cwd + 启动命令)——无多余空白 tab、无需 sweep/绑定窗口,
+	// 主控后续在自己所在窗口开子任务 tab(resolveMasterWindow)。
 	const pointer = buildMasterPointer(workflowId, opts.goal);
 	const cmd = `env PI_WF_MASTER=${workflowId} PI_WF_REPO=${repoPath} ${piInvocation()} ${shellQuote(pointer)}`;
-	const tabRes = await run(
+	const winRes = await run(
 		ghostctlBin,
-		[
-			"new-tab",
-			"--window-id",
-			win.winId,
-			"--cwd",
-			wtPath,
-			"--command",
-			cmd,
-			"--at-end",
-			"--no-focus",
-		],
+		["new-window", "--cwd", wtPath, "--command", cmd, "--no-focus"],
 		repoPath,
 	);
-	if (tabRes.code !== 0) {
+	if (winRes.code !== 0) {
 		return {
 			ok: false,
 			workflowId,
-			error: `主控 tab 创建失败: ${tabRes.stderr || tabRes.stdout}`,
+			error: `主控窗口创建失败: ${winRes.stderr || winRes.stdout}`,
 		};
 	}
-	const tabMatch = /id=(tab-[0-9a-f]+)/.exec(tabRes.stdout);
-	const tabId = await findTerminalId(
-		ghostctlBin,
-		repoPath,
-		tabMatch ? tabMatch[1] : null,
-		wtPath,
-	);
+	// 反查主控 terminal id(按 cwd 匹配;新窗口初始 tab 的 AppleScript 引用
+	// 刚创建时不可用,但 layout 读取不受影响)
+	const tabId = await findTerminalId(ghostctlBin, repoPath, null, wtPath);
 	if (tabId) {
 		setWorkflowMeta(db, workflowId, MASTER_TAB_KEY, tabId);
-	}
-	// 本次新建窗口(Ghostty new window 自带初始空白 tab)→ 清理非业务 tab
-	if (win.created && tabId) {
-		await sweepInitialTabs(ghostctlBin, repoPath, win.winId, tabId);
 	}
 	addEvent(db, {
 		workflowId,

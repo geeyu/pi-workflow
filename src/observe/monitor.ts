@@ -26,6 +26,7 @@ import {
 	getWorkflowMeta,
 	listActiveWorkflows,
 	listWaves,
+	MASTER_TAB_KEY,
 	STEP_STATUS,
 	type StepRow,
 	setStepMeta,
@@ -35,7 +36,7 @@ import {
 } from "../core/db.ts";
 import { depsDone } from "../exec/dispatch.ts";
 import { resolveBin, run } from "../exec/shell.ts";
-import { isMasterMode, MASTER_TAB_KEY } from "../master.ts";
+import { isMasterMode } from "../master.ts";
 
 // ────────────────────────────────────────────────────────────
 // tab 存活检测
