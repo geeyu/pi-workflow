@@ -60,8 +60,14 @@ export function importPlan(
 	if (!result.ok) {
 		return { ok: false, errors: result.errors };
 	}
-	if (getWorkflow(db, result.workflowId)) {
-		return { ok: false, errors: [`workflow 已存在: ${result.workflowId}`] };
+	const existing = getWorkflow(db, result.workflowId);
+	if (existing) {
+		return {
+			ok: false,
+			errors: [
+				`workflow 已存在: ${result.workflowId}(repo: ${existing.repo_path}, status: ${existing.status}, 创建于 ${new Date(existing.created_at).toISOString().slice(0, 10)});请换一个 id 或复用现有 workflow`,
+			],
+		};
 	}
 
 	db.exec("BEGIN");

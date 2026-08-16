@@ -781,6 +781,46 @@ async function main(): Promise<void> {
 	);
 	assert(fromCwdSub?.stepId === "add-redis-cache-1.2", "cwd 子目录身份解析");
 
+	// ── id 前缀匹配(防手输写错)与撞名报错增强 ──
+	const cmdModT9 = await import("../src/command.ts");
+	const t9Env = { kind: "cli", cwd: scratchRepo, db: db2 } as never;
+	// workflow 唯一前缀命中(scratch-wf 在库)
+	const wfByPrefix = cmdModT9.resolveWorkflowId(t9Env, "scratch-w");
+	assert(wfByPrefix === "scratch-wf", `workflow 唯一前缀命中(${wfByPrefix})`);
+	// 完整 id 直接命中
+	assert(
+		cmdModT9.resolveWorkflowId(t9Env, "scratch-wf") === "scratch-wf",
+		"workflow 完整 id 命中",
+	);
+	// 无命中 → 原样返回(下游报「workflow 不存在」)
+	assert(
+		cmdModT9.resolveWorkflowId(t9Env, "no-such-wf") === "no-such-wf",
+		"workflow 无命中原样返回",
+	);
+	// 步骤唯一前缀命中(当前 workflow 内)
+	const stepByPrefix = cmdModT9.resolveStepId(t9Env, "scratch-wf-1");
+	assert(stepByPrefix !== null, `步骤完整 id 命中(${stepByPrefix?.id})`);
+	// 撞名报错增强:导入同名 workflow 报错含 repo/status 上下文
+	const dupImp = orchMod.importPlan(
+		db2,
+		{
+			name: "scratch-wf",
+			title: "重名",
+			goal: "g",
+			repoPath: scratchRepo,
+			steps: [{ id: "1", title: "a", agent: "worker", task: "a" }],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(
+		!dupImp.ok &&
+			(dupImp.errors ?? []).some(
+				(e) => e.includes("已存在") && e.includes("repo:"),
+			),
+		`撞名报错含 repo/status 上下文(${(dupImp.errors ?? []).join(" | ")})`,
+	);
+
 	console.log("== T10 monitor 存活检测 ==");
 	const monitorMod = await import("../src/observe/monitor.ts");
 	// T7 已 fail 过 scratch-wf-1 一次(retries_done=1);调大上限以便本测试多次重派
@@ -931,7 +971,9 @@ async function main(): Promise<void> {
 	// 第二个连接模拟"另一个进程(子 agent/CLI)写库"——WAL 落盘 → 目录 watch 触发
 	const watchConn = new DatabaseSync(process.env.WF_DB_PATH!);
 	watchConn
-		.prepare("UPDATE workflow_steps SET status='reported' WHERE id='scratch-wf-1'")
+		.prepare(
+			"UPDATE workflow_steps SET status='reported' WHERE id='scratch-wf-1'",
+		)
 		.run();
 	watchConn.close();
 	await new Promise((r) => setTimeout(r, 900)); // debounce(50)+tick(ghostctl)+detect

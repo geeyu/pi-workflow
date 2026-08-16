@@ -294,12 +294,29 @@ export function resolveIdentity(cwd: string): WfIdentity | null {
 	return null;
 }
 
-/** workflow 解析:显式参数 → 身份 env → cwd 所在仓库的活动 workflow(自两入口收敛) */
+/**
+ * workflow 解析:显式参数(支持唯一前缀匹配)→ 身份 env → cwd 所在仓库的活动 workflow。
+ * 前缀匹配:唯一命中返回完整 id;多个候选 warn 列出(防手输写错);无命中返回 null。
+ */
 export function resolveWorkflowId(
 	env: CmdEnv,
 	explicit?: string,
 ): string | null {
-	if (explicit) return explicit;
+	if (explicit) {
+		if (getWorkflow(env.db, explicit)) return explicit; // 完整 id 直接命中
+		const hits = listWorkflows(env.db).filter((w) =>
+			w.id.startsWith(explicit),
+		);
+		if (hits.length === 1) return hits[0].id;
+		if (hits.length > 1) {
+			env.warn(
+				`workflow id 前缀 ${explicit} 不唯一: ${hits.map((w) => w.id).join(", ")}(请用完整 id)`,
+			);
+			return null;
+		}
+		// 无命中:原样返回,由下游报「workflow 不存在: <id>」(更准确的错误)
+		return explicit;
+	}
 	const ident = resolveIdentity(env.cwd);
 	if (ident) return ident.workflowId;
 	const cwd = path.resolve(env.cwd);
@@ -311,13 +328,28 @@ export function resolveWorkflowId(
 	return null;
 }
 
-/** 步骤解析:完整 id 直接命中 → 点号 id 按身份/活动 workflow 兜底(自 cli.resolveStepId + index.findStep 收敛) */
+/**
+ * 步骤解析:完整 id 直接命中 → 点号 id 按身份/活动 workflow 兜底 → 当前 workflow 内唯一前缀匹配。
+ * 前缀匹配防手输写错(typo 少写/多写字符仍能命中);多个候选 warn 列出。
+ */
 export function resolveStepId(env: CmdEnv, token: string): StepRow | null {
 	const direct = getStep(env.db, token);
 	if (direct) return direct;
 	const wfId = resolveWorkflowId(env);
 	if (!wfId) return null;
-	return getStep(env.db, `${wfId}-${token}`) ?? null;
+	const full = getStep(env.db, `${wfId}-${token}`);
+	if (full) return full;
+	// 唯一前缀匹配(限定当前 workflow,避免跨 workflow 混乱)
+	const hits = getStepsByWorkflow(env.db, wfId).filter((s) =>
+		s.id.startsWith(token),
+	);
+	if (hits.length === 1) return hits[0];
+	if (hits.length > 1) {
+		env.warn(
+			`步骤 id 前缀 ${token} 不唯一: ${hits.map((s) => s.id).join(", ")}(请用完整 id)`,
+		);
+	}
+	return null;
 }
 
 /** JSON 参数解析(自 index.parseJsonArg 收敛) */
