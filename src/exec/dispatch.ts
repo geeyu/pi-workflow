@@ -17,6 +17,7 @@
  * 任务正文存库(pointer 只带短指引经位置参数交付,杜绝长文本/中文粘贴错乱)。
  */
 
+import * as fs from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
 	addEvent,
@@ -190,6 +191,28 @@ export async function dispatchStep(
 			stepId: step.id,
 			error: `依赖未完成,先完成: ${pending.join(", ")}`,
 		};
+	}
+
+	// 串行依赖守护:依赖步骤「已 done 但 worktree 尚未 merge」时,本步会从
+	// 冻结的 base_sha(旧 HEAD)分叉,缺失前序成果 → 静默 sibling 分叉事故根因。
+	// 判断「已 merge」与 mergeWave 幂等断言一致:worktree 目录不存在 = 已合并
+	// (merge --delete / master merge 均会清目录)。skipped 不合并,跳过守护。
+	if (!isMasterMode(db, workflow.id)) {
+		const unmerged = getStepDeps(db, step.id).filter((depId) => {
+			const dep = getStep(db, depId);
+			if (!dep || dep.status !== "done") return false;
+			const depDotted = depId.slice(workflow.id.length + 1);
+			return fs.existsSync(
+				worktreePath(workflow.repo_path, workflow.id, depDotted),
+			);
+		});
+		if (unmerged.length > 0) {
+			return {
+				ok: false,
+				stepId: step.id,
+				error: `串行依赖步骤成果尚未合并: ${unmerged.join(", ")};请将这些依赖放到下一 wave,或先 /wf merge 合并前一步成果后再派发`,
+			};
+		}
 	}
 
 	const pointer = buildPointer(workflow.id, dotted, waveSeq);

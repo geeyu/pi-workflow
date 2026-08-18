@@ -1273,6 +1273,72 @@ async function main(): Promise<void> {
 		.some((e) => e.type === "worktree_cleaned");
 	assert(sweepEvt, "skipped 清理触发 worktree_cleaned 事件");
 
+	console.log("== T12b 串行依赖守护:依赖已 done 但未 merge 拒绝派发 ==");
+	// 场景:同 wave 内 B 依赖 A,若 A done 但未 merge,B 从冻结 base_sha 分叉会缺 A 成果。
+	// 守护应硬拒绝并指引「拆 wave 或先 merge」。
+	const serialWf = orchMod.importPlan(
+		db2,
+		{
+			name: "serial-wf",
+			title: "串行依赖",
+			goal: "测试串行依赖守护",
+			repoPath: scratchRepo,
+			steps: [
+				{ id: "1", title: "前置", agent: "worker", task: "前置" },
+				{ id: "2", title: "后置", agent: "worker", deps: ["1"], task: "后置" },
+			],
+		},
+		tmpDir,
+		AGENTS,
+	);
+	assert(serialWf.ok, "serial-wf 导入");
+	const serial = dbMod.getWorkflow(db2, "serial-wf")!;
+	const depStep = dbMod.getStep(db2, "serial-wf-1")!;
+	const depRes = await dispatchMod.dispatchStep(db2, serial, depStep, {
+		gittreeBin: "gittree",
+	});
+	assert(depRes.ok, "serial-wf-1 派发(worktree 真实存在)");
+	// dep 真实 worktree 目录存在(done 但未 merge 的典型现场)
+	const depWt = path.join(
+		scratchRepo,
+		".worktrees",
+		"gittree-wf-serial-wf-1",
+	);
+	assert(fs.existsSync(depWt), "serial-wf-1 worktree 目录存在");
+	dbMod.updateStepStatus(db2, "serial-wf-1", dbMod.STEP_STATUS.done);
+	// dep 真实 worktree 里提交成果(done + 有产出是「未 merge 却 done」的完整现场)
+	fs.writeFileSync(path.join(depWt, "pre.txt"), "pre\n");
+	execFileSync("git", ["-C", depWt, "add", "-A"]);
+	execFileSync("git", ["-C", depWt, "commit", "-q", "-m", "前置成果"]);
+	// 依赖 done 但未 merge → 派发后置步骤应硬拒绝
+	const guardRes = await dispatchMod.dispatchStep(
+		db2,
+		serial,
+		dbMod.getStep(db2, "serial-wf-2")!,
+		{ gittreeBin: "gittree" },
+	);
+	assert(
+		!guardRes.ok && guardRes.error!.includes("尚未合并"),
+		`串行依赖未 merge 拒绝派发(${guardRes.error})`,
+	);
+	assert(
+		guardRes.error!.includes("下一 wave") ||
+			guardRes.error!.includes("/wf merge") ||
+			guardRes.error!.includes("merge"),
+		"拒绝文案指引拆 wave 或先 merge",
+	);
+	// 守护不产生副作用:后置步骤未被派发(worktree 未创建、状态未变)
+	assert(
+		dbMod.getStep(db2, "serial-wf-2")?.status === "pending",
+		"被拒后后置步骤仍 pending(零副作用)",
+	);
+	assert(
+		!fs.existsSync(
+			path.join(scratchRepo, ".worktrees", "gittree-wf-serial-wf-2"),
+		),
+		"被拒后后置步骤 worktree 未创建",
+	);
+
 	console.log("== T13 retry 上下文注入 / max_retries ==");
 	// ready-wf-2 依赖 1.1/1.2(已 done),标 failed 后重派
 	dbMod.updateStepStatus(db2, "ready-wf-2", dbMod.STEP_STATUS.failed, {
