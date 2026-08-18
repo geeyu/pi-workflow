@@ -28,6 +28,7 @@ wf debug         # 库版本/表规模/运行中任务/事件数/绑定窗口
 | 步骤 running 但 tab 消失/误判 aborted | layout 查询瞬时抖动(已抗抖动:连续 2 次未命中才判) | `wf tabs` 核实存活 → `wf fix-tab <id> <tid>` 对齐;retry 会自动复用存活 tab(不重开) |
 | 步骤卡在 dispatched/running 但无 tab | new-tab 失败或 pi 崩溃 | `wf step <id>` 看 error/tab_id;`wf open-tab <id>` 或 `/wf retry <id>` |
 | `依赖未完成,先完成: …` | 派发顺序违反依赖 | 按 §3.1 顺序:先依赖,后并行,再后续 |
+| 后一步 worktree 缺前一步成果 / 目录结构回退 | 同 wave 串行步骤未 merge,分叉自陈旧 base_sha | `wf step` 看依赖;`/wf merge` 合并前一步后 `/wf retry`;或拆成新 wave |
 | `/wf done` 提示步骤不存在 | 子 tab 身份没识别 | 检查 env `PI_WF_WORKFLOW/PI_WF_STEP`;或用完整 id(`/wf done <workflowId>-<dotted>`) |
 | 步骤标 aborted「超时(Nmin 未完成)」 | 超过 steps.timeout_min(monitor 检测) | 调大 timeout_min 后 `/wf retry <id>` |
 | 派发被拒「预算已用尽」 | 累计 usage_cost_cents ≥ budget_cents | 调整预算或人工处理;`/wf resume` 恢复 |

@@ -84,5 +84,6 @@ description: >
 - 注入子 tab 的指令用**纯 ASCII**(AppleScript 中文乱码);中文内容走 `/wf context`
 - 收到「tab 已关闭」通知先 `wf tabs` 核实存活,再决定 retry(monitor 已抗抖动:连续 2 次未命中才判)
 - 多 workflow 同仓库时,CLI 命令显式传 `--workflow <id>` 最可靠
+- **串行依赖不要塞进同一 wave 靠 dispatch 顺序推进**:同一 wave 内所有步骤共享同一 base_sha(冻结的首个派发 HEAD),后一步不会自动继承前一步成果,会从陈旧 HEAD 分叉成 sibling 丢失前序成果。串行依赖应拆成多个 wave,每 wave 全部终态后 `/wf merge` 推进主仓库 HEAD,下一 wave 再分叉;若必须同 wave 串行(不建议),派发后一步前必须先 `/wf merge` 合并前一步
 - **会话隔离(谁发起谁看)**:monitor 轮询/状态通知/footer 状态条/计划面板只针对**当前会话 cwd 所在仓库**的 workflow;其他仓库的 workflow 不会被本会话轮询、通知或显示,互不干扰(如 hammerspoon-kit 的 workflow 不会通知 extensions/workflow 会话)
 - 冲突处理顺序:先 `git worktree remove --force` 再 `git branch -D`(反了报占用)

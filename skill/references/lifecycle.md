@@ -55,6 +55,8 @@ wf cleanup && /wf merge       # 关终态 tab + 清 .pi-glla,然后串行合回�
 
 **并行/串行规则**:无依赖边且为 worker 类 → 并行;有依赖或涉及共享文件 → 串行。依赖未完成时 dispatch 会被拒绝。
 
+> **⚠️ 串行依赖红线**:串行依赖步骤不要塞进同一 wave 靠 dispatch 顺序推进。同一 wave 内所有步骤共享同一 base_sha(冻结的首个派发 HEAD),后一步不会自动继承前一步成果,会从陈旧 HEAD 分叉成 sibling、丢失前序成果。正确做法是拆成多个 wave:每 wave 全部终态后 `/wf merge` 推进主仓库 HEAD,下一 wave 再分叉;若必须同 wave 串行,派发后一步前必须先 `/wf merge` 合并前一步。
+
 ### 3.2 子任务侧流程(子 pi tab 内)
 
 ```text

@@ -99,6 +99,7 @@ workflow → completed。前置:workflow 状态 = awaiting-merge(主控已完成
 
 - 无参数 = 派发当前 wave 全部就绪步骤(依赖全 done)
 - 依赖未完成会被拒绝(「依赖未完成,先完成: …」),按依赖顺序推进
+- **串行/并行规则**:同 wave 步骤共享冻结 base_sha;无依赖边可并行,串行依赖请拆成多个 wave(每 wave 终态后 `/wf merge` 推进 HEAD),不要靠同 wave dispatch 顺序推进串行依赖
 - **专属窗口**:首次派发 ghostctl new-window --no-focus 创建 workflow 专属窗口并绑定 id
   (绝不借用用户焦点窗口;绑定窗口关闭报错,`/wf rebind-window` 重建)
 - **顺序开 tab**:每次 new-tab --at-end(先切窗口末尾再建,子任务 tab 按派发顺序排尾)
