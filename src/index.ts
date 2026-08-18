@@ -150,7 +150,8 @@ export default function workflowExtension(pi: ExtensionAPI) {
 	// ── 存活轮询句柄(编排者侧)────────────────────────────
 	let monitorStop: (() => void) | null = null;
 
-	// ── 面板折叠快捷键(P0-2):默认 ctrl+shift+t,配置 collapseKey="off" 禁用。
+	// ── 面板折叠快捷键(P0-2):默认 off(不注册——ctrl+shift+t 与 rpiv-todo
+	// 冲突,默认让位);配置 collapseKey=自定义键位(如 alt+w)启用。
 	// 键位在扩展加载时解析一次(改配置需 /reload 重绑,同 rpiv-todo);
 	// handler 折叠/展开并立即重绘面板。无 UI(headless)时 no-op。
 	const collapseKey = resolveCollapseKey();

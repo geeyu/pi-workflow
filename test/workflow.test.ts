@@ -1660,8 +1660,8 @@ async function main(): Promise<void> {
 	assert(
 		items1
 			.find((i) => i.stepId === "notify-wf-1.1")!
-			.text.includes("/wf verify notify-wf-1.1 reject"),
-		"waiting-verify 文案含 /wf verify reject 分支",
+			.text.includes("/wf verify notify-wf-1.1 approve|reject"),
+		"waiting-verify 文案含 approve|reject 分支",
 	);
 	assert(
 		items1
@@ -1801,7 +1801,8 @@ async function main(): Promise<void> {
 	const overItems = overFilter(monitorMod.detectStateChanges(db2));
 	assert(overItems.length === 7, `7 个事件待通知(${overItems.length})`);
 	await idxMod.sendWorkflowNotifications(db2, fakeSender, overItems);
-	assert(sent.length === 1, "一次调用发送一条聚合消息");
+	// 逐条独立发送:前 5 条各发一条 + 末了一条进度摘要 = 6 次 send(超出 5 条留到下一轮)
+	assert(sent.length === 6, `逐条发送 5 条 + 1 进度摘要(${sent.length})`);
 	const sentOpts = sent[0].options as {
 		deliverAs: string;
 		triggerTurn: boolean;
@@ -1810,16 +1811,15 @@ async function main(): Promise<void> {
 		sentOpts.deliverAs === "followUp" && sentOpts.triggerTurn === true,
 		"deliverAs=followUp + triggerTurn(不打断,空闲唤醒)",
 	);
-	const lines = sent[0].content.split("\n").filter((l) => l.startsWith("- "));
-	assert(lines.length === 5, "单条聚合最多 5 行");
+	// 每条 content 为单行 [wf] 字形 + 文案,含可执行 /wf 命令
 	assert(
-		sent[0].content.includes("workflow-notify") === false &&
+		sent[0].content.startsWith("[wf]") &&
 			sent[0].content.includes("/wf verify notify-over-wf-1"),
-		"聚合文案含具体命令",
+		`单条内容含具体命令(${sent[0].content})`,
 	);
 	const remain = overFilter(monitorMod.detectStateChanges(db2));
-	assert(remain.length === 2, "超出 5 行的留到下一轮(未标记)");
-	// 降级:sendMessage 抛错 → ui.notify,仍标记去重
+	assert(remain.length === 2, "超出 5 条的留到下一轮(未标记)");
+	// 降级:sendMessage 抛错 → ui.notify 逐条,仍标记去重
 	const throwingSender = {
 		sendMessage: async () => {
 			throw new Error("sendMessage 不可用");
@@ -1832,8 +1832,8 @@ async function main(): Promise<void> {
 	};
 	await idxMod.sendWorkflowNotifications(db2, throwingSender, remain);
 	assert(
-		uiNotifies.length === 1 && uiNotifies[0].msg.includes("/wf verify"),
-		"sendMessage 失败降级 ctx.ui.notify",
+		uiNotifies.length === 2 && uiNotifies.every((n) => n.msg.includes("/wf verify")),
+		"sendMessage 失败逐条降级 ctx.ui.notify",
 	);
 	assert(
 		overFilter(monitorMod.detectStateChanges(db2)).length === 0,
@@ -2994,7 +2994,12 @@ async function main(): Promise<void> {
 			handlers.has("session_shutdown"),
 		"扩展生命周期注册(session_start/agent_start/shutdown)",
 	);
-	assert(extCalls.includes("registerShortcut"), "折叠快捷键已注册");
+	// 默认不注册折叠快捷键(ctrl+shift+t 与 rpiv-todo 冲突,默认让位;
+	// 配置 collapseKey=自定义键位才注册)
+	assert(
+		!extCalls.includes("registerShortcut"),
+		"默认不注册折叠快捷键(冲突让位,需配置 collapseKey 启用)",
+	);
 	// 子任务会话:cwd 位于 .worktrees 内 → 只设标题,不渲染面板/状态条、不发通知
 	extCalls.length = 0;
 	await handlers.get("session_start")!("", {
@@ -3111,8 +3116,8 @@ async function main(): Promise<void> {
 	writeCfg({});
 	assert(
 		configMod.getMaxWidgetLines() === 10 &&
-			configMod.resolveCollapseKey() === "ctrl+shift+t",
-		"空配置默认值(maxWidgetLines=10, collapseKey=ctrl+shift+t)",
+			configMod.resolveCollapseKey() === "off",
+		"空配置默认值(maxWidgetLines=10, collapseKey=off 不注册,避开 rpiv-todo)",
 	);
 
 	console.log("== T29 面板折叠 + 完成行收起 = ");
@@ -3351,18 +3356,12 @@ async function main(): Promise<void> {
 		"san-wf failed 事件待通知",
 	);
 	await notifyMod.sendWorkflowNotifications(db2, fakeSender2, sanItems);
-	assert(sent2.length === 1, "发送一条聚合消息");
+	assert(sent2.length === 1, "单条事件发送一条(无进度摘要)");
 	const nContent = sent2[0]!.content;
 	assert(
-		nContent.includes("● san-wf") &&
-			nContent.includes("0/1") &&
-			nContent.includes("✗1"),
-		`内容含进度摘要+字形(${nContent.split("\n")[0]})`,
-	);
-	assert(
-		nContent.includes("- ✗ 步骤 san-wf-1 失败") &&
+		nContent.startsWith("[wf] ✗ san-wf-1 失败") &&
 			nContent.includes("/wf retry san-wf-1"),
-		"事件行字形前缀 + 可执行命令",
+		`单条内容=字形+文案+命令(${nContent})`,
 	);
 	const details = sent2[0]!.details as WorkflowNotifyDetails;
 	assert(
@@ -3372,8 +3371,8 @@ async function main(): Promise<void> {
 		"details.items 结构化(kind/glyph/text)",
 	);
 	assert(
-		details.progress.length === 1 && details.progress[0]!.text.includes("✗1"),
-		"details.progress 结构化",
+		details.progress.length === 0,
+		"单条发送无 progress 摘要(逐条模式)",
 	);
 	// 渲染器:字形按 kind 着色 + /wf 命令 accent 高亮 + 宽度截断
 	const cmdTheme = {
@@ -3396,14 +3395,11 @@ async function main(): Promise<void> {
 	)!;
 	const rendered = component.render(200);
 	assert(
-		rendered[0]!.includes("<dim>[wf]") && rendered[0]!.includes("● san-wf"),
-		`进度行 dim 渲染(${rendered[0]})`,
-	);
-	assert(
-		rendered[1]!.includes("<error>✗</error>") &&
-			rendered[1]!.includes("<accent>/wf step san-wf-1</accent>") &&
-			rendered[1]!.includes("<accent>/wf retry san-wf-1</accent>"),
-		`事件行字形着色 + 命令高亮(${rendered[1]})`,
+		rendered.length === 1 &&
+			rendered[0]!.includes("<error>✗</error>") &&
+			rendered[0]!.includes("<accent>/wf step san-wf-1</accent>") &&
+			rendered[0]!.includes("/wf retry san-wf-1"),
+		`单行渲染:字形着色 + 命令高亮(${rendered.join(" | ")})`,
 	);
 	const narrow = component.render(30);
 	assert(
@@ -3419,8 +3415,8 @@ async function main(): Promise<void> {
 	const legacyLines = legacy.render(120);
 	assert(
 		legacyLines[0]!.includes("<dim>") &&
-			legacyLines.some((l) => l.includes("<accent>/wf retry san-wf-1</accent>")),
-		"无 details 降级渲染(首行 dim + 命令高亮)",
+			legacyLines.some((l) => l.includes("/wf retry san-wf-1")),
+		"无 details 降级渲染(首行 dim + 命令文本)",
 	);
 
 	console.log("== T26c P0-5 空态引导:plan/import/plan-init 模板提示 ==");

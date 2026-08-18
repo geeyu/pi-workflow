@@ -28,8 +28,8 @@ const KIND_COLOR: Record<string, ThemeColor> = {
 	"workflow-done": "success",
 };
 
-/** 可执行命令片段(文案由本插件生成,命令形如 `/wf verify 1.1 approve`,终止于空白/CJK/标点) */
-const WF_CMD_RE = /\/wf(?: [^\s()，。、；;：:【】\u4e00-\u9fff]+)+/g;
+/** 可执行命令片段(文案由本插件生成,命令形如 `/wf verify 1.1 approve`,终止于空白/CJK/中文标点/斜杠分隔符) */
+const WF_CMD_RE = /\/wf(?: [^\s()，。、；;：:【】\u4e00-\u9fff/]+)+/g;
 
 /** 高亮 `/wf …` 命令片段(accent 色) */
 function highlightCommands(theme: Theme, text: string): string {
@@ -90,7 +90,9 @@ export const renderWorkflowNotify: MessageRenderer<WorkflowNotifyDetails> = (
 		typeof message.content === "string" ? message.content : "";
 	return {
 		render(width: number): string[] {
-			const limit = Math.max(20, width - 2);
+			// 强制限制:pi 传的 width 可能异常偏大(实测收到 346,远超终端宽),
+			// 不依赖它——输出行永远不超过 104 列,杜绝超宽行。
+			const limit = Math.min(Math.max(20, width - 2), 104);
 			const lines: string[] = [];
 			if (details && Array.isArray(details.items) && details.items.length > 0) {
 				if (details.progress.length > 0) {

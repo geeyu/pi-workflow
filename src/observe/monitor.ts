@@ -410,21 +410,21 @@ const KIND_BY_STATUS: Record<string, NotifyKind> = {
 	[STEP_STATUS.needsFix]: "needs-fix",
 };
 
-/** 步骤级事件文案(必含具体可执行的 /wf 命令) */
+/** 步骤级事件文案(必含具体可执行的 /wf 命令;保持单行短文本,避免超长行) */
 function stepNotifyText(kind: NotifyKind, stepId: string): string {
 	switch (kind) {
 		case "reported":
-			return `步骤 ${stepId} 已回报 → 请执行 /wf verify ${stepId} approve(或 /wf status 查看)`;
+			return `${stepId} 已回报 → /wf verify ${stepId} approve`;
 		case "waiting-verify":
-			return `gate 步骤 ${stepId} 待核对 → 请执行 /wf verify ${stepId} approve 或 /wf verify ${stepId} reject <原因>`;
+			return `${stepId} 待核对 → /wf verify ${stepId} approve|reject`;
 		case "failed":
-			return `步骤 ${stepId} 失败 → 请执行 /wf step ${stepId} 查看错误,再 /wf retry ${stepId}`;
+			return `${stepId} 失败 → /wf step ${stepId} / /wf retry ${stepId}`;
 		case "aborted":
-			return `步骤 ${stepId} 中止(超时/tab 关闭)→ 请执行 /wf step ${stepId} 查看原因,再 /wf retry ${stepId}`;
+			return `${stepId} 中止 → /wf step ${stepId} / /wf retry ${stepId}`;
 		case "conflict":
-			return `步骤 ${stepId} 合并冲突 → 解决后 /wf resolve-conflict ${stepId},再 /wf merge`;
+			return `${stepId} 合并冲突 → /wf resolve-conflict ${stepId}`;
 		case "needs-fix":
-			return `步骤 ${stepId} 被驳回待修复 → 请执行 /wf step ${stepId} 查看原因,再 /wf retry ${stepId}`;
+			return `${stepId} 被驳回待修复 → /wf step ${stepId} / /wf retry ${stepId}`;
 		default:
 			return stepId;
 	}
@@ -495,7 +495,7 @@ export function detectStateChanges(
 				workflowId: wf.id,
 				waveSeq: wave.seq,
 				kind: "wave-done",
-				text: `wave ${wave.seq} 全部完成 → 请执行 ${mergeCmd}(前置可先 wf cleanup)`,
+				text: `wave ${wave.seq} 全部完成 → ${mergeCmd}`,
 			});
 		}
 		// 3) workflow 级:所有 wave 已合并且未完成目标把关 → 提示目标把关
@@ -509,7 +509,7 @@ export function detectStateChanges(
 			items.push({
 				workflowId: wf.id,
 				kind: "workflow-done",
-				text: `workflow ${wf.id} 所有 wave 已合并 → 请执行 /wf goal-check approve`,
+				text: `workflow ${wf.id} 所有 wave 已合并 → /wf goal-check approve`,
 			});
 		}
 		// 4) master-agent 模式终局级事件(发起方决策点)
@@ -521,7 +521,7 @@ export function detectStateChanges(
 			items.push({
 				workflowId: wf.id,
 				kind: "master-done",
-				text: `workflow ${wf.id} 改造完成,主控已把全部功能合入自己的 gittree → 请执行 /wf master-merge ${wf.id} 合并回主分支`,
+				text: `workflow ${wf.id} 改造完成 → /wf master-merge ${wf.id}`,
 			});
 		}
 		if (getWorkflowMeta(db, wf.id, NOTIFY_MASTER_FAILED_KEY) === undefined) {
@@ -530,14 +530,14 @@ export function detectStateChanges(
 				items.push({
 					workflowId: wf.id,
 					kind: "master-failed",
-					text: `workflow ${wf.id} 主控执行失败 → 请 /wf status ${wf.id} 查看原因;可自行接管或 /wf master-fail ${wf.id} <原因> 确认结束`,
+					text: `workflow ${wf.id} 主控执行失败 → /wf status ${wf.id} / /wf master-fail ${wf.id} <原因>`,
 				});
 			} else if (wf.status === WORKFLOW_STATUS.running && deadAt !== undefined) {
 				// dead-master:主控 tab 已消失且 workflow 仍在 running(无人编排)
 				items.push({
 					workflowId: wf.id,
 					kind: "master-failed",
-					text: `workflow ${wf.id} 主控会话已关闭(${new Date(Number(deadAt)).toLocaleTimeString()}),无人编排 → 请 /wf status ${wf.id} 查看;可自行接管(/wf verify /wf merge /wf goal-check)或 /wf master-fail ${wf.id} <原因> 结束`,
+					text: `workflow ${wf.id} 主控会话已关闭,无人编排 → /wf status ${wf.id} / /wf master-fail ${wf.id} <原因>`,
 				});
 			}
 		}

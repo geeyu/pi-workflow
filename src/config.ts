@@ -3,8 +3,9 @@
  *
  * 配置文件:~/.config/pi-workflow/config.json(XDG_CONFIG_HOME 优先)
  * - maxWidgetLines:计划概览面板内容行预算(含标题行),默认 10,floor 3
- * - collapseKey:面板折叠/展开快捷键(pi 键位语法,如 ctrl+shift+t),默认
- *   ctrl+shift+t;"off" 禁用(不注册快捷键)
+ * - collapseKey:面板折叠/展开快捷键(pi 键位语法,如 alt+w),默认 "off"
+ *   (不注册快捷键——ctrl+shift+t 与 rpiv-todo 冲突,默认让位;需用时配置
+ *   一个自定义键位即可启用)
  * - silentWindows:静默开窗总开关(创建后恢复窗口级 + app 级焦点),默认 true
  * - restoreAppFocus:app 级焦点还原(需 System Events 权限;关掉则只还原
  *   窗口级焦点,避免首次授权弹窗),默认 true
@@ -47,8 +48,8 @@ export interface WfConfig {
 /** 默认内容行预算(含标题行,原硬编码 10 保留为默认值) */
 export const DEFAULT_MAX_WIDGET_LINES = 10;
 
-/** 默认折叠/展开快捷键 */
-export const DEFAULT_COLLAPSE_KEY = "ctrl+shift+t";
+/** 默认折叠/展开快捷键:off = 不注册(ctrl+shift+t 与 rpiv-todo 冲突,默认让位) */
+export const DEFAULT_COLLAPSE_KEY = "off";
 
 /** collapseKey 禁用哨兵 */
 export const COLLAPSE_KEY_OFF = "off";
@@ -106,7 +107,8 @@ export function getRestoreAppFocus(): boolean {
 /** 主控 tab PATH 追加目录(字符串数组,默认空) */
 export function getMasterPathExtra(): string[] {
 	const v = loadConfig().masterPathExtra;
-	return Array.isArray(v) && v.every((x) => typeof x === "string" && x.length > 0)
+	return Array.isArray(v) &&
+		v.every((x) => typeof x === "string" && x.length > 0)
 		? v
 		: [];
 }
@@ -170,13 +172,16 @@ const MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
 /** 校验 collapseKey 键位语法(导出供单元测试) */
 export function isValidCollapseKeySpec(spec: string): boolean {
 	if (!spec) return false;
-	if (spec.startsWith("+") || spec.endsWith("+") || spec.includes("++")) return false;
+	if (spec.startsWith("+") || spec.endsWith("+") || spec.includes("++"))
+		return false;
 	const parts = spec.split("+");
 	const base = parts.at(-1) ?? "";
 	const modifiers = parts.slice(0, -1);
 	if (modifiers.length !== new Set(modifiers).size) return false;
 	if (!modifiers.every((m) => MODIFIERS.has(m))) return false;
-	return base.length === 1 ? /[a-z0-9_\-!@#$%^&*()|~`'":;,./<>?[\]{}=\\]/.test(base) : SPECIAL_KEYS.has(base);
+	return base.length === 1
+		? /[a-z0-9_\-!@#$%^&*()|~`'":;,./<>?[\]{}=\\]/.test(base)
+		: SPECIAL_KEYS.has(base);
 }
 
 /**
@@ -185,7 +190,10 @@ export function isValidCollapseKeySpec(spec: string): boolean {
  */
 export function resolveCollapseKey(): string {
 	const config = loadConfig();
-	const raw = typeof config.collapseKey === "string" ? config.collapseKey.trim().toLowerCase() : undefined;
+	const raw =
+		typeof config.collapseKey === "string"
+			? config.collapseKey.trim().toLowerCase()
+			: undefined;
 	if (raw === undefined || raw === "") return DEFAULT_COLLAPSE_KEY;
 	if (raw === COLLAPSE_KEY_OFF) return COLLAPSE_KEY_OFF;
 	return isValidCollapseKeySpec(raw) ? raw : DEFAULT_COLLAPSE_KEY;

@@ -108,47 +108,67 @@ export async function sendWorkflowNotifications(
 	const fresh = items.filter((i) => isNotifyItemFresh(db, i));
 	const toSend = fresh.slice(0, NOTIFY_MAX_LINES);
 	if (toSend.length === 0) return;
-	// 进度摘要:按 workflow 去重,各取一段(如 ● demo-wf 3/8 ✓3 🔄1 ◐2 ✗1)
-	const wfIds = [...new Set(toSend.map((i) => i.workflowId))];
-	const progress = wfIds
-		.map((id) => {
-			const text = progressText(db, id);
-			return text ? { workflowId: id, text } : null;
-		})
-		.filter((p): p is NonNullable<typeof p> => p !== null);
-	const details: WorkflowNotifyDetails = {
-		items: toSend.map((i) => ({
-			workflowId: i.workflowId,
-			stepId: i.stepId,
-			waveSeq: i.waveSeq,
-			kind: i.kind,
-			glyph: NOTIFY_GLYPH[i.kind],
-			text: i.text,
-		})),
-		progress,
-	};
-	const progressLine =
-		progress.length > 0 ? `${progress.map((p) => p.text).join(" | ")} → ` : "";
-	const content = [
-		`[wf ${new Date().toLocaleTimeString()}] ${progressLine}${toSend.length} 个关键事件(可依次执行):`,
-		...toSend.map((i) => `- ${NOTIFY_GLYPH[i.kind]} ${i.text}`),
-	].join("\n");
-	let delivered = false;
-	try {
-		await sender.sendMessage(
-			{ customType: "workflow-notify", content, display: true, details },
-			{ deliverAs: "followUp", triggerTurn: true },
-		);
-		delivered = true;
-	} catch {
+
+	// 逐条独立发送:避免单条聚合 content 被 pi 错误拼接成超长单行,
+	// 也避免 followUp 队列中历史消息追加导致内容膨胀。
+	let anyDelivered = false;
+	for (const item of toSend) {
+		const glyph = NOTIFY_GLYPH[item.kind] ?? "";
+		const content = `[wf] ${glyph} ${item.text}`;
+		const details: WorkflowNotifyDetails = {
+			items: [{
+				workflowId: item.workflowId,
+				stepId: item.stepId,
+				waveSeq: item.waveSeq,
+				kind: item.kind,
+				glyph,
+				text: item.text,
+			}],
+			progress: [],
+		};
+		let delivered = false;
 		try {
-			sender.ui.notify(content, "info");
+			await sender.sendMessage(
+				{ customType: "workflow-notify", content, display: true, details },
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
 			delivered = true;
 		} catch {
-			/* 两条通道都失败:不标记,下轮重试 */
+			try {
+				// 降级:单行 toast(避免多行撑爆 TUI)
+				sender.ui.notify(content, "info");
+				delivered = true;
+			} catch {
+				/* 两条通道都失败:不标记,下轮重试 */
+			}
+		}
+		if (delivered) {
+			markNotified(db, item);
+			anyDelivered = true;
 		}
 	}
-	if (delivered) {
-		for (const item of toSend) markNotified(db, item);
+
+	// 进度摘要单独发一条(可选,避免消息过多时仍提供全局视角)
+	if (anyDelivered && toSend.length > 1) {
+		const wfIds = [...new Set(toSend.map((i) => i.workflowId))];
+		const progress = wfIds
+			.map((id) => progressText(db, id))
+			.filter((t): t is NonNullable<typeof t> => t != null)
+			.join(" | ");
+		if (progress) {
+			try {
+				await sender.sendMessage(
+					{
+						customType: "workflow-notify",
+						content: `[wf] ${progress}`,
+						display: true,
+						details: { items: [], progress: [] },
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			} catch {
+				/* 进度摘要失败不影响已标记的去重 */
+			}
+		}
 	}
 }
