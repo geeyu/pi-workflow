@@ -205,8 +205,8 @@ export async function dispatchStep(
 		};
 	}
 
-	// 0. 冻结 base_sha(首次派发)
-	await ensureBaseSha(db, workflow);
+	// 0. 冻结 base_sha(首次派发),返回冻结后的 sha 供后续 create 定位基线
+	const baseSha = await ensureBaseSha(db, workflow);
 
 	// 0.5 fresh:先清理旧 worktree 重建(事件 worktree_cleaned,设计 §7.1)
 	if (opts.fresh) {
@@ -235,7 +235,7 @@ export async function dispatchStep(
 	// 后续 /wf merge 在主控 worktree 内 git merge → 全部功能合入主控自己的 gittree。
 	const createArgs = isMasterMode(db, workflow.id)
 		? ["create", wtName, masterBranch(workflow.id)]
-		: ["create", wtName];
+		: ["create", wtName, baseSha ?? "HEAD"];
 	const createRes = await run(
 		opts.gittreeBin ?? resolveBin("gittree"),
 		createArgs,
@@ -325,12 +325,15 @@ export function depsDone(db: DatabaseSync, step: StepRow): boolean {
 	return true;
 }
 
-/** 冻结 base_sha(首次派发时记录当前 HEAD) */
+/**
+ * 冻结 base_sha(首次派发时记录当前 HEAD)。
+ * 返回冻结后的 sha(已存在时直接返回既定值),供 create 显式定位基线。
+ */
 export async function ensureBaseSha(
 	db: DatabaseSync,
 	workflow: WorkflowRow,
-): Promise<void> {
-	if (workflow.base_sha) return;
+): Promise<string | undefined> {
+	if (workflow.base_sha) return workflow.base_sha;
 	const res = await run("git", ["rev-parse", "HEAD"], workflow.repo_path);
 	if (res.code === 0) {
 		const sha = res.stdout.trim();
@@ -341,8 +344,10 @@ export async function ensureBaseSha(
 				{ base_sha: sha, updated_at: Date.now() },
 				{ id: workflow.id },
 			);
+			return sha;
 		}
 	}
+	return undefined;
 }
 
 export {

@@ -458,7 +458,7 @@ async function main(): Promise<void> {
 	const scratchRepo = path.join(tmpDir, "repo");
 	fs.mkdirSync(scratchRepo, { recursive: true });
 	execFileSync("git", ["init", "-q", scratchRepo]);
-	// gittree create 基于 HEAD,空仓库无 HEAD → 先建初始提交
+	// gittree create 基于冻结的 base_sha(首次派发取当前 HEAD),空仓库无 HEAD → 先建初始提交
 	execFileSync("git", [
 		"-C",
 		scratchRepo,
@@ -505,10 +505,23 @@ async function main(): Promise<void> {
 	});
 	const sWf = dbMod.getWorkflow(db2, "scratch-wf")!;
 	const sStep = dbMod.getStep(db2, "scratch-wf-1")!;
+	// 用 fake-gittree 包装记录 create 参数(非 master 模式应显式传冻结的 base_sha,而非 HEAD)
+	const t6Gittree = path.join(tmpDir, "t6-gittree.sh");
+	const t6Log = path.join(tmpDir, "t6-gittree.log");
+	fs.writeFileSync(
+		t6Gittree,
+		`#!/bin/bash\necho "$@" >> "${t6Log}"\nexec gittree "$@"\n`,
+		{ mode: 0o755 },
+	);
 	const real = await dispatchMod.dispatchStep(db2, sWf, sStep, {
-		gittreeBin: "gittree",
+		gittreeBin: t6Gittree,
 	});
 	assert(real.ok, `派发成功: ${real.error ?? ""}`);
+	const t6LogText = fs.readFileSync(t6Log, "utf-8").trim();
+	assert(
+		/^create wf-scratch-wf-1 [0-9a-f]{7,40}$/.test(t6LogText),
+		`非 master 模式 gittree create 显式传 base_sha(而非 HEAD):${t6LogText}`,
+	);
 	const boundWin = dbMod.getWorkflowMeta(db2, "scratch-wf", "ghostty_window_id");
 	assert(
 		boundWin === "tab-group-aabbccddeeff",
